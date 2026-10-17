@@ -13,8 +13,8 @@ handle the *narrow* transport exceptions, "never the broad ``RPCError``", when
 the broad clause would change what the caller sees.
 
 The sanctioned pattern is the one ``add_url`` / ``add_drive``
-(``src/notebooklm/_source/add.py``) and ``register_file_source``
-(``src/notebooklm/_source/upload.py``) use::
+(``src/notebooklm/_web/sources/add.py``) and ``register_file_source``
+(``src/notebooklm/_web/sources/upload.py``) use::
 
     try:
         result = await rpc.rpc_call(...)
@@ -36,12 +36,12 @@ must be **preceded** in the same ``try`` by an ``except`` clause that catches
 at least :data:`REQUIRED_NARROW_RERAISE` and whose body is a bare ``raise``.
 Everything else is deliberately ignored:
 
-* a broad clause that **bare-re-raises** (``_rpc_executor.py``'s
+* a broad clause that **bare-re-raises** (``_web/transport/executor.py``'s
   refresh-and-retry catch ends in ``raise``) or re-raises via a helper
-  (``_notebooks.py`` ``_raise_quota_error_if_detected(exc)`` + ``raise``) —
+  (``_web/notebooks.py`` ``_raise_quota_error_if_detected(exc)`` + ``raise``) —
   the caller still sees the original type;
-* a broad clause that **swallows and continues** (the ``_artifact/listing.py``
-  composite-lister partial-availability catch, the ``_research.py`` baseline
+* a broad clause that **swallows and continues** (the ``_web/artifact/listing.py``
+  composite-lister partial-availability catch, the ``_web/research.py`` baseline
   probes, the ``upload.py`` post-upload rename) — deciding those is ADR-0019
   Rule-3 / Scope territory, explicitly out of this gate's contract;
 * re-wrapping **into ``RPCError`` itself** — not a *different* class, the
@@ -65,9 +65,9 @@ other file under ``src/notebooklm/`` is scanned.
 :data:`REQUIRED_NARROW_RERAISE` is the minimum: the three ``RPCError``
 *subclasses* a broad clause would otherwise swallow. The sibling tuple also
 re-raises ``NetworkError``, which does **not** subclass ``RPCError`` (it can
-never reach the broad clause) but must propagate for ``idempotent_create``'s
-probe contract — the gate tolerates it (and any other extras) in the narrow
-clause without requiring it. ``test_required_narrow_set_matches_exception_taxonomy``
+never reach the broad clause) but must propagate so one-send wrappers preserve
+transport ambiguity — the gate tolerates it (and any other extras) in the
+narrow clause without requiring it. ``test_required_narrow_set_matches_exception_taxonomy``
 pins that derivation against the live exception tree.
 
 The :data:`ALLOWLIST` burndown idiom matches the other guardrails: it is
@@ -282,7 +282,7 @@ def test_no_unordered_broad_rpc_error_wrap_in_feature_tree() -> None:
         "    except (AuthError, RateLimitError, ServerError, NetworkError):\n"
         "        raise\n"
         "so they propagate unwrapped — copy the add_url/add_drive pattern in "
-        "src/notebooklm/_source/add.py (see ADR-0019 'Cross-cutting' row + "
+        "src/notebooklm/_web/sources/add.py (see ADR-0019 'Cross-cutting' row + "
         "retry guidance, docs/adr/0019-error-and-return-contract.md).\n\n"
         + "\n".join(
             f"  src/notebooklm/{f}: "
@@ -322,8 +322,8 @@ def test_required_narrow_set_matches_exception_taxonomy() -> None:
     Pins the derivation against the live exception tree: every required name
     must subclass ``RPCError`` (otherwise the broad clause could never swallow
     it and requiring it would be noise), and ``NetworkError`` — present in the
-    sibling re-raise tuple for ``idempotent_create``'s probe contract — must
-    NOT subclass ``RPCError``, which is exactly why the gate tolerates it
+    sibling re-raise tuple for the one-send ambiguity contract — must NOT
+    subclass ``RPCError``, which is exactly why the gate tolerates it
     without requiring it. If the taxonomy ever moves (e.g. ``NetworkError``
     re-parented under ``RPCError``), this fails and the required set must be
     re-derived.

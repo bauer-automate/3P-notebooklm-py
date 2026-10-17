@@ -30,7 +30,7 @@ _VALUE_FIELDS: dict[str, tuple[str, ...]] = {
     "InlineAuthSource": ("document",),
     "FileAuthSource": ("store", "profile"),
     "SessionSeed": ("live", "baseline"),
-    "LoadPolicy": ("allow_headless",),
+    "LoadPolicy": ("allow_headless", "heal_psidts"),
     "TokenAcquisition": (
         "csrf_token",
         "session_id",
@@ -71,6 +71,7 @@ _AUTH_FIELDS = frozenset(
         "authuser",
         "cookie_snapshot",
         "account_email",
+        "_profile_session_generation",
     }
 )
 _FORBIDDEN_ACCOUNT_READERS = frozenset(
@@ -89,9 +90,9 @@ _FORBIDDEN_TOKEN_MODULES = frozenset(
         "subprocess",
         "threading",
         "notebooklm._atomic_io",
-        "notebooklm._auth.browser_capture",
+        "notebooklm._browser.browser_capture",
         "notebooklm._auth.credential_io",
-        "notebooklm._auth.headless_reauth",
+        "notebooklm._browser.headless_reauth",
         "notebooklm._auth.keepalive",
         "notebooklm._auth.master_token",
         "notebooklm._auth.master_token_bootstrap",
@@ -1169,7 +1170,7 @@ def test_raw_projection_and_typed_merge_callers_are_exact_and_do_not_escape() ->
     assert projection_escapes == set()
     merge_calls, merge_escapes = _member_projection(_TYPED_MERGE)
     assert merge_calls == {
-        ("_cookie_persistence.py", "CookiePersistence._save_canonical"),
+        ("_web/transport/cookie_persistence.py", "CookiePersistence._save_canonical"),
         ("psidts_recovery.py", "_attempt_rotation"),
         ("refresh.py", "_merge_domain_fetch_observation"),
         ("storage.py", "merge_cookie_delta"),

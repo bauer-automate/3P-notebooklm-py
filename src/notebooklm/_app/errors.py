@@ -26,16 +26,15 @@ The category set is deliberately granular enough that the CLI's
 ``TIMEOUT``                 (generic wait timeout — CLI maps to its own code)
 ``SERVER``                  (5xx — CLI currently folds into ``NOTEBOOKLM_ERROR``)
 ``RPC``                     (other RPC failures -> ``NOTEBOOKLM_ERROR``)
-``SOURCE_MUTATION``         (``SourceMutationError`` carries its own ``.code``)
+``SOURCE_MUTATION``         (CLI maps its semantic ``reason`` to a code)
 ``SOURCE_ADD``              (``SourceAddError`` -> ``NOTEBOOKLM_ERROR``; non-fatal per-item)
 ``UNEXPECTED``              ``UNEXPECTED_ERROR`` (non-library exceptions)
 ==========================  ====================================
 
 ``SOURCE_MUTATION`` is the ``_app``-raised :class:`SourceMutationError`. It is
-a deterministic CLI-input failure that carries its own ``.code`` vocabulary
-(``AMBIGUOUS_ID`` / ``NOT_FOUND`` / ``CONFIRM_REQUIRED`` / …), so the CLI
-projects that carried code rather than a category-derived one; the category
-exists only so the coverage test never sees it fall through to ``LIBRARY``.
+a deterministic source-resolution failure carrying an adapter-neutral reason
+and typed candidate data. The CLI maps that reason to its historical code;
+the category exists so other adapters can project it without parsing text.
 
 :func:`classify` is **class-sensitive**: it tests ``isinstance`` against the
 ``notebooklm.exceptions`` hierarchy most-specific-first, so an
@@ -55,6 +54,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+# Via the public ``notebooklm.types`` facade, not ``notebooklm.rpc.*`` — the
+# _app boundary lint (tests/_guardrails/test_app_boundary.py) requires RPC
+# enums to be consumed through their public re-export.
 from ..exceptions import (
     ArtifactTimeoutError,
     AuthError,
@@ -72,6 +74,8 @@ from ..exceptions import (
     ValidationError,
     WaitTimeoutError,
 )
+from ..outcomes import CommitState
+from ..types import GrpcStatusCode, normalize_grpc_status, normalize_rpc_code
 from .source_mutations import SourceMutationError
 
 
@@ -114,19 +118,23 @@ class ErrorCategory(Enum):
     SERVER = "server"
     #: Other RPC-protocol failure after the connection succeeded.
     RPC = "rpc"
-    #: A CLI-input source mutation failure (``SourceMutationError``) that
-    #: carries its own ``.code`` taxonomy (``AMBIGUOUS_ID`` / ``NOT_FOUND`` /
-    #: ``CONFIRM_REQUIRED`` / …). Distinct from the generic :attr:`LIBRARY`
-    #: catch-all so adapters can recover that carried code rather than folding
-    #: it into the library default.
+    #: A source mutation resolution failure (``SourceMutationError``) carrying
+    #: an adapter-neutral semantic reason. Distinct from the generic
+    #: :attr:`LIBRARY` catch-all so adapters can select their own projection.
     SOURCE_MUTATION = "source_mutation"
     #: A per-source ADD failure (``SourceAddError``) — NotebookLM rejected this
     #: specific source input (invalid/inaccessible/paywalled/empty/unparseable
     #: URL). Distinct from the generic :attr:`LIBRARY` catch-all so adapters
     #: project it as a 4xx input error and, in a batch add, ISOLATE it as a
-    #: per-item error instead of aborting the whole batch. ``_source/add.py``
+    #: per-item error instead of aborting the whole batch. ``_web/sources/add.py``
     #: re-raises every infra signal (auth/rate-limit/server/network) UNWRAPPED,
-    #: so a ``SourceAddError`` is guaranteed to be a per-item input failure.
+    #: and a post-registration upload failure (``_web/sources/upload.py``) does too
+    #: (with ``source_id``/``stage`` attributes attached rather than a wrapper
+    #: type), so a ``SourceAddError`` reaching THIS category is a per-item input
+    #: failure. The guarantee is no longer carried by the type alone: an
+    #: UNCONFIRMED create (#2220) is also a ``SourceAddError`` but is diverted to
+    #: :attr:`RPC` before this branch, precisely because it is neither a rejected
+    #: input nor safe to isolate-and-continue.
     SOURCE_ADD = "source_add"
     #: A library error that fits none of the above (catch-all under
     #: ``NotebookLMError``).
@@ -142,9 +150,7 @@ class ErrorCategory(Enum):
 #: error body (``server/_errors``), so the two surfaces cannot drift. Covers
 #: EVERY category (pinned by the adapter coverage tests).
 CATEGORY_HINTS: dict[ErrorCategory, str | None] = {
-    ErrorCategory.NOT_FOUND: (
-        "Check the id/name with the matching *_list tool; the resource may have been deleted."
-    ),
+    ErrorCategory.NOT_FOUND: ("Check the supplied id or name; the resource may have been deleted."),
     ErrorCategory.AUTH: "Re-authenticate and retry.",
     ErrorCategory.RATE_LIMITED: "Back off and retry after a short delay.",
     ErrorCategory.VALIDATION: "Fix the invalid argument and retry; this will not succeed unchanged.",
@@ -155,7 +161,7 @@ CATEGORY_HINTS: dict[ErrorCategory, str | None] = {
     ErrorCategory.NETWORK: "Transient connectivity issue; retry.",
     ErrorCategory.NOTEBOOK_LIMIT: "Notebook quota is exhausted; delete an existing notebook first.",
     ErrorCategory.ARTIFACT_TIMEOUT: (
-        "Generation is still running; poll the task status with the task_id."
+        "Generation outcome is unresolved; poll the task status with the task_id."
     ),
     ErrorCategory.TIMEOUT: "The operation did not finish in time; retry or poll for completion.",
     ErrorCategory.SERVER: "Upstream NotebookLM error; retry after a short delay.",
@@ -166,8 +172,8 @@ CATEGORY_HINTS: dict[ErrorCategory, str | None] = {
     ErrorCategory.SOURCE_ADD: (
         "NotebookLM could not add this source (invalid/inaccessible URL, paywalled, empty, "
         "or unparseable); fix the input and retry — a failed source stub may have been "
-        "created, so list the notebook's sources filtered to the error status to "
-        "find and remove it."
+        "created, so inspect the notebook's sources filtered to the error status "
+        "to find and remove it."
     ),
     ErrorCategory.LIBRARY: None,
     ErrorCategory.UNEXPECTED: None,
@@ -207,6 +213,55 @@ class ClassifiedError:
     retriable: bool
 
 
+#: Remediation hint for an UNCONFIRMED create (#2220) — an error whose
+#: idempotency probe could not settle whether the write committed. It REPLACES
+#: the category hint in the MCP and REST projections, for two reasons: those
+#: errors are forced to :attr:`ErrorCategory.RPC`, whose hint is ``None`` (so a
+#: client would otherwise get "retriable: false" with no explanation at all),
+#: and the underlying exception is often a bare connection failure whose own
+#: message says nothing about a possible write. Same override shape the
+#: near-miss ``candidates`` use.
+_DEFAULT_UNCONFIRMED_HINT = (
+    "The outcome of this write is unknown — it may or may not have been created, "
+    "and no further attempt was made once the check came back inconclusive. "
+    "Reconcile against the notebook (or its source list) before retrying; "
+    "retrying blind can create a duplicate."
+)
+
+
+def unconfirmed_hint(exc: BaseException) -> str:
+    """Return operation-aware recovery guidance for an uncertain write."""
+    metadata = getattr(exc, "operation_metadata", None)
+    operation = None if metadata is None else metadata.operation
+    if operation is not None and operation.startswith("sharing."):
+        return (
+            "Inspect the notebook's current sharing permissions before retrying. "
+            "Some changes or invitation emails may already have been applied; "
+            "do not blindly repeat the sharing request."
+        )
+    if (
+        operation == "chat"
+        and metadata is not None
+        and metadata.commit_state is CommitState.CONFIRMED
+    ):
+        conversation = (
+            f" (conversation id: {metadata.known_resource_ids[0]})"
+            if metadata.known_resource_ids
+            else ""
+        )
+        return (
+            f"The chat turn was recorded{conversation}, but its identifier or required readback could not "
+            "be resolved. Inspect the conversation history before continuing; replaying the "
+            "question can record a duplicate turn."
+        )
+    if operation == "chat":
+        return (
+            "The chat turn may or may not have been recorded. Inspect the conversation "
+            "history before trying again; replaying the question can record a duplicate turn."
+        )
+    return _DEFAULT_UNCONFIRMED_HINT
+
+
 #: Categories for which a retry could plausibly succeed.
 _RETRIABLE_CATEGORIES = frozenset(
     {
@@ -232,28 +287,35 @@ def is_retriable(category: ErrorCategory) -> bool:
 
 
 def _normalized_rpc_code(exc: RPCError) -> int | None:
-    """Return ``exc.rpc_code`` normalized to an ``int``, or ``None`` if absent/non-numeric.
+    """Return ``exc.rpc_code`` coerced to an ``int``, or ``None``.
 
-    ``rpc_code`` is typed ``str | int | None``; a string ``"5"`` must compare
-    equal to the integer status, so this coerces before comparison and tolerates
-    a non-numeric value (returns ``None`` rather than raising).
+    Thin adapter over the canonical
+    :func:`~notebooklm.types.normalize_rpc_code` so this module keeps taking an
+    exception rather than a raw code. The coercion rules live in that one
+    helper, shared with the decoder and the notebook not-found translation.
+
+    Stays an ``int`` rather than a :class:`GrpcStatusCode` because
+    :func:`_is_transient_rpc_code` range-checks HTTP statuses (``500 <= code <
+    600``) through the same value; narrowing here would silently drop every
+    5xx to ``None``. Semantic gRPC comparisons use
+    :func:`~notebooklm.types.normalize_grpc_status` instead.
     """
-    code = getattr(exc, "rpc_code", None)
-    if code is None:
-        return None
-    try:
-        return int(code)
-    except (TypeError, ValueError):
-        return None
+    return normalize_rpc_code(getattr(exc, "rpc_code", None))
 
 
-#: rpc_codes that mean a *transient / server-side* failure (not specific to the one
-#: input): HTTP 5xx, plus the gRPC-status infra codes (4 DEADLINE_EXCEEDED, 8
-#: RESOURCE_EXHAUSTED, 13 INTERNAL, 14 UNAVAILABLE). Used to keep a SourceAddError
-#: whose bare-RPCError cause carries one of these FATAL in a batch add — the per-source
-#: rejection codes (e.g. 3 INVALID_ARGUMENT / 9 FAILED_PRECONDITION) fall through to
-#: the non-fatal SOURCE_ADD instead.
-_TRANSIENT_GRPC_CODES = frozenset({4, 8, 13, 14})
+#: rpc_codes that mean a *transient / server-side* failure: HTTP 5xx, plus the
+#: gRPC-status infra codes (4 DEADLINE_EXCEEDED, 8 RESOURCE_EXHAUSTED, 13 INTERNAL,
+#: 14 UNAVAILABLE). This selects the adapter-facing SERVER category for a
+#: SourceAddError whose bare RPC cause carries infrastructure evidence. Batch
+#: continuation is represented separately by the public typed outcome.
+_TRANSIENT_GRPC_CODES = frozenset(
+    {
+        GrpcStatusCode.DEADLINE_EXCEEDED,
+        GrpcStatusCode.RESOURCE_EXHAUSTED,
+        GrpcStatusCode.INTERNAL,
+        GrpcStatusCode.UNAVAILABLE,
+    }
+)
 
 
 def _is_transient_rpc_code(code: int | None) -> bool:
@@ -272,6 +334,24 @@ def _category_for(exc: BaseException) -> ErrorCategory:
     first matching ``isinstance`` wins, so subclass branches MUST precede their
     bases.
     """
+    # --- UNCONFIRMED create: outcome unknown, dominates the type (#2220) ------
+    # An idempotency probe could not determine whether a create committed, so a
+    # write may be live. This is tested FIRST because the marker rides on the
+    # *underlying* exception type on the probe's transport branch — a
+    # ServerError / RateLimitError / NetworkError re-raised by the probe — and
+    # those otherwise classify as *retriable*, with a hint that says "retry
+    # after a short delay". The caller then retries the CREATE, not the probe,
+    # which is the duplicate this whole change exists to prevent.
+    #
+    # RPC is the honest landing spot: not retriable and with no remediation hint
+    # that contradicts the message. What is given up is the
+    # type-specific advice ("re-authenticate", "transient connectivity") in a
+    # doubly-exceptional case; the exception's own message still carries it, and
+    # "you may have written something and cannot tell" is the fact that must
+    # drive the caller's next move.
+    if getattr(exc, "unconfirmed", False):
+        return ErrorCategory.RPC
+
     # --- Class-sensitive specifics (must precede their bases) -----------------
     # Artifact timeout before the generic WaitTimeoutError umbrella.
     if isinstance(exc, ArtifactTimeoutError):
@@ -315,7 +395,7 @@ def _category_for(exc: BaseException) -> ErrorCategory:
         return ErrorCategory.CONFIG
 
     # --- gRPC status-5 (NOT_FOUND) surfaced as a bare ClientError -------------
-    # ``rpc/decoder.py`` raises ``ClientError(rpc_code=5)`` for a gRPC status-5
+    # ``_web/wire/decoder.py`` raises ``ClientError(rpc_code=5)`` for a gRPC status-5
     # result (a deliberate non-``NotFoundError`` choice to dodge the auth-retry
     # path), so a genuine missing resource would otherwise fall through to the
     # generic ``RPC`` catch-all -> 502. Map it to ``NOT_FOUND`` here, before that
@@ -325,7 +405,9 @@ def _category_for(exc: BaseException) -> ErrorCategory:
     # ``"5"`` is not missed. Purely additive (no exception-type change), so the
     # ``RPC`` exemplar (a bare ``RPCError`` with no ``rpc_code``) is unaffected
     # and the consistency gate stays green.
-    if isinstance(exc, ClientError) and _normalized_rpc_code(exc) == 5:
+    if isinstance(exc, ClientError) and (
+        normalize_grpc_status(getattr(exc, "rpc_code", None)) is GrpcStatusCode.NOT_FOUND
+    ):
         return ErrorCategory.NOT_FOUND
 
     # --- Remaining RPC failures (decoding, unknown-method, client 4xx, ...) ---
@@ -334,22 +416,45 @@ def _category_for(exc: BaseException) -> ErrorCategory:
 
     # --- Per-source ADD failure (SourceAddError). ----------------------------
     # A SourceError -> NotebookLMError (NOT an RPCError), so it reaches here only
-    # after every RPC/infra branch missed. ``_source/add.py`` re-raises the TYPED
+    # after every RPC/infra branch missed. ``_web/sources/add.py`` re-raises the TYPED
     # infra signals (auth/rate-limit/server/network) UNWRAPPED and wraps only a
     # residual RPCError as SourceAddError — usually a genuine per-source rejection
     # (bad URL, FAILED_PRECONDITION, …), which isolates as the NON-fatal SOURCE_ADD.
+    # A post-registration upload failure (``_web/sources/upload.py``) does the same: the
+    # typed cause propagates unwrapped (with ``source_id``/``stage`` attached), so it
+    # is classified by the earlier branches above and never reaches this one at all.
     # BUT a transient/server failure can still reach the wrap as a *bare* RPCError
-    # (the null-result-with-status path in ``rpc/decoder.py`` raises RPCError with an
-    # infra ``rpc_code`` rather than a typed ServerError). Keep those FATAL so a batch
-    # add aborts for retry/backoff instead of masking a rate-limit/5xx as a per-item
-    # error. Must precede the LIBRARY catch-all to keep its distinct 4xx category.
+    # (the null-result-with-status path in ``_web/wire/decoder.py`` raises RPCError with an
+    # infra ``rpc_code`` rather than a typed ServerError). Keep the SERVER projection
+    # instead of masking a rate-limit/5xx as a per-item error. Must precede the
+    # LIBRARY catch-all to keep its distinct 4xx category.
     if isinstance(exc, SourceAddError):
+        # An UNCONFIRMED create is neither of the two shapes below and must be
+        # tested first (#2220). Its idempotency probe could not determine whether
+        # the create committed, so the write may be live. Both other answers are
+        # actively wrong for it:
+        #
+        #   * SOURCE_ADD says "bad input, fix it and retry" (REST 422), inviting
+        #     the manual re-add that duplicates.
+        #   * SERVER is reachable via the transient-cause branch below whenever
+        #     the probe's own failure happens to carry a 5xx / gRPC-14 rpc_code,
+        #     and it is *retriable* with the hint "retry after a short delay" —
+        #     advertising a retry for the one error whose message says the create
+        #     must not be retried, non-deterministically depending on whether the
+        #     decoder attached a code.
+        #
+        # RPC is the honest fit: NOT retriable, no remediation hint that would
+        # contradict the message, and REST 502 rather than "your input was bad".
+        #
+        # (The marker itself is handled at the top of this function, which also
+        # covers the probe's transport branch. This comment stays here because
+        # the SourceAddError-specific stakes are what motivated it.)
         cause = getattr(exc, "cause", None)
         if isinstance(cause, RPCError) and _is_transient_rpc_code(_normalized_rpc_code(cause)):
             return ErrorCategory.SERVER
         return ErrorCategory.SOURCE_ADD
 
-    # --- CLI-input source-mutation error (carries its own .code taxonomy). ----
+    # --- Semantic source-mutation resolution failure. -------------------------
     # A direct NotebookLMError subclass, so it must precede the LIBRARY
     # catch-all to keep its distinct category.
     if isinstance(exc, SourceMutationError):

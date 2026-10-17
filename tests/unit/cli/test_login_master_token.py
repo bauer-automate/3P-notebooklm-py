@@ -9,21 +9,72 @@ service retains just interactive ``capture_oauth_token`` browser I/O.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
 import notebooklm.cli.master_token_login as driver
+import notebooklm.cli.runtime as runtime
 import notebooklm.cli.services.login.master_token as mt_service
 from notebooklm._app.master_token import (
     MasterTokenLoginSuccess,
     MasterTokenRemintSuccess,
 )
-from notebooklm._auth import browser_capture
+from notebooklm._browser import playwright_event_loop
 from notebooklm.notebooklm_cli import cli
 from notebooklm.paths import get_storage_path
+
+
+def test_oauth_capture_adapter_delegates_to_auth_facade(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "oauth-token"
+
+    monkeypatch.setattr(mt_service, "capture_browser_oauth_token", capture)
+
+    assert (
+        mt_service.capture_oauth_token(
+            browser="chrome",
+            cdp_url="http://localhost:9222",
+            timeout_s=19.0,
+        )
+        == "oauth-token"
+    )
+    assert captured == {
+        "browser": "chrome",
+        "cdp_url": "http://localhost:9222",
+        "timeout_s": 19.0,
+    }
+
+
+def test_oauth_capture_adapter_scrubs_failure_frame(monkeypatch) -> None:
+    secret_endpoint = "http://user:secret@localhost:9222"
+    error = RuntimeError("capture failed")
+
+    def fail_capture(**kwargs: Any) -> str:
+        assert kwargs["cdp_url"] == secret_endpoint
+        raise error
+
+    monkeypatch.setattr(mt_service, "capture_browser_oauth_token", fail_capture)
+    with pytest.raises(RuntimeError) as caught:
+        mt_service.capture_oauth_token(cdp_url=secret_endpoint)
+
+    adapter_frames = [
+        frame_info.frame
+        for frame_info in inspect.getinnerframes(caught.value.__traceback__)
+        if frame_info.frame.f_code.co_name == "capture_oauth_token"
+        and Path(frame_info.frame.f_code.co_filename).parts[-4:]
+        == ("cli", "services", "login", "master_token.py")
+    ]
+    assert len(adapter_frames) == 1
+    assert {"browser", "cdp_url", "timeout_s"}.isdisjoint(adapter_frames[0].f_locals)
 
 
 def _seed_profile_account(monkeypatch, tmp_path, email):
@@ -57,7 +108,7 @@ def test_master_token_refresh_calls_service(tmp_path, monkeypatch):
     # sibling internally via master_token_path_for, so the CLI passes only
     # storage_path (positionally); get_master_token_path() is no longer
     # something this call site needs to compute at all.
-    ref.assert_called_once_with(storage, run_async=asyncio.run)
+    ref.assert_called_once_with(storage, run_async=runtime.run_async)
     assert result.output.strip() == f"Re-minted cookies -> {storage}"
 
 
@@ -87,7 +138,7 @@ def test_master_token_refresh_storage_override_canonicalizes_storage_path(tmp_pa
     assert result.exit_code == 0, result.output
     # The driver canonicalizes an explicit --storage (matching auth_source), so a
     # symlink/relative alias selects the same sibling the L4 recovery rung derives.
-    ref.assert_called_once_with(resolved, run_async=asyncio.run)
+    ref.assert_called_once_with(resolved, run_async=runtime.run_async)
 
 
 def test_master_token_refresh_storage_symlink_canonicalizes_to_target(tmp_path, monkeypatch):
@@ -118,7 +169,7 @@ def test_master_token_refresh_storage_symlink_canonicalizes_to_target(tmp_path, 
             cli, ["login", "--master-token-refresh", "--storage", str(alias_dir / "foo.json")]
         )
     assert result.exit_code == 0, result.output
-    ref.assert_called_once_with(resolved, run_async=asyncio.run)
+    ref.assert_called_once_with(resolved, run_async=runtime.run_async)
 
 
 def test_master_token_login_storage_override_canonicalizes_path(tmp_path, monkeypatch):
@@ -147,7 +198,7 @@ def test_master_token_login_storage_override_canonicalizes_path(tmp_path, monkey
         )
     assert result.exit_code == 0, result.output
     assert boot.call_args.args[0].storage_path == resolved
-    assert boot.call_args.kwargs["run_async"] is asyncio.run
+    assert boot.call_args.kwargs["run_async"] is runtime.run_async
 
 
 def test_master_token_refresh_help_marks_forced_route_legacy():
@@ -192,7 +243,9 @@ def test_master_token_bootstrap_browser_capture_when_no_oauth(tmp_path, monkeypa
 
     def bootstrap(plan, **kwargs):
         token = kwargs["oauth_token"] or kwargs["capture_oauth_token"](
-            browser=kwargs["browser"], cdp_url=kwargs["cdp_url"]
+            browser=kwargs["browser"],
+            cdp_url=kwargs["cdp_url"],
+            timeout_s=kwargs["timeout_s"],
         )
         assert token == "CAPTOK"
         return MasterTokenLoginSuccess(3, plan.storage_path)
@@ -201,11 +254,23 @@ def test_master_token_bootstrap_browser_capture_when_no_oauth(tmp_path, monkeypa
         patch.object(mt_service, "capture_oauth_token", return_value="CAPTOK") as cap,
         patch.object(driver, "bootstrap_login", side_effect=bootstrap) as boot,
     ):
-        result = CliRunner().invoke(cli, ["login", "--master-token", "--account", "e@x.com"])
+        result = CliRunner().invoke(
+            cli,
+            [
+                "login",
+                "--master-token",
+                "--account",
+                "e@x.com",
+                "--browser-timeout",
+                "420",
+            ],
+        )
     assert result.exit_code == 0, result.output
     assert cap.called
     assert boot.call_args.kwargs["oauth_token"] is None
+    assert boot.call_args.kwargs["timeout_s"] == 420
     assert boot.call_args.kwargs["capture_oauth_token"] is cap
+    cap.assert_called_once_with(browser="chromium", cdp_url=None, timeout_s=420)
 
 
 @pytest.mark.parametrize(
@@ -275,8 +340,12 @@ class _PolicyProbe:
 @pytest.mark.requires_playwright
 @pytest.mark.parametrize("cdp_url", [None, "http://localhost:9222"])
 def test_master_token_capture_uses_default_windows_policy(monkeypatch, cdp_url):
-    """The policy swap must happen before Playwright enters, then be restored."""
-    original_policy = object()
+    """A selector policy is swapped out before Playwright enters, then restored."""
+
+    class _SelectorPolicy:
+        pass
+
+    original_policy = _SelectorPolicy()
     default_policy = object()
     current_policy = original_policy
     transitions = []
@@ -292,7 +361,8 @@ def test_master_token_capture_uses_default_windows_policy(monkeypatch, cdp_url):
     monkeypatch.setattr(asyncio, "get_event_loop_policy", get_policy)
     monkeypatch.setattr(asyncio, "set_event_loop_policy", set_policy)
     monkeypatch.setattr(asyncio, "DefaultEventLoopPolicy", lambda: default_policy)
-    monkeypatch.setattr(browser_capture.sys, "platform", "win32")
+    monkeypatch.setattr(asyncio, "WindowsSelectorEventLoopPolicy", _SelectorPolicy, raising=False)
+    monkeypatch.setattr(playwright_event_loop.sys, "platform", "win32")
 
     with (
         patch(

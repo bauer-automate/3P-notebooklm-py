@@ -94,6 +94,10 @@ class TestCanonicalAsyncWith:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.filterwarnings(
+        "ignore:Non-default legacy NotebookLMClient.from_storage "
+        "tuning arguments are deprecated:DeprecationWarning"
+    )
     async def test_async_with_forwards_chat_response_cap_override(
         self, tmp_path: Path, httpx_mock: HTTPXMock
     ) -> None:
@@ -180,6 +184,11 @@ class TestWrapperShape:
             path=str(tmp_path / "nonexistent.json"),
         )
         assert isinstance(wrapper, _FromStorageContext)
+        # ``allow_headless`` is keyword-only, so filling every positional slot
+        # and then passing one more value must raise. The literal argument list
+        # therefore tracks the positional arity of ``from_storage``: adding a
+        # positional-or-keyword parameter means adding one value here too
+        # (``import_research_timeout`` was the most recent, #2205).
         with pytest.raises(TypeError):
             NotebookLMClient.from_storage(
                 str(tmp_path / "nonexistent.json"),
@@ -192,6 +201,7 @@ class TestWrapperShape:
                 None,
                 4,
                 16,
+                None,
                 None,
                 None,
                 None,

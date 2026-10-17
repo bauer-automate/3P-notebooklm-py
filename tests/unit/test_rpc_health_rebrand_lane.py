@@ -106,6 +106,16 @@ def test_previous_and_current_state_live_in_separate_files() -> None:
     )
 
 
+def test_rebrand_state_cache_is_isolated_by_selected_account_slot() -> None:
+    slot = "${{ needs.plan-live-lanes.outputs.web_account_slot }}"
+    restore = _step("Restore rebrand-host lane state")["with"]
+    save = _step("Save rebrand-host lane state")["with"]
+
+    assert restore["key"] == f"rpc-rebrand-state-main-{slot}-"
+    assert restore["restore-keys"].strip() == f"rpc-rebrand-state-main-{slot}-"
+    assert save["key"] == f"rpc-rebrand-state-main-{slot}-${{{{ github.run_id }}}}"
+
+
 def test_nightly_never_forces_a_base_url() -> None:
     """The scheduled run must stay on the default host.
 
@@ -169,13 +179,14 @@ def test_main_issue_lanes_are_untouched_by_the_rebrand_lane() -> None:
     """Every health-script lane still keys off ``steps.health.outputs.exit_code``.
 
     The bundle-drift lane is a different script (``steps.bundle``) and keeps its
-    own gate; everything else the health script drives must stay exit-coded.
+    own gate. Authentication is intentionally shared because either script can
+    prove the homepage is unavailable; all remaining health-script lanes stay
+    keyed only to their health exit code.
     """
     expected = {
         "RPC ID Mismatch Detected": "1",
-        "RPC Health Check: Authentication Failure": "2",
         MAIN_ERROR_TITLE: "3",
-        "Studio customization cohort flipped — re-capture VideoStyle codes": "4",
+        "Studio customization table drifted — re-capture format enums": "4",
     }
     seen = set()
     for step in _issue_steps():
@@ -185,6 +196,15 @@ def test_main_issue_lanes_are_untouched_by_the_rebrand_lane() -> None:
         seen.add(title)
         assert f"steps.health.outputs.exit_code == '{expected[title]}'" in step["if"]
     assert seen == set(expected)
+
+    auth = next(
+        step
+        for step in _issue_steps()
+        if step["with"]["title"] == "RPC Health Check: Authentication Failure"
+    )
+    assert "steps.health.outputs.exit_code == '2'" in auth["if"]
+    assert "steps.bundle.outputs.exit_code == '2'" in auth["if"]
+    assert "||" in auth["if"]
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +279,7 @@ def _run_step(
         "PATH": f"{_stub_bin(workdir)}{os.pathsep}{os.environ['PATH']}",
         "UV_STUB_PYTHON": sys.executable,
         "GITHUB_REPOSITORY": "teng-lin/notebooklm-py",
-        "GITHUB_SHA": "deadbeef",
+        "CHECKED_SHA": "deadbeef",
         "GITHUB_OUTPUT": str(workdir / "step-output"),
         "GITHUB_STEP_SUMMARY": str(workdir / "step-summary"),
         "GH_STUB_LOG": str(workdir / "gh-calls.jsonl"),

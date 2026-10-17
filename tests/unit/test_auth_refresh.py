@@ -6,11 +6,13 @@ alongside the deletion of ``_AuthFacadeModule``; see ADR-0003
 (superseded) and ADR-0007 (test-monkeypatch policy) for the rationale.
 """
 
+import asyncio
 import json
 import os
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import httpx
@@ -26,6 +28,7 @@ from notebooklm.auth import (
     fetch_tokens_passive,
     fetch_tokens_with_domains,
 )
+from notebooklm.exceptions import AuthError
 
 
 class TestFetchTokens:
@@ -86,7 +89,7 @@ class TestFetchTokens:
         )
 
         cookies = {"SID": "expired_sid", "__Secure-1PSIDTS": "test_1psidts"}
-        with pytest.raises(ValueError, match="Authentication expired"):
+        with pytest.raises(AuthError, match="Authentication expired"):
             await fetch_tokens(cookies)
 
     @pytest.mark.asyncio
@@ -126,7 +129,8 @@ class TestFetchTokens:
         assert "Authentication expired" not in message
 
     @pytest.mark.asyncio
-    async def test_fetch_tokens_gate_wins_over_mismatch_hop(self, httpx_mock: HTTPXMock):
+    @pytest.mark.parametrize("host", ["notebooklm.google", "notebook.google"])
+    async def test_fetch_tokens_gate_wins_over_mismatch_hop(self, httpx_mock: HTTPXMock, host):
         """The #1630 region gate must outrank a cookie-mismatch hop HERE too.
 
         ``_extraction_failure`` gets this precedence right, and
@@ -144,10 +148,10 @@ class TestFetchTokens:
         httpx_mock.add_response(
             url="https://accounts.google.com/CookieMismatch",
             status_code=302,
-            headers={"Location": "https://notebooklm.google/?location=unsupported"},
+            headers={"Location": f"https://{host}/?location=unsupported"},
         )
         httpx_mock.add_response(
-            url="https://notebooklm.google/?location=unsupported",
+            url=f"https://{host}/?location=unsupported",
             content=b"<html>NotebookLM</html>",
         )
 
@@ -158,6 +162,36 @@ class TestFetchTokens:
         message = str(exc.value)
         assert "region / anti-abuse access gate" in message
         assert "CookieMismatch" not in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_tokens", [False, True])
+    async def test_fetch_tokens_rebranded_marketing_redirect_chain(
+        self, httpx_mock: HTTPXMock, monkeypatch, with_tokens
+    ):
+        """The final marketing host must be rejected even if it has WIZ tokens (#2441)."""
+        monkeypatch.setenv("NOTEBOOKLM_BASE_URL", "https://notebooklm.google.com")
+        chain = [
+            "https://notebooklm.google.com/",
+            "https://notebooklm.google/",
+            "https://notebook.google/",
+        ]
+        for source, destination in zip(chain[:-1], chain[1:], strict=True):
+            httpx_mock.add_response(url=source, status_code=302, headers={"Location": destination})
+        html = '<html><a href="https://accounts.google.com/signin">Sign in</a>'
+        if with_tokens:
+            html += (
+                "<script>window.WIZ_global_data = "
+                '{"SNlM0e":"marketing_csrf","FdrFJe":"marketing_session"};</script>'
+            )
+        httpx_mock.add_response(url=chain[-1], text=html + "</html>")
+
+        with pytest.raises(ValueError, match="region / anti-abuse access gate"):
+            await fetch_tokens({"SID": "test_sid", "__Secure-1PSIDTS": "test_1psidts"})
+
+        requests = httpx_mock.get_requests(method="GET")
+        assert [str(request.url) for request in requests] == chain
+        # Google account credentials must remain scoped to .google.com app hosts.
+        assert all("cookie" not in request.headers for request in requests[1:])
 
     @pytest.mark.asyncio
     async def test_fetch_tokens_never_accepts_the_sign_in_pages_own_token(
@@ -201,7 +235,7 @@ class TestFetchTokens:
         )
 
         cookies = {"SID": "expired_sid", "__Secure-1PSIDTS": "test_1psidts"}
-        with pytest.raises(ValueError) as exc:
+        with pytest.raises(AuthError) as exc:
             await fetch_tokens(cookies)
 
         message = str(exc.value)
@@ -230,9 +264,6 @@ class TestFetchTokens:
     async def test_fetch_tokens_redirect_to_login_strips_query_and_fragment(self, monkeypatch):
         """Redirect error must not expose query params or fragments from final_url."""
 
-        async def fake_poke_session(client, storage_path):
-            return None
-
         class FakeAsyncClient:
             def __init__(self, *args, **kwargs):
                 self.cookies = httpx.Cookies()
@@ -250,10 +281,7 @@ class TestFetchTokens:
                 )
                 return httpx.Response(200, content=b"<html>Login</html>", request=request)
 
-        # Seam-aliased object-attribute patches (ADR-0007): patches the owning
-        # ``_auth.refresh`` module so bare-name lookups inside
-        # ``_fetch_tokens_with_jar`` observe the fakes.
-        monkeypatch.setattr(_auth_refresh, "_poke_session", fake_poke_session)
+        monkeypatch.setenv("NOTEBOOKLM_DISABLE_KEEPALIVE_POKE", "1")
         monkeypatch.setattr(_auth_refresh.httpx, "AsyncClient", FakeAsyncClient)
 
         with pytest.raises(ValueError) as excinfo:
@@ -449,6 +477,238 @@ class TestFetchTokens:
         assert sid_cookie["value"] == "new"
 
 
+class TestSignedOutLandingProbe:
+    """A token-less app page is classified by where the app's ``/login`` lands.
+
+    Since October 2026 a signed-out ``GET /`` returns an HTTP 200 landing page
+    instead of a login redirect, so a stale session used to be reported as a
+    page-structure change (#2479).
+    """
+
+    APP_URL = "https://notebook.google.com/"
+    LOGIN_URL = "https://notebook.google.com/login"
+    SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?continue=https://notebook.google.com/"
+    # Shape of the live signed-out landing: WIZ data with a session id but no CSRF.
+    SIGNED_OUT_HTML = (
+        b"<html><title>Gemini Notebook</title><script>window.WIZ_global_data = "
+        b'{"S06Grb":"","FdrFJe":"-6501173173841838274"};</script></html>'
+    )
+
+    def _login_redirects_to_sign_in(self, httpx_mock: HTTPXMock, login_url: str) -> None:
+        httpx_mock.add_response(
+            url=login_url,
+            status_code=302,
+            headers={"Location": self.SIGN_IN_URL, "Set-Cookie": "NID=probe; Domain=.google.com"},
+        )
+        httpx_mock.add_response(
+            url=self.SIGN_IN_URL,
+            content=b'<html>"SNlM0e":"ALX_SIGNIN_PAGE_TOKEN"</html>',
+        )
+
+    @pytest.mark.asyncio
+    async def test_signed_out_landing_reports_expired_auth(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+        self._login_redirects_to_sign_in(httpx_mock, self.LOGIN_URL)
+
+        with pytest.raises(AuthError) as exc:
+            await fetch_tokens({"SID": "stale_sid", "__Secure-1PSIDTS": "test_1psidts"})
+
+        message = str(exc.value)
+        assert "Authentication expired" in message
+        assert "signed-out page" in message
+        assert "notebooklm login" in message
+        assert "page structure" not in message
+        assert "ALX_SIGNIN_PAGE_TOKEN" not in message
+        assert "ServiceLogin" not in message
+
+    @pytest.mark.asyncio
+    async def test_probe_set_cookie_never_reaches_the_callers_jar(self, httpx_mock: HTTPXMock):
+        from notebooklm._auth.extraction import _LoginRedirectError
+
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+        self._login_redirects_to_sign_in(httpx_mock, self.LOGIN_URL)
+        jar = httpx.Cookies()
+        jar.set("SID", "stale_sid", domain=".google.com")
+
+        with pytest.raises(_LoginRedirectError):
+            await _auth_refresh._fetch_tokens_with_jar(jar, poke=False)
+
+        assert jar.get("NID") is None
+        assert jar.get("SID") == "stale_sid"
+
+    @pytest.mark.asyncio
+    async def test_signed_in_tokenless_page_still_reports_structure_change(
+        self, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+        httpx_mock.add_response(
+            url=self.LOGIN_URL, status_code=302, headers={"Location": self.APP_URL}
+        )
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+
+        with pytest.raises(ValueError) as exc:
+            await fetch_tokens({"SID": "valid_sid", "__Secure-1PSIDTS": "test_1psidts"})
+
+        assert not isinstance(exc.value, AuthError)
+        message = str(exc.value)
+        assert "CSRF token not found" in message
+        assert "page structure has changed" in message
+        assert "Authentication expired" not in message
+
+    @pytest.mark.asyncio
+    async def test_probe_transport_failure_keeps_original_diagnostic(
+        self, httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+    ):
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+        httpx_mock.add_exception(httpx.ConnectError("probe refused"), url=self.LOGIN_URL)
+
+        with (
+            caplog.at_level("WARNING", logger="notebooklm._auth.refresh"),
+            pytest.raises(ValueError) as exc,
+        ):
+            await fetch_tokens({"SID": "sid", "__Secure-1PSIDTS": "test_1psidts"})
+
+        assert not isinstance(exc.value, AuthError)
+        assert "page structure has changed" in str(exc.value)
+        assert "Sign-in check https://notebook.google.com/login failed: ConnectError" in (
+            caplog.text
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [404, 500])
+    async def test_probe_error_status_keeps_original_diagnostic(
+        self, httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, status: int
+    ):
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+        httpx_mock.add_response(url=self.LOGIN_URL, status_code=status)
+
+        with (
+            caplog.at_level("WARNING", logger="notebooklm._auth.refresh"),
+            pytest.raises(ValueError) as exc,
+        ):
+            await fetch_tokens({"SID": "sid", "__Secure-1PSIDTS": "test_1psidts"})
+
+        assert not isinstance(exc.value, AuthError)
+        assert "page structure has changed" in str(exc.value)
+        assert f"(HTTP {status}) without confirming sign-out" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_probe_region_gate_reports_the_gate(self, httpx_mock: HTTPXMock):
+        gate = "https://notebooklm.google/?location=unsupported"
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+        httpx_mock.add_response(url=self.LOGIN_URL, status_code=302, headers={"Location": gate})
+        httpx_mock.add_response(url=gate, content=b"<html>Not available</html>")
+
+        with pytest.raises(ValueError) as exc:
+            await fetch_tokens({"SID": "sid", "__Secure-1PSIDTS": "test_1psidts"})
+
+        assert not isinstance(exc.value, AuthError)
+        assert "access gate" in str(exc.value)
+        assert "location=unsupported" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_probe_keeps_the_account_route(self, httpx_mock: HTTPXMock):
+        query = "?authuser=selected%40example.com"
+        httpx_mock.add_response(url=self.APP_URL + query, content=self.SIGNED_OUT_HTML)
+        self._login_redirects_to_sign_in(httpx_mock, self.LOGIN_URL + query)
+
+        with pytest.raises(AuthError, match="Authentication expired"):
+            await fetch_tokens(
+                {"SID": "stale_sid", "__Secure-1PSIDTS": "test_1psidts"},
+                account_email="selected@example.com",
+            )
+
+        (probe,) = [r for r in httpx_mock.get_requests() if r.url.path == "/login"]
+        assert probe.url.params["authuser"] == "selected@example.com"
+
+    @pytest.mark.asyncio
+    async def test_present_empty_csrf_does_not_probe(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self.APP_URL, content=b'"SNlM0e":"" "FdrFJe":"sess"')
+
+        assert await fetch_tokens({"SID": "sid", "__Secure-1PSIDTS": "test_1psidts"}) == (
+            "",
+            "sess",
+        )
+        gets = [
+            request.url.path for request in httpx_mock.get_requests() if request.method == "GET"
+        ]
+        assert gets == ["/"]
+
+    @pytest.mark.asyncio
+    async def test_passive_check_reports_signed_out_landing_as_expired(
+        self, tmp_path, httpx_mock: HTTPXMock
+    ):
+        """``auth check --test --passive`` takes this path (#2479)."""
+        storage_file = TestFetchTokensPassive._storage_with_sid(tmp_path)
+        before = storage_file.read_bytes()
+        httpx_mock.add_response(url=self.APP_URL, content=self.SIGNED_OUT_HTML)
+        self._login_redirects_to_sign_in(httpx_mock, self.LOGIN_URL)
+
+        with pytest.raises(ValueError, match="Authentication expired"):
+            await fetch_tokens_passive(storage_file)
+
+        assert storage_file.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("token_url", "probe_url"),
+    [
+        ("https://notebook.google.com/", "https://notebook.google.com/login"),
+        ("https://notebook.google.com", "https://notebook.google.com/login"),
+        (
+            "https://notebook.google.com/?authuser=1",
+            "https://notebook.google.com/login?authuser=1",
+        ),
+        ("https://notebook.google.com/u/1/#x", "https://notebook.google.com/login"),
+    ],
+)
+def test_login_probe_url_keeps_route(token_url: str, probe_url: str) -> None:
+    from notebooklm._auth.extraction import _login_probe_url
+
+    assert _login_probe_url(token_url) == probe_url
+
+
+@pytest.mark.parametrize(
+    "probe_final_url",
+    ["https://notebook.google.com/", "https://support.google.com/accounts/answer/32050"],
+)
+def test_signed_out_probe_keeps_unconfirmed_outcomes(probe_final_url: str) -> None:
+    from notebooklm._auth.extraction import _signed_out_probe_failure
+
+    assert _signed_out_probe_failure("https://notebook.google.com/", probe_final_url, ()) is None
+
+
+def test_signed_out_probe_reports_a_cookie_mismatch_hop() -> None:
+    """The probe chain uses the token fetch's taxonomy, history included."""
+    from notebooklm._auth.extraction import _LoginRedirectError, _signed_out_probe_failure
+
+    failure = _signed_out_probe_failure(
+        "https://notebook.google.com/",
+        "https://support.google.com/accounts/answer/32050",
+        ("https://notebook.google.com/login", "https://accounts.google.com/CookieMismatch"),
+    )
+
+    assert failure is not None
+    assert not isinstance(failure, _LoginRedirectError)
+    assert "CookieMismatch" in str(failure)
+    assert "Authentication expired" not in str(failure)
+
+
+def test_signed_out_probe_classifies_without_redirect_history() -> None:
+    """curl_cffi reports no history; the final sign-in URL alone suffices."""
+    from notebooklm._auth.extraction import _LoginRedirectError, _signed_out_probe_failure
+
+    failure = _signed_out_probe_failure(
+        "https://notebook.google.com/",
+        "https://accounts.google.com/v3/signin/identifier?continue=https://notebook.google.com/",
+        (),
+    )
+
+    assert isinstance(failure, _LoginRedirectError)
+    assert "continue=" not in str(failure)
+    assert "https://accounts.google.com/<redacted>" in str(failure)
+
+
 class TestFetchTokensPassive:
     """``fetch_tokens_passive`` is the strictly read-only readiness probe.
 
@@ -478,37 +738,55 @@ class TestFetchTokensPassive:
         return storage_file
 
     @pytest.mark.asyncio
-    async def test_passive_fetch_success(self, tmp_path, httpx_mock: HTTPXMock):
+    async def test_passive_fetch_success(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock
+    ):
         """Happy path: returns the tokens from the homepage GET."""
         storage_file = self._storage_with_sid(tmp_path)
         html = '"SNlM0e":"csrf_passive" "FdrFJe":"sess_passive"'
         httpx_mock.add_response(url="https://notebook.google.com/", content=html.encode())
+        route_threads: list[int] = []
+        event_loop_thread = threading.get_ident()
+        real_to_thread = asyncio.to_thread
+
+        async def record_route_dispatch(func, /, *args, **kwargs):
+            if func is _auth_refresh._resolve_token_route_kwargs:
+
+                def observed_call():
+                    route_threads.append(threading.get_ident())
+                    return func(*args, **kwargs)
+
+                return await real_to_thread(observed_call)
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", record_route_dispatch)
 
         csrf, session_id = await fetch_tokens_passive(storage_file)
 
         assert csrf == "csrf_passive"
         assert session_id == "sess_passive"
+        assert route_threads and all(thread_id != event_loop_thread for thread_id in route_threads)
 
+    @pytest.mark.no_default_keepalive_mock
     @pytest.mark.asyncio
-    async def test_passive_skips_keepalive_poke(self, tmp_path, monkeypatch, httpx_mock: HTTPXMock):
+    async def test_passive_skips_keepalive_poke(self, tmp_path, httpx_mock: HTTPXMock):
         """The layer-1 rotation poke must never fire on the passive path."""
         storage_file = self._storage_with_sid(tmp_path)
         html = '"SNlM0e":"csrf" "FdrFJe":"sess"'
         httpx_mock.add_response(url="https://notebook.google.com/", content=html.encode())
 
-        poke_calls = 0
-
-        async def spy_poke(client, storage_path=None):
-            nonlocal poke_calls
-            poke_calls += 1
-
-        # Seam-aliased patch (ADR-0007): patch the owning ``_auth.refresh``
-        # module so the bare-name call inside ``_fetch_tokens_with_jar`` is seen.
-        monkeypatch.setattr(_auth_refresh, "_poke_session", spy_poke)
+        # Make the file old enough that the active path would issue its
+        # RotateCookies POST. No POST response is registered, so this test
+        # fails if the passive entry ever stops passing ``poke=False``.
+        os.utime(storage_file, (0, 0))
 
         await fetch_tokens_passive(storage_file)
 
-        assert poke_calls == 0
+        requests = httpx_mock.get_requests()
+        assert [(request.method, str(request.url)) for request in requests] == [
+            ("GET", "https://notebook.google.com/")
+        ]
+        assert not any(request.method == "POST" for request in requests)
 
     @pytest.mark.asyncio
     async def test_passive_does_not_write_storage(self, tmp_path, httpx_mock: HTTPXMock):
@@ -631,7 +909,7 @@ class TestFetchTokensAutoRefresh:
 
     @pytest.mark.asyncio
     async def test_no_refresh_when_env_unset(self, httpx_mock: HTTPXMock):
-        """Auth error propagates unchanged when NOTEBOOKLM_REFRESH_CMD is not set."""
+        """Expired auth is typed even when NOTEBOOKLM_REFRESH_CMD is not set."""
         httpx_mock.add_response(
             url="https://notebook.google.com/",
             status_code=302,
@@ -642,7 +920,7 @@ class TestFetchTokensAutoRefresh:
             content=b"<html>Login</html>",
         )
 
-        with pytest.raises(ValueError, match="Authentication expired"):
+        with pytest.raises(AuthError, match="Authentication expired"):
             await fetch_tokens({"SID": "stale", "__Secure-1PSIDTS": "test_1psidts"})
 
     @pytest.mark.asyncio
@@ -841,9 +1119,11 @@ class TestFetchTokensAutoRefresh:
         html = '"SNlM0e":"csrf_ok" "FdrFJe":"sess_ok"'
         httpx_mock.add_response(url="https://notebook.google.com/", content=html.encode())
 
-        tokens = await AuthTokens.from_storage(profile="work")
+        with pytest.warns(DeprecationWarning, match="AuthTokens.from_storage"):
+            tokens = await AuthTokens.from_storage(profile="work")
 
-        assert tokens.flat_cookies["SID"] == "fresh"
+        with pytest.warns(DeprecationWarning, match="flat_cookies"):
+            assert tokens.flat_cookies["SID"] == "fresh"
         assert tokens.csrf_token == "csrf_ok"
         assert tokens.session_id == "sess_ok"
         assert "_NOTEBOOKLM_REFRESH_ATTEMPTED" not in os.environ
@@ -982,7 +1262,7 @@ class TestFetchTokensAutoRefresh:
                 content=b"<html>Login</html>",
             )
 
-        with pytest.raises(ValueError, match="Authentication expired"):
+        with pytest.raises(AuthError, match="Authentication expired"):
             await fetch_tokens({"SID": "stale", "__Secure-1PSIDTS": "test_1psidts"})
         assert "_NOTEBOOKLM_REFRESH_ATTEMPTED" not in os.environ
 

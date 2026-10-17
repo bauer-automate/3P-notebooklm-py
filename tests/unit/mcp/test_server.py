@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from unittest.mock import MagicMock
@@ -13,7 +14,10 @@ pytest.importorskip("fastmcp")
 
 from fastmcp import Client, FastMCP  # noqa: E402 - after importorskip guard
 
+from notebooklm.client import NotebookLMClient  # noqa: E402 - after importorskip guard
 from notebooklm.mcp import __main__ as entry  # noqa: E402 - after importorskip guard
+from notebooklm.mcp._chattasks import ChatTaskRegistry  # noqa: E402 - after importorskip guard
+from notebooklm.mcp._clientprovider import ClientProvider  # noqa: E402 - after importorskip
 from notebooklm.mcp._context import (  # noqa: E402 - after importorskip guard
     AppState,
     CancelledResearchTracker,
@@ -23,6 +27,12 @@ from notebooklm.mcp._context import (  # noqa: E402 - after importorskip guard
 from notebooklm.mcp.server import (  # noqa: E402 - after importorskip guard
     SERVER_NAME,
     create_server,
+)
+from notebooklm.options import (  # noqa: E402
+    AndroidBackendConfig,
+    ClientConfig,
+    WebBackendConfig,
+    WebRequestOptions,
 )
 
 
@@ -59,20 +69,113 @@ async def test_lifespan_binds_the_factory_client(mock_client: MagicMock) -> None
     assert captured["client"] is mock_client
 
 
-def test_get_client_reads_appstate() -> None:
+async def test_lifespan_binds_and_clears_chat_task_registry_loop(
+    mock_client: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The registry participates in the same loop-binding lifecycle as the client."""
+    seen: list[asyncio.AbstractEventLoop | None] = []
+    original = ChatTaskRegistry.set_bound_loop
+
+    def spy(
+        self: ChatTaskRegistry,
+        loop: asyncio.AbstractEventLoop | None,
+    ) -> None:
+        seen.append(loop)
+        original(self, loop)
+
+    monkeypatch.setattr(ChatTaskRegistry, "set_bound_loop", spy)
+
+    @contextlib.asynccontextmanager
+    async def factory() -> AsyncIterator[MagicMock]:
+        yield mock_client
+
+    async with Client(create_server(client_factory=factory)):
+        pass
+
+    assert len(seen) == 2
+    assert isinstance(seen[0], asyncio.AbstractEventLoop)
+    assert seen[1] is None
+
+
+async def test_default_factory_enables_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process-lifetime MCP client rotates cookies without caller configuration."""
+    seen: dict[str, object] = {}
+
+    @contextlib.asynccontextmanager
+    async def fake_context() -> AsyncIterator[MagicMock]:
+        yield MagicMock()
+
+    def spy_from_storage(**kwargs: object):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return fake_context()
+
+    monkeypatch.setattr(NotebookLMClient, "from_storage", staticmethod(spy_from_storage))
+    async with Client(create_server(profile="work")):
+        pass
+
+    assert seen["profile"] == "work"
+    config = seen["config"]
+    assert isinstance(config, ClientConfig)
+    assert isinstance(config.backend, WebBackendConfig)
+    assert isinstance(config.backend.request, WebRequestOptions)
+    assert config.backend.session.keepalive_interval == 600.0
+    assert set(seen) == {"profile", "config"}
+
+
+async def test_default_factory_threads_explicit_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    @contextlib.asynccontextmanager
+    async def fake_context() -> AsyncIterator[MagicMock]:
+        yield MagicMock()
+
+    def spy_from_storage(**kwargs: object):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return fake_context()
+
+    monkeypatch.setattr(NotebookLMClient, "from_storage", staticmethod(spy_from_storage))
+    async with Client(create_server(profile="work", backend="android")):
+        pass
+
+    assert seen["profile"] == "work"
+    config = seen["config"]
+    assert isinstance(config, ClientConfig)
+    assert isinstance(config.backend, AndroidBackendConfig)
+    assert set(seen) == {"profile", "config"}
+
+
+async def test_backend_does_not_reparameterize_injected_factory(
+    mock_client: MagicMock,
+) -> None:
+    calls = 0
+
+    @contextlib.asynccontextmanager
+    async def factory() -> AsyncIterator[MagicMock]:
+        nonlocal calls
+        calls += 1
+        yield mock_client
+
+    async with Client(create_server(backend="android", client_factory=factory)):
+        pass
+
+    assert calls == 1
+
+
+async def test_get_client_reads_appstate() -> None:
     """get_client unwraps the AppState bound in the request lifespan context."""
     sentinel = MagicMock()
-    state = AppState(client=sentinel)
+    state = AppState(client_provider=ClientProvider.of(sentinel))
 
     ctx = MagicMock()
     ctx.request_context.lifespan_context = state
-    assert get_client(ctx) is sentinel
+    assert await get_client(ctx) is sentinel
 
 
 def test_get_cancelled_research_returns_live_appstate_tracker() -> None:
     """get_cancelled_research returns the live tracker on the bound AppState so
     research_cancel/research_status share cancel intent (issue #1922, F9)."""
-    state = AppState(client=MagicMock())
+    state = AppState(client_provider=ClientProvider.of(MagicMock()))
     ctx = MagicMock()
     ctx.request_context.lifespan_context = state
 

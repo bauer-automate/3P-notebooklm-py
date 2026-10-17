@@ -5,16 +5,26 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 from notebooklm._app.generate import GenerationExecutionResult
 from notebooklm._app.generate_retry import GenerationOutcome
+from notebooklm._app.generation_requests import (
+    UNSET,
+    AudioGenerationRequest,
+    GenerationKind,
+    ReportGenerationRequest,
+    VideoGenerationRequest,
+    generation_option_choices,
+)
 from notebooklm._types.artifacts import GenerationState
 from notebooklm.server._pending import PendingRegistry
 from notebooklm.server.routes import artifacts as artifacts_route
 from notebooklm.server.routes.artifacts import DOWNLOAD_SPECS, GENERATE_TYPES
+from notebooklm.types import ArtifactDownloadRequest, ArtifactType
 
 from .fakes import FakeClient, make_artifact
 
@@ -49,6 +59,57 @@ def test_generate_valid_body_still_202(authed_client: TestClient) -> None:
     assert resp.status_code == 202
 
 
+@pytest.mark.parametrize(
+    "body,request_type,source_ids,language",
+    [
+        ({"type": "audio"}, AudioGenerationRequest, UNSET, "en"),
+        ({"type": "audio", "source_ids": []}, AudioGenerationRequest, UNSET, "en"),
+        (
+            {"type": "audio", "source_ids": ["source-1"], "language": "fr"},
+            AudioGenerationRequest,
+            ("source-1",),
+            "fr",
+        ),
+        ({"type": "video"}, VideoGenerationRequest, UNSET, "en"),
+        ({"type": "report"}, ReportGenerationRequest, UNSET, "en"),
+    ],
+)
+def test_generate_builds_typed_requests_with_preserved_rest_defaults(
+    authed_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    body: dict[str, object],
+    request_type: type[object],
+    source_ids: object,
+    language: str,
+) -> None:
+    """REST normalizes transport defaults before constructing the typed union."""
+    captured: list[object] = []
+
+    async def execute(request, *_args, **_kwargs):
+        captured.append(request)
+        return GenerationExecutionResult(
+            kind=request.kind,
+            generation=GenerationOutcome(status="pending", kind=request.kind, task_id="task-1"),
+        )
+
+    monkeypatch.setattr(artifacts_route.generate_core, "execute_generation", execute)
+    response = authed_client.post("/v1/notebooks/nb-1/artifacts", json=body)
+
+    assert response.status_code == 202
+    assert len(captured) == 1
+    request = captured[0]
+    assert isinstance(request, request_type)
+    if source_ids is UNSET:
+        assert request.source_ids is UNSET
+    else:
+        assert request.source_ids == source_ids
+    assert request.language == language
+    if isinstance(request, VideoGenerationRequest):
+        assert request.style_prompt is None
+    if isinstance(request, ReportGenerationRequest):
+        assert request.extra_instructions is None
+
+
 def test_poll_known_task_not_found_is_200_pending(
     authed_client: TestClient, fake_client: FakeClient
 ) -> None:
@@ -71,6 +132,65 @@ def test_poll_transitions_to_completed(authed_client: TestClient, fake_client: F
     done = authed_client.get(f"/v1/notebooks/nb-1/artifacts/{task_id}")
     assert done.status_code == 200
     assert done.json()["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        GenerationState.PENDING,
+        GenerationState.IN_PROGRESS,
+        GenerationState.UNKNOWN,
+        GenerationState.SUGGESTED,
+        GenerationState.PENDING_REVIEW,
+    ],
+    ids=lambda s: s.value,
+)
+def test_poll_still_running_states_keep_the_task_in_the_registry(
+    authed_client: TestClient, fake_client: FakeClient, state: GenerationState
+) -> None:
+    """#2127: none of these says generation finished, so none may evict the task.
+
+    Evicting on a non-terminal state would make the *next* benign NOT_FOUND poll
+    (post-create lag, transient delisting) 404 instead of projecting — so the
+    second half of each case is the one that matters. ``PENDING`` / ``IN_PROGRESS``
+    are included because the route stopped naming them once it switched to
+    ``is_terminal``; they must reach the same branch as the rare states.
+    """
+    task_id = _generate_audio(authed_client)
+    fake_client.poll_states[("nb-1", task_id)] = state
+    resp = authed_client.get(f"/v1/notebooks/nb-1/artifacts/{task_id}")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == state.value
+
+    fake_client.poll_states[("nb-1", task_id)] = GenerationState.NOT_FOUND
+    lagged = authed_client.get(f"/v1/notebooks/nb-1/artifacts/{task_id}")
+    assert lagged.status_code == 200, f"{state.value} evicted the task from the registry"
+    assert lagged.json()["status"] == "not_found"
+
+
+@pytest.mark.parametrize("state", ["completed", "failed", "removed"])
+def test_poll_terminal_states_do_evict_the_task_from_the_registry(
+    authed_client: TestClient, fake_client: FakeClient, state: str
+) -> None:
+    """The mirror of the test above: a terminal poll MUST drop the registry entry.
+
+    Without this, ``pending.drop`` could become a no-op (or a refactor could
+    return before reaching it) and every other server test would stay green,
+    while a finished task's id resolved 200 forever instead of 404ing once the
+    post-generate lag window is over.
+
+    Passing the state as a plain ``str`` also exercises the route's
+    raw-string-permissive path — ``GenerationStatus.status`` is documented to
+    accept one, and the route's ``is_terminal`` check resolves by hashing.
+    """
+    task_id = _generate_audio(authed_client)
+    fake_client.poll_states[("nb-1", task_id)] = state
+    authed_client.get(f"/v1/notebooks/nb-1/artifacts/{task_id}")
+
+    # Registry entry is gone, so a later NOT_FOUND is an unknown id, not a lag.
+    fake_client.poll_states[("nb-1", task_id)] = GenerationState.NOT_FOUND
+    after = authed_client.get(f"/v1/notebooks/nb-1/artifacts/{task_id}")
+    assert after.status_code == 404, f"{state} left the task in the pending registry"
 
 
 def test_poll_removed_is_410(authed_client: TestClient, fake_client: FakeClient) -> None:
@@ -99,6 +219,8 @@ def test_download_completed_artifact_streams_bytes(
     resp = authed_client.post("/v1/notebooks/nb-1/artifacts/download", json={"type": "audio"})
     assert resp.status_code == 200
     assert resp.content == fake_client.download_bytes
+    assert fake_client.last_download_request == ArtifactDownloadRequest("nb-1", ArtifactType.AUDIO)
+    assert fake_client.downloaded_selections == list(fake_client.prepared_downloads)
 
 
 def test_download_audio_advertises_m4a_and_audio_mp4(
@@ -126,6 +248,8 @@ def test_download_not_ready_is_409(authed_client: TestClient) -> None:
     # No artifacts exist → NO_ARTIFACTS → 409, not 500.
     resp = authed_client.post("/v1/notebooks/nb-1/artifacts/download", json={"type": "audio"})
     assert resp.status_code == 409
+    assert "notebooklm " not in resp.text
+    assert "--" not in resp.text
 
 
 def test_download_caller_path_field_is_ignored(
@@ -251,6 +375,10 @@ def test_download_pptx_is_not_served_as_pdf(
         resp.headers["content-type"]
         == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     )
+    assert fake_client.last_download_request == ArtifactDownloadRequest(
+        "nb-1", ArtifactType.SLIDE_DECK, "pptx"
+    )
+    assert fake_client.downloaded_selections[0].representation == "pptx"
 
 
 def test_download_unexpected_output_path_is_rejected(
@@ -284,9 +412,7 @@ def test_cleanup_missing_path_is_noop(tmp_path: object) -> None:
 
 def test_generation_payload_mind_map_returns_inline() -> None:
     # A mind-map renders synchronously: no task_id, the map is inlined.
-    result = GenerationExecutionResult(
-        kind="mind-map", display_name="Mind map", mind_map={"root": 1}
-    )
+    result = GenerationExecutionResult(kind="mind-map", mind_map={"root": 1})
     payload = artifacts_route._generation_payload("nb-1", result, PendingRegistry())
     assert payload["mind_map"] == {"root": 1}
     assert "task_id" not in payload
@@ -294,7 +420,7 @@ def test_generation_payload_mind_map_returns_inline() -> None:
 
 def test_generation_payload_without_outcome() -> None:
     # No generation outcome and no mind map → bare {notebook_id, kind}.
-    result = GenerationExecutionResult(kind="audio", display_name="Audio", generation=None)
+    result = GenerationExecutionResult(kind="audio", generation=None)
     payload = artifacts_route._generation_payload("nb-1", result, PendingRegistry())
     assert payload == {"notebook_id": "nb-1", "kind": "audio"}
 
@@ -302,8 +428,8 @@ def test_generation_payload_without_outcome() -> None:
 def test_generation_payload_outcome_without_task_id_is_not_recorded() -> None:
     # A falsy task_id is projected but never recorded in the pending registry.
     pending = PendingRegistry()
-    outcome = GenerationOutcome(status="ok", artifact_type="audio", task_id="")
-    result = GenerationExecutionResult(kind="audio", display_name="Audio", generation=outcome)
+    outcome = GenerationOutcome(status="completed", kind="audio", task_id="")
+    result = GenerationExecutionResult(kind="audio", generation=outcome)
     payload = artifacts_route._generation_payload("nb-1", result, pending)
     assert payload["task_id"] == ""
     assert not pending.knows("nb-1", "")
@@ -575,6 +701,7 @@ def test_get_prompt_returns_stored_prompt(
         "artifact_id": "a1",
         "prompt": "Summarize the sources",
     }
+    assert fake_client.last_prompt_require_complete is True
 
 
 def test_get_prompt_null_is_200_not_404(authed_client: TestClient, fake_client: FakeClient) -> None:
@@ -598,6 +725,10 @@ def test_generate_wrong_kind_option_is_400(authed_client: TestClient) -> None:
         "/v1/notebooks/nb-1/artifacts", json={"type": "audio", "orientation": "landscape"}
     )
     assert resp.status_code == 400
+    assert resp.json()["error"]["message"] == (
+        "option 'orientation' is not valid for generation kind 'audio'; "
+        "this kind accepts ['audio_format', 'audio_length']"
+    )
 
 
 def test_generate_optionless_kind_rejects_any_option(authed_client: TestClient) -> None:
@@ -655,67 +786,39 @@ def test_generate_mind_map_forwards_instructions(
     assert fake_client.last_mind_map_generate["instructions"] == "group by theme"
 
 
-def test_kind_options_match_core_maps() -> None:
-    """The REST per-kind option table is pinned to the neutral core's choice maps.
-
-    Duplicated (the server layer must not import the core privates) but pinned so
-    a core-map change surfaces here — the same guardrail the MCP ``_KIND_OPTIONS``
-    table carries.
-    """
-    import notebooklm._app.generate_plans as gp
-    from notebooklm.server.routes.artifacts import _KIND_OPTIONS
-
-    assert _KIND_OPTIONS["audio"]["audio_format"] == tuple(gp._AUDIO_FORMAT_MAP)
-    assert _KIND_OPTIONS["audio"]["audio_length"] == tuple(gp._AUDIO_LENGTH_MAP)
-    assert _KIND_OPTIONS["video"]["video_format"] == tuple(gp._VIDEO_FORMAT_MAP)
-    assert _KIND_OPTIONS["video"]["style"] == tuple(gp._VIDEO_STYLE_MAP)
-    assert _KIND_OPTIONS["slide-deck"]["deck_format"] == tuple(gp._SLIDE_FORMAT_MAP)
-    assert _KIND_OPTIONS["slide-deck"]["deck_length"] == tuple(gp._SLIDE_LENGTH_MAP)
-    assert _KIND_OPTIONS["quiz"]["quantity"] == tuple(gp._QUIZ_QUANTITY_MAP)
-    assert _KIND_OPTIONS["quiz"]["difficulty"] == tuple(gp._QUIZ_DIFFICULTY_MAP)
-    assert _KIND_OPTIONS["flashcards"]["quantity"] == tuple(gp._QUIZ_QUANTITY_MAP)
-    assert _KIND_OPTIONS["flashcards"]["difficulty"] == tuple(gp._QUIZ_DIFFICULTY_MAP)
-    assert _KIND_OPTIONS["infographic"]["orientation"] == tuple(gp._INFOGRAPHIC_ORIENTATION_MAP)
-    assert _KIND_OPTIONS["infographic"]["detail"] == tuple(gp._INFOGRAPHIC_DETAIL_MAP)
-    assert _KIND_OPTIONS["infographic"]["style"] == tuple(gp._INFOGRAPHIC_STYLE_MAP)
-    assert _KIND_OPTIONS["report"]["report_format"] == tuple(gp._REPORT_FORMAT_MAP)
-
-
-def test_kind_options_exact_mcp_parity() -> None:
-    """The REST and MCP ``_KIND_OPTIONS`` tables must be byte-for-byte identical.
-
-    Both are duplicated from the neutral core (the CLI/MCP/server boundary forbids
-    importing the core privates); pinning them EQUAL to each other guarantees the
-    two agent surfaces validate the SAME per-kind options with the SAME choices.
-    """
+def test_adapters_do_not_define_generation_semantic_tables() -> None:
+    """REST and MCP consume the neutral authority instead of duplicating it."""
     import pytest
 
     pytest.importorskip("fastmcp")  # MCP tools need the ``mcp`` extra
-    from notebooklm.mcp.tools.studio import _KIND_OPTIONS as mcp_options
-    from notebooklm.server.routes.artifacts import _KIND_OPTIONS as rest_options
+    from notebooklm.mcp.tools import studio
 
-    assert rest_options == mcp_options
+    assert not hasattr(artifacts_route, "_KIND_OPTIONS")
+    assert not hasattr(studio, "_KIND_OPTIONS")
 
 
 def test_kind_options_cover_every_generate_type() -> None:
-    """Every ``GENERATE_TYPES`` kind has a ``_KIND_OPTIONS`` entry, and the
+    """Every ``GENERATE_TYPES`` kind has a neutral option-contract entry, and the
     per-kind-only keys (``map_kind``, ``style_prompt``) + optionless kinds are
     exactly as expected — so a new generate kind can't silently ship without its
     option contract."""
-    from notebooklm.server.routes.artifacts import _KIND_OPTIONS
+
+    kind_options = {
+        kind: generation_option_choices(cast(GenerationKind, kind)) for kind in GENERATE_TYPES
+    }
 
     # Exhaustive over the generate surface (no missing / extra kinds).
-    assert set(_KIND_OPTIONS) == set(GENERATE_TYPES)
+    assert set(kind_options) == set(GENERATE_TYPES)
     # ``map_kind`` is validated at the boundary ONLY (no core map) — it must exist
     # on mind-map and nowhere else.
-    assert "map_kind" in _KIND_OPTIONS["mind-map"]
-    assert all("map_kind" not in opts for k, opts in _KIND_OPTIONS.items() if k != "mind-map")
+    assert "map_kind" in kind_options["mind-map"]
+    assert all("map_kind" not in opts for k, opts in kind_options.items() if k != "mind-map")
     # ``style_prompt`` (free text, choices None) belongs to video only.
-    assert _KIND_OPTIONS["video"]["style_prompt"] is None
-    assert all("style_prompt" not in opts for k, opts in _KIND_OPTIONS.items() if k != "video")
+    assert kind_options["video"]["style_prompt"] is None
+    assert all("style_prompt" not in opts for k, opts in kind_options.items() if k != "video")
     # Optionless kinds carry an explicit empty map (so a stray option is rejected).
-    assert _KIND_OPTIONS["cinematic-video"] == {}
-    assert _KIND_OPTIONS["data-table"] == {}
+    assert kind_options["cinematic-video"] == {}
+    assert kind_options["data-table"] == {}
 
 
 def test_download_spec_exhaustiveness() -> None:

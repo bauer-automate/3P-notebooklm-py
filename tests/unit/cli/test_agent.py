@@ -75,7 +75,7 @@ class TestAgentTemplates:
         content = agent_templates_module.get_agent_source_content("claude")
 
         assert content is not None
-        assert "NotebookLM Automation" in content
+        assert "Gemini Notebook Automation" in content
 
     def test_codex_reads_repo_root_agents_when_present(self, tmp_path):
         """Codex prefers the repo-root AGENTS.md when running from a checkout."""
@@ -128,7 +128,7 @@ class TestSkillSourceFiles:
         files = agent_templates_module.get_skill_source_files()
 
         assert files is not None
-        assert "NotebookLM Automation" in files["SKILL.md"]
+        assert "Gemini Notebook Automation" in files["SKILL.md"]
         assert "references/setup.md" in files
         assert "references/command-reference.md" in files
         assert "references/workflows.md" in files

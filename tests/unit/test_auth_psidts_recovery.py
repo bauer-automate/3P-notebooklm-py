@@ -27,6 +27,7 @@ import notebooklm.paths as _nb_paths
 from notebooklm import auth as auth_module
 from notebooklm._auth import cookies as auth_cookies
 from notebooklm._auth import psidts_recovery
+from notebooklm._auth.keepalive import RotationState
 
 _ROTATE_URL_RE = re.compile(r"^https://accounts\.google\.com/RotateCookies$")
 
@@ -203,16 +204,14 @@ class TestRecoveryPreconditions:
         assert psidts_recovery._recover_psidts_inline(storage_path) is False
 
     @pytest.mark.no_default_keepalive_mock
-    def test_throttle_claim_failure_skips_post(self, tmp_path, monkeypatch, httpx_mock: HTTPXMock):
+    def test_throttle_claim_failure_skips_post(self, tmp_path, httpx_mock: HTTPXMock):
         """A claimed rotation slot prevents the POST from firing."""
         storage_path = tmp_path / "storage_state.json"
         _write_storage(storage_path, _RECOVERABLE_COOKIES)
 
-        # Force ``_try_claim_rotation`` to deny the claim, simulating a sibling
-        # caller having just claimed the slot. Patch the local alias on
-        # ``psidts_recovery`` (ADR-0007 object-target form) — the recovery path
-        # resolves the symbol via this module's globals at call time.
-        monkeypatch.setattr(psidts_recovery, "_try_claim_rotation", lambda _path: False)
+        # Claim the real process-owned slot first, exactly as a sibling caller
+        # would. The recovery attempt must observe the recent claim and stop.
+        assert RotationState.process_default().try_claim(storage_path) is True
 
         assert psidts_recovery._recover_psidts_inline(storage_path) is False
         assert _rotate_requests(httpx_mock) == []
@@ -241,7 +240,12 @@ class TestPsidtsExpiryGate:
     """
 
     _PAST = 1_000_000_000  # 2001-09-09, comfortably in the past
-    _FUTURE = 99_999_999_999  # year 5138, comfortably in the future
+    # Year 2100, comfortably in the future. Matches the project-wide
+    # "far future" sentinel used elsewhere (e.g. tests/unit/cli/_session_helpers.py)
+    # rather than a value that would exceed cookie_semantics.py's
+    # millisecond-plausibility bound (_MAX_PLAUSIBLE_EXPIRY_SECONDS, year 3000)
+    # and get misread as a millisecond timestamp.
+    _FUTURE = 4_102_444_800
 
     @staticmethod
     def _with_psidts(*, expires) -> list[dict]:
@@ -734,7 +738,7 @@ class TestPsidtsExpiryGate:
                     "value": "rotated",
                     "domain": ".google.com",
                     "path": "/",
-                    "expires": 99_999_999_999,
+                    "expires": 4_102_444_800,
                 },
             ],
         )
@@ -975,7 +979,7 @@ class TestRecoveryConcurrentCasRejection:
             "value": "sibling_fresh_value",
             "domain": ".google.com",
             "path": "/",
-            "expires": 99_999_999_999,  # comfortably in the future
+            "expires": 4_102_444_800,  # comfortably in the future
         }
         self._install_concurrent_write(
             httpx_mock,
@@ -1499,7 +1503,7 @@ class TestMalformedExpiresAcrossLoaders:
                     "value": "fresh",
                     "domain": ".google.com",
                     "path": "/",
-                    "expires": 99_999_999_999,
+                    "expires": 4_102_444_800,
                 }
             )
         rows.append(
@@ -1792,7 +1796,7 @@ class TestEdgeCases:
                 "value": "healed_by_sibling",
                 "domain": ".google.com",
                 "path": "/",
-                "expires": 99_999_999_999,
+                "expires": 4_102_444_800,
             }
         ]
         _stage_storage_reads(

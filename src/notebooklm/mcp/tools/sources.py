@@ -9,9 +9,10 @@ the typed result to the wire with :func:`to_jsonable`.
 flow through ``_app.source_add`` (``build_source_add_plan`` + ``execute_source_add``);
 ``drive`` flows through ``_app.source_mutations.execute_source_add_drive`` (the
 neutral ``source_add`` core has no Drive path). It also has a batch mode
-(``urls=[...]``) that adds many http(s) URLs sequentially and returns an explicit
-per-item result list. ``source_wait`` waits for a subset when ``sources`` is
-given, one source when ``source`` is given, else every source in the notebook.
+(``urls=[...]``) that sends many http(s) URLs in one batch-capable ``ADD_SOURCE``
+write and returns an explicit per-item result list. ``source_wait`` waits for a
+subset when ``sources`` is given, one source when ``source`` is given, else every
+source in the notebook.
 
 This module imports NO ``click`` / ``rich`` / ``cli``.
 """
@@ -19,11 +20,12 @@ This module imports NO ``click`` / ``rich`` / ``cli``.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from contextlib import ExitStack
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import Context
 from fastmcp.server.dependencies import get_http_request
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 
 from ..._app import labels as labels_core
@@ -32,23 +34,51 @@ from ..._app import source_content as content_core
 from ..._app import source_listing as listing_core
 from ..._app import source_mutations as mut_core
 from ..._app import source_wait as wait_core
+from ..._app.resolve import FULL_ID_PATTERN, validate_id
 from ..._app.serialize import to_jsonable
-from ..._app.source_batch import MAX_BATCH_URLS, batch_item_is_fatal
+from ..._app.source_batch import (
+    MAX_BATCH_URLS,
+    remap_source_batch_item,
+    unattempted_source_batch_item,
+    unknown_source_batch_item,
+)
 from ..._app.views import source_view as _source_view
+from ..._source.batch import preserve_batch_call_failure, preserve_batch_projection_failure
 from ...exceptions import (
+    RPCError,
     SourceNotFoundError,
     ValidationError,
 )
+from ...outcomes import SourceBatchItemOutcome
 from ...types import source_status_to_str
 from ...urls import is_youtube_url
+from .._batch import project_source_batch_item
 from .._coerce import coerce_list
-from .._confirm import DESTRUCTIVE, READ_ONLY, needs_confirmation
+from .._confirm import (
+    DESTRUCTIVE,
+    READ_ONLY,
+    confirmed_name_deprecation,
+    needs_confirmation,
+    with_confirmation_deprecation,
+)
 from .._context import get_client, get_file_transfer
 from .._errors import mcp_errors, tool_error_payload
 from .._paginate import DEFAULT_LIMIT, paginate
-from .._resolve import resolve_notebook, resolve_source, resolve_sources
+from .._resolve import (
+    partition_source_refs,
+    reject_non_canonical_id,
+    resolve_notebook,
+    resolve_source,
+    resolve_sources,
+)
 from ._content_sanity import _annotate_thin_warnings
-from ._fileupload import _add_bytes, _add_one, _broker_upload, _decode_upload_b64
+from ._fileupload import (
+    _add_bytes,
+    _add_one,
+    _broker_upload,
+    _decode_upload_b64,
+    _spool_stdio_upload,
+)
 from ._passthrough import passthrough_child_id
 from ._preview import title_for_id
 from ._waitagg import _aggregate_wait_outcomes, _wait_all_sources
@@ -95,7 +125,8 @@ def _validate_drive_mime(source_type: str, mime_type: str | None) -> None:
         )
 
 
-# ``_source_view`` (Source → dict with string ``kind`` / ``status_label`` labels)
+# ``_source_view`` (Source → dict with string ``kind`` / ``status_label`` /
+# ``drive_status_label`` labels plus the ``is_drive_degraded`` verdict)
 # now lives in the shared, transport-neutral ``_app.views`` so the REST source
 # list/get routes emit the identical enriched shape (Option B). Imported above
 # under its historical private name so the tool bodies below are unchanged.
@@ -116,8 +147,20 @@ def _json_tool_result(payload: dict[str, Any]) -> ToolResult:
 
 
 #: Fields kept in a ``source_list(detail="compact")`` roster row — a strict subset of
-#: :func:`_source_view`'s output, dropping ``url`` / the raw ``status`` int / ``_type_code``.
-_COMPACT_SOURCE_FIELDS = ("id", "title", "kind", "status_label", "created_at")
+#: :func:`_source_view`'s output, dropping ``url``, the raw ``status`` /
+#: ``drive_status`` / ``_type_code`` ints, and the ``is_drive_degraded`` verdict.
+#: The rule is "labels, not raw codes": ``drive_status_label`` is kept because the
+#: roster is the listing an agent actually pages through, and #2111 exists so a
+#: Drive source that is stale while ``status_label`` still reads ``ready`` is
+#: visible there rather than only in the full projection.
+_COMPACT_SOURCE_FIELDS = (
+    "id",
+    "title",
+    "kind",
+    "status_label",
+    "drive_status_label",
+    "created_at",
+)
 
 
 def _source_compact(source: Source) -> dict[str, Any]:
@@ -125,11 +168,33 @@ def _source_compact(source: Source) -> dict[str, Any]:
 
     A strict subset of :func:`_source_view` — keeping only
     :data:`_COMPACT_SOURCE_FIELDS` — so a discovery listing stays low-token with no
-    extra read while ``kind`` / ``status_label`` / ISO ``created_at`` stay byte-identical
-    to the full projection (same single source of truth, no re-derivation).
+    extra read while ``kind`` / ``status_label`` / ``drive_status_label`` / ISO
+    ``created_at`` stay byte-identical to the full projection (same single source
+    of truth, no re-derivation).
     """
     view = _source_view(source)
     return {k: view.get(k) for k in _COMPACT_SOURCE_FIELDS}
+
+
+def _title_override_miss(final_title: str | None, requested_title: str | None) -> str | None:
+    """Return the requested title when a post-add rename did NOT stick, else ``None``.
+
+    The single title-miss predicate for both ``source_add`` tails — the immediate
+    ``wait=False`` projection (:func:`_add_result_payload`) and the ``wait=True``
+    ready check (:func:`_wait_after_add`, #1989). Kept in one place because the
+    two apply it to titles read at different moments (the add response vs the
+    final GET_NOTEBOOK read) and a forked comparison would drift.
+
+    A miss is only claimed when a non-blank title was actually requested; the
+    requested side is stripped (the client renames to the stripped form) while
+    the observed side is compared verbatim.
+    """
+    if not requested_title:
+        return None
+    requested = requested_title.strip()
+    if not requested or final_title == requested:
+        return None
+    return requested
 
 
 def _add_result_payload(
@@ -143,7 +208,8 @@ def _add_result_payload(
 
     Replaces ``base["source"]`` (the bare ``to_jsonable`` source dict) with the
     label-enriched :func:`_source_view` so ``source_add`` output reaches parity
-    with ``source_list`` / ``source_read`` (``kind`` + ``status_label``).
+    with ``source_list`` / ``source_read`` (``kind`` + ``status_label`` +
+    ``drive_status_label`` + ``is_drive_degraded``).
 
     Echoes the resolved canonical ``notebook_id`` (the added source itself carries
     no ``notebook_id`` field) so a caller that added by notebook *name* gets the id
@@ -173,7 +239,7 @@ def _add_result_payload(
             "(status_label='error'). It persists as an incomplete row — delete it "
             "with source_delete, or list failures via source_list(status='error')."
         )
-    elif requested_title and (requested := requested_title.strip()) and source.title != requested:
+    elif (requested := _title_override_miss(source.title, requested_title)) is not None:
         # Best-effort rename didn't stick — tell the caller instead of silently
         # returning the upstream title (the original #1960 footgun).
         base["title_override_applied"] = False
@@ -191,7 +257,7 @@ def register(mcp: Any) -> None:
     async def source_list(
         ctx: Context,
         notebook: str,
-        status: Literal["ready", "processing", "error", "preparing"] | None = None,
+        status: Literal["unknown", "processing", "ready", "error", "preparing"] | None = None,
         label: str | None = None,
         detail: Literal["compact", "full"] = "full",
         limit: int = DEFAULT_LIMIT,
@@ -200,15 +266,21 @@ def register(mcp: Any) -> None:
         """List a notebook's sources. Accepts a notebook name or ID.
 
         ``detail`` (default ``full``): ``full`` gives each source's metadata plus string
-        ``kind`` / ``status_label`` labels; ``compact`` returns only ``id`` / ``title``
-        / ``kind`` / ``status_label`` / ``created_at`` — a low-token roster.
+        ``kind`` / ``status_label`` / ``drive_status_label`` labels; ``compact`` returns
+        only ``id`` / ``title`` / ``kind`` / ``status_label`` / ``drive_status_label`` /
+        ``created_at`` — a low-token roster.
+
+        ``drive_status_label`` is a separate axis, ``null`` on non-Drive sources:
+        a Drive file that was deleted or unshared keeps reading
+        ``status_label="ready"`` (ingestion did finish) while this turns
+        ``deleted`` / ``inaccessible`` / ``syncing``, so answers may be stale.
 
         Pass ``status`` to list only sources whose ``status_label`` matches (``error`` =
         a broken import's ghost row). Pass ``label`` (name or ID) to restrict to that
         label's members; composes with ``status``.
         """
-        client = get_client(ctx)
         with mcp_errors():
+            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
             sources = await listing_core.fetch_sources(
                 client, nb_id, label_filter=label, label_resolver=labels_core.resolve_label_id
@@ -238,7 +310,8 @@ def register(mcp: Any) -> None:
         * ``summary`` — a tiny AI digest for low-token triage:
           ``{notebook_id, source_id, summary, keywords}``. Cheap to fan out across
           many sources before deciding which to pull in full.
-        * ``full`` (DEFAULT) — the source metadata (incl. string ``kind``/``status_label``)
+        * ``full`` (DEFAULT) — the source metadata (incl. ``kind``/``status_label``/
+          ``drive_status_label``)
           plus the extracted ``content``, the full ``char_count``, and a
           ``truncated`` flag. ``content`` is ALWAYS bounded: omitting ``max_chars``
           caps it at the first 10,000 chars; raise ``max_chars`` and/or page with
@@ -251,7 +324,6 @@ def register(mcp: Any) -> None:
         ``detail="full"`` (ignored for ``summary``). Prefer ``chat_ask`` for
         querying large sources rather than pulling the whole body.
         """
-        client = get_client(ctx)
         with mcp_errors():
             # Validate windowing args unconditionally — a bad value must error even
             # in ``summary`` mode (where they are ignored), never silently pass.
@@ -261,6 +333,7 @@ def register(mcp: Any) -> None:
                 raise ValidationError(f"max_chars must be >= 0; got {max_chars}")
             if offset < 0:
                 raise ValidationError(f"offset must be >= 0; got {offset}")
+            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
             src_id = await resolve_source(client, nb_id, source)
 
@@ -322,45 +395,130 @@ def register(mcp: Any) -> None:
         ctx: Context, notebook: str, source: str, new_title: str
     ) -> dict[str, Any]:
         """Rename a source. Accepts a notebook/source name or ID."""
-        client = get_client(ctx)
         with mcp_errors():
+            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
             src_id = await resolve_source(client, nb_id, source)
             result = await mut_core.execute_source_rename(
                 client,
-                mut_core.SourceRenamePlan(
-                    notebook_id=nb_id, source_id=src_id, new_title=new_title, json_output=False
-                ),
+                mut_core.SourceRenamePlan(notebook_id=nb_id, source_id=src_id, new_title=new_title),
                 resolve_source_id=passthrough_child_id,
             )
             return {"status": "renamed", **to_jsonable(result)}
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def source_delete(
-        ctx: Context, notebook: str, source: str, confirm: bool = False
+        ctx: Context,
+        notebook: str,
+        source: str | None = None,
+        sources: list[str] | str | None = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
-        """Delete a source (irreversible). Accepts a notebook/source name or ID.
-
-        Two-step confirmation: with ``confirm=False`` (default) it returns a
-        ``needs_confirmation`` preview of the resolved source without deleting;
-        call again with ``confirm=True`` to perform the delete.
+        """Delete sources. ``source`` XOR ``sources``. Preview: omit both.
+        Confirm with the preview's canonical ``notebook_id`` and source id(s).
         """
-        client = get_client(ctx)
         with mcp_errors():
-            nb_id = await resolve_notebook(client, notebook)
-            src_id = await resolve_source(client, nb_id, source)
-            if not confirm:
-                title = title_for_id(await client.sources.list(nb_id), src_id)
-                return needs_confirmation(
-                    {
-                        "action": "delete_source",
-                        "notebook_id": nb_id,
-                        "source_id": src_id,
-                        "title": title,
-                    }
+            # Input guards fire BEFORE any I/O (fail-fast, like source_wait):
+            # the mutual-exclusion error must not be masked by a notebook
+            # NOT_FOUND from ``resolve_notebook`` or by a per-source
+            # NOT_FOUND raised later.
+            coerced = coerce_list(sources)
+            if source is not None and coerced is not None:
+                raise ValidationError(
+                    "pass either 'source' (one) or 'sources' (a subset), not both"
                 )
-            await client.sources.delete(nb_id, src_id)
-            return {"status": "deleted", "notebook_id": nb_id, "source_id": src_id}
+            if coerced is not None and not coerced:
+                raise ValidationError(
+                    "'sources' was empty; omit it to delete a single source, or pass at least one source ref"
+                )
+            # Cap the explicit subset BEFORE resolution so a bad ref can't mask
+            # the cap (shares MAX_WAIT_SOURCE_IDS with source_wait / REST).
+            if coerced is not None and len(coerced) > wait_core.MAX_WAIT_SOURCE_IDS:
+                raise ValidationError(
+                    f"'sources' must contain at most {wait_core.MAX_WAIT_SOURCE_IDS} refs; "
+                    f"got {len(coerced)}. Delete a smaller subset."
+                )
+            if confirm and source is None and coerced is None:
+                raise ValidationError(
+                    "confirm=True requires the previewed source ids as 'sources' "
+                    "(or a single 'source'); omitting both would re-list and can "
+                    "delete sources that were never previewed"
+                )
+            if confirm and coerced is not None:
+                coerced = [validate_id(ref, "source") for ref in coerced]
+                if any(FULL_ID_PATTERN.fullmatch(ref) is None for ref in coerced):
+                    raise ValidationError(
+                        "confirm=True requires canonical source ids returned by the preview; "
+                        "names and prefixes can resolve to different sources"
+                    )
+            if coerced is not None:
+                for ref in coerced:
+                    reject_non_canonical_id(ref, "source")
+
+            client = await get_client(ctx)
+
+            # Fast-path: single-id ``source=`` keeps the LEGACY wire shape
+            # (``status`` + ``source_id`` + ``notebook_id``) so existing
+            # callers don't have to learn the bulk aggregate — only
+            # ``sources=`` and the no-arg branch use the new shape.
+            if source is not None and coerced is None:
+                nb_id = await resolve_notebook(client, notebook)
+                src_id = await resolve_source(client, nb_id, source)
+                if not confirm:
+                    title = title_for_id(await client.sources.list(nb_id), src_id)
+                    return needs_confirmation(
+                        {
+                            "action": "delete_source",
+                            "notebook_id": nb_id,
+                            "source_id": src_id,
+                            "title": title,
+                        }
+                    )
+                await client.sources.delete(nb_id, src_id)
+                return with_confirmation_deprecation(
+                    {"status": "deleted", "notebook_id": nb_id, "source_id": src_id},
+                    confirmed_name_deprecation(notebook, source),
+                )
+
+            nb_id = await resolve_notebook(client, notebook)
+            snapshot = await client.sources.list(nb_id)
+
+            if coerced is None:
+                src_ids = [s.id for s in snapshot]
+                not_found: list[dict[str, str]] = []
+            else:
+                src_ids, not_found = partition_source_refs(coerced, snapshot)
+
+            if not confirm:
+                preview_items = [
+                    {"source_id": sid, "title": title_for_id(snapshot, sid)} for sid in src_ids
+                ]
+                preview: dict[str, Any] = {
+                    "action": "delete_sources",
+                    "notebook_id": nb_id,
+                    "count": len(preview_items),
+                    "sources": preview_items,
+                }
+                if not_found:
+                    preview["not_found"] = not_found
+                return needs_confirmation(preview)
+
+            if src_ids:
+                await client.sources.delete_many(nb_id, src_ids)
+            deleted = [{"source_id": sid} for sid in src_ids]
+            payload = {
+                "status": "deleted",
+                "notebook_id": nb_id,
+                "deleted": deleted,
+                "deleted_count": len(deleted),
+                "not_found": not_found,
+                "not_found_count": len(not_found),
+                "total_count": len(deleted) + len(not_found),
+            }
+            return with_confirmation_deprecation(
+                payload,
+                confirmed_name_deprecation(notebook, *(coerced or ())),
+            )
 
     @mcp.tool(annotations=READ_ONLY)
     async def source_wait(
@@ -395,7 +553,6 @@ def register(mcp: Any) -> None:
         an input error, distinct from a resolved source the backend reports missing /
         failed / slow (which lands in a bucket).
         """
-        client = get_client(ctx)
         with mcp_errors():
             # Non-finite + range guards (shared with the REST route so the two
             # can't drift); fail-fast before any I/O.
@@ -421,6 +578,7 @@ def register(mcp: Any) -> None:
                     f"got {len(coerced)}. Wait on a smaller subset."
                 )
 
+            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
 
             if coerced is not None:
@@ -473,17 +631,21 @@ def register(mcp: Any) -> None:
         timeout: float = 120.0,
         interval: float = 1.0,
         urls: list[str] | None = None,
+        fallback_fetch: bool = False,
+        cleanup_on_failure: bool = False,
     ) -> dict[str, Any] | ToolResult:
-        """Add a source to a notebook — single, batch, or in-channel bytes. Accepts a notebook name or ID.
+        """Add sources by notebook name or ID: single, batch, or in-channel bytes.
 
-        Call in exactly ONE of two modes:
+        Choose ONE mode:
 
         **Single mode** — pass ``source_type``; it selects the required input:
 
         * ``url`` / ``youtube`` — require ``url`` (``youtube`` → a YouTube link).
         * ``text``    — requires ``text``; ``title`` optional.
         * ``file``    — over **stdio**, requires ``path`` (a local path on the
-          server host). Over the **remote (http) connector** the host filesystem is
+          server host inside ``NOTEBOOKLM_MCP_ALLOWED_ROOTS``; host-path file-add
+          is off until that env is set — not ``$HOME`` and not ``~/.notebooklm``).
+          Over the **remote (http) connector** the host filesystem is
           unreachable, so it returns ``upload_required`` with two actor paths:
           ``human_upload`` (open the signed URL in a browser) and ``agent_upload`` (an
           agent POSTs the bytes as the raw body); ``agent_instructions`` gives the rule
@@ -512,30 +674,28 @@ def register(mcp: Any) -> None:
         (``status_label="error"`` + a ``warning``); ``source_wait`` also flags a READY web
         page with suspiciously thin text (dead link/soft-404/paywall).
 
-        **Batch mode** — pass ``urls`` (a list of **http/https URLs**, YouTube links
-        included) to add many in one call instead of one round-trip each. Each entry is
-        validated and added independently; the response is an explicit per-item list so
-        partial failure is never hidden::
+        Single web URLs support ``fallback_fetch=True``: eligible connection failures
+        become static text with ``fallback`` provenance (impersonate + markdown extras).
+        ``cleanup_on_failure=True`` additionally deletes the attributable failed stub
+        once its replacement is ready. Private fetch destinations are blocked.
 
-            {"notebook_id": …, "added": <int>, "failed": <int>,
-             "results": [{"input": "<url>", "status": "added", "source_id": …,
-                          "title": …, "status_label": …, "warning"?: …},
-                         {"input": "<url>", "status": "error",
-                          "error": {"code": …, "message": …, "retriable": …, "hint"?: …}}]}
+        **Batch mode** — pass ``urls`` (http/https, including YouTube). Returns
+        ``notebook_id``, ``added``/``failed`` counts and per-input ``results`` with
+        ``input``, ``status`` (added/error), source fields or an ``error`` object.
 
-        ``results`` is positional (``results[i]`` is for ``urls[i]``); ``status`` is
-        ``"added"`` or ``"error"`` (the ADD outcome). An ``"added"`` item also carries the
-        source's ``status_label`` and, when the add response already reflects a failed
-        import, an inline ``warning`` — same failure-signaling as single mode. A per-URL
-        **input** failure (bad URL / 404 / SSRF-blocked host) isolates as an ``error``
-        item; a **fatal** service failure (expired auth, rate limit, upstream 5xx) aborts
-        the whole call. Batch is URL-only: a non-URL entry (plain text, a local path,
-        ``file://``/``ftp://``) is reported as a per-item ``VALIDATION`` error. The
-        single-mode named inputs (incl. ``bytes_base64``/``filename``/``wait``) are not
-        valid with ``urls``; ``allow_internal`` applies to every entry.
+        ``results[i]`` corresponds to ``urls[i]`` and includes ``commit_state``
+        (confirmed/rejected/unknown/not_sent). Batch is URL-only; invalid entries are
+        not_sent errors. Escaping failures retain settled members as ``batch_outcome``.
+        Single-mode inputs and ``wait`` are invalid with ``urls``; ``allow_internal``
+        applies to every entry.
         """
-        client = get_client(ctx)
-        with mcp_errors():
+        with mcp_errors(), ExitStack() as upload_files:
+            if (fallback_fetch or cleanup_on_failure) and (
+                source_type != "url" or urls is not None
+            ):
+                raise ValidationError("Fallback options require a single web-page URL")
+            if cleanup_on_failure and not fallback_fetch:
+                raise ValidationError("cleanup_on_failure requires fallback_fetch")
             # Mode selection (fail-closed) BEFORE any notebook I/O, so a malformed
             # call never reaches notebooks.list. Exactly one of source_type / urls.
             if urls is not None and source_type is not None:
@@ -545,7 +705,9 @@ def register(mcp: Any) -> None:
             if urls is None and source_type is None:
                 raise ValidationError("provide 'source_type' (single add) or 'urls' (batch)")
             if urls is not None:
-                # Batch mode: reject single-mode scalars, then resolve + dispatch.
+                # Batch mode: reject every client-independent input error before
+                # joining the lazy open. A malformed call must return VALIDATION
+                # immediately even when authentication is slow or broken.
                 if wait:
                     raise ValidationError(
                         "'wait' is single-mode only; batch 'urls' adds are async — "
@@ -570,6 +732,7 @@ def register(mcp: Any) -> None:
                         f"urls must contain at most {MAX_BATCH_URLS} entries; got {len(urls)}. "
                         "Split into multiple source_add calls."
                     )
+                client = await get_client(ctx)
                 nb_id = await resolve_notebook(client, notebook)
                 return await _add_url_batch(client, nb_id, urls, allow_internal=allow_internal)
 
@@ -580,10 +743,9 @@ def register(mcp: Any) -> None:
             if source_type is None:  # pragma: no cover - unreachable given the mode guards
                 raise ValidationError("internal error: source_type unexpectedly None")
 
-            # The drive-mime and content-scalar-exclusivity checks below run BEFORE
-            # resolve_notebook, so these malformed calls never pay a notebook
-            # round-trip. (Content *presence* + the YouTube-host guard still run
-            # later, during dispatch — that ordering is unchanged by #1696.)
+            # The drive-mime, content-scalar-exclusivity, content-presence, and
+            # YouTube-host checks below run BEFORE the lazy open and
+            # resolve_notebook, so malformed calls pay no auth/network round-trip.
             #
             # ``mime_type`` deliberately stays a free-text ``str`` (NOT a ``Literal``):
             # it is DUAL-USE — for ``source_type="file"`` it carries an arbitrary,
@@ -618,6 +780,39 @@ def register(mcp: Any) -> None:
             # payload never pays a notebook round-trip (see _decode_upload_b64).
             raw = _decode_upload_b64(bytes_base64) if bytes_base64 is not None else None
 
+            # Finish the source-type-specific local validation before awaiting the
+            # lazy client. Otherwise expired credentials can mask an immediately
+            # actionable VALIDATION error as AUTH/NETWORK.
+            file_transfer = None
+            content = None
+            if raw is None and source_type == "file":
+                file_transfer = get_file_transfer(ctx)
+                if file_transfer is not None:
+                    # Remote connector: the upload is a separate request, so there
+                    # is no source for this call to wait on yet.
+                    if wait:
+                        raise ValidationError(
+                            "source_add cannot wait on a remote file signed-URL upload (the "
+                            "upload is a separate step); add without wait, then source_wait, "
+                            "or pass bytes_base64 for a tiny file"
+                        )
+                elif _is_http_transport():
+                    raise ValidationError(
+                        "remote file transfer is not configured; set "
+                        "NOTEBOOKLM_MCP_PUBLIC_URL on the server to enable it"
+                    )
+                else:
+                    content = _select_content(source_type, url=url, text=text, path=path)
+                    # Pin and copy before any await. Backends receive only the
+                    # private spool, so replacing the caller path cannot redirect I/O.
+                    content = str(upload_files.enter_context(_spool_stdio_upload(content)))
+            elif source_type == "drive":
+                if not document_id:
+                    raise ValidationError("source_type 'drive' requires 'document_id'")
+            elif raw is None:
+                content = _select_content(source_type, url=url, text=text, path=path)
+
+            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
 
             # In-channel bytes file-add (any transport): decode + spool + add, then
@@ -639,35 +834,20 @@ def register(mcp: Any) -> None:
                     src, to_jsonable(add_core.SourceAddResult(source=src)), notebook_id=nb_id
                 )
 
-            if source_type == "file":
-                cfg = get_file_transfer(ctx)
-                if cfg is not None:
-                    # Remote connector: broker a signed upload URL (the server path
-                    # is unreachable). A supplied `path` is accepted, not opened —
-                    # its basename seeds the default title. There is no source yet to
-                    # wait on — a caller wanting add+wait must use bytes_base64.
-                    if wait:
-                        raise ValidationError(
-                            "source_add cannot wait on a remote file signed-URL upload (the "
-                            "upload is a separate step); add without wait, then source_wait, "
-                            "or pass bytes_base64 for a tiny file"
-                        )
-                    return _broker_upload(cfg, nb_id, title=title, mime_type=mime_type, path=path)
-                if _is_http_transport():
-                    raise ValidationError(
-                        "remote file transfer is not configured; set "
-                        "NOTEBOOKLM_MCP_PUBLIC_URL on the server to enable it"
-                    )
-                # stdio: fall through to the existing local-path behavior below.
+            if file_transfer is not None:
+                # Remote connector: broker a signed upload URL (the server path
+                # is unreachable). A supplied `path` is accepted, not opened —
+                # its basename seeds the default title.
+                return _broker_upload(
+                    file_transfer, nb_id, title=title, mime_type=mime_type, path=path
+                )
 
             if source_type == "drive":
-                if not document_id:
-                    raise ValidationError("source_type 'drive' requires 'document_id'")
                 drive_result = await mut_core.execute_source_add_drive(
                     client,
                     mut_core.SourceAddDrivePlan(
                         notebook_id=nb_id,
-                        file_id=document_id,
+                        file_id=cast("str", document_id),
                         # Non-None + a valid choice, guaranteed by _validate_drive_mime above.
                         mime_type=mime_type,  # type: ignore[arg-type]
                         title=title or "",
@@ -681,6 +861,7 @@ def register(mcp: Any) -> None:
                         source_type="drive",
                         timeout=timeout,
                         interval=interval,
+                        requested_title=title,
                     )
                 return _add_result_payload(
                     drive_result.source,
@@ -689,7 +870,18 @@ def register(mcp: Any) -> None:
                     requested_title=title,
                 )
 
-            content = _select_content(source_type, url=url, text=text, path=path)
+            if content is None:  # pragma: no cover - raw/drive/remote branches returned above
+                raise ValidationError("internal error: source content unexpectedly missing")
+            fallback_metadata: dict[str, Any] = {}
+            fallback_options: dict[str, Any] = (
+                {
+                    "fallback_fetch": True,
+                    "cleanup_on_failure": cleanup_on_failure,
+                    "fallback_metadata": fallback_metadata,
+                }
+                if fallback_fetch
+                else {}
+            )
             src = await _add_one(
                 client,
                 nb_id,
@@ -698,19 +890,32 @@ def register(mcp: Any) -> None:
                 title=title,
                 mime_type=mime_type,
                 allow_internal=allow_internal,
+                **fallback_options,
             )
             if wait:
                 return await _wait_after_add(
-                    client, nb_id, src, source_type=source_type, timeout=timeout, interval=interval
+                    client,
+                    nb_id,
+                    src,
+                    source_type=source_type,
+                    timeout=timeout,
+                    interval=interval,
+                    # Same gating as the immediate tail below, so the two paths
+                    # cannot disagree about which types can miss (#1989).
+                    requested_title=title if source_type in ("url", "youtube") else None,
+                    fallback=fallback_metadata or None,
                 )
             # url/youtube re-derive the title server-side; surface a rename miss
             # (#1960). ``text`` honors ``title`` directly so it never mismatches.
-            return _add_result_payload(
+            payload = _add_result_payload(
                 src,
                 to_jsonable(add_core.SourceAddResult(source=src)),
                 notebook_id=nb_id,
                 requested_title=title if source_type in ("url", "youtube") else None,
             )
+            if fallback_metadata:
+                payload["fallback"] = fallback_metadata
+            return payload
 
 
 def _is_http_transport() -> bool:
@@ -821,13 +1026,11 @@ async def _add_url_batch(
 ) -> dict[str, Any]:
     """Add many http(s) URLs in one call, returning an explicit per-item result list.
 
-    The saving over N single ``source_add`` calls is the per-call MCP/agent
-    round-trip overhead: the URL adds themselves run **sequentially** here, on
-    purpose — concurrent bulk writes invite backend rate-limiting (CLAUDE.md
-    pitfall #4). A **fatal** failure (expired auth, ``RATE_LIMITED``, an upstream
-    5xx — classified by :func:`_app.source_batch.batch_item_is_fatal`, shared with
-    the REST route) is re-raised so the whole tool call fails at the top level,
-    letting the agent re-auth/retry; only per-URL 4xx-input failures isolate.
+    Valid entries are sent through the batch-capable ``ADD_SOURCE`` RPC once.
+    The backend returns successful rows in request order and silently omits
+    failed entries; the SDK batch seam reconciles those omissions with one
+    ERROR-status list and returns typed positional outcomes. The single-item
+    ``add_url`` path remains unchanged and keeps its precise probe/retry contract.
 
     Each entry is added with ``source_type="url"`` so :func:`add_core.validate_url`
     enforces the http/https scheme allowlist + SSRF guard per item; a non-URL entry
@@ -848,54 +1051,88 @@ async def _add_url_batch(
     adds return still-PROCESSING, so this often does not fire here and such sources
     surface the warning later via ``source_wait``.
     """
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, Any] | None] = [None] * len(urls)
+    settled: list[SourceBatchItemOutcome | None] = [None] * len(urls)
+    valid_positions: list[int] = []
+    valid_urls: list[str] = []
+    for index, entry in enumerate(urls):
+        try:
+            # Build the normal URL plan for validation only.  Executing it
+            # would call single-item add_url and defeat the true-batch path.
+            add_core.build_source_add_plan(
+                content=entry,
+                source_type="url",
+                title=None,
+                mime_type=None,
+                follow_symlinks=False,
+                validate_path=add_core.validate_upload_path,
+                looks_path_shaped=add_core.looks_like_path,
+                allow_internal=allow_internal,
+            )
+        except Exception as exc:  # noqa: BLE001 - positional input isolation
+            settled[index] = unattempted_source_batch_item(entry, exc, member=index)
+        else:
+            valid_positions.append(index)
+            valid_urls.append(entry)
+
+    try:
+        outcomes = (
+            await client.sources.add_urls_batch(notebook_id, valid_urls) if valid_urls else []
+        )
+    except BaseException as exc:
+        preserve_batch_call_failure(
+            exc,
+            local_items=settled,
+            valid_positions=valid_positions,
+            valid_inputs=valid_urls,
+        )
+        raise
+    for index, outcome in zip(valid_positions, outcomes, strict=False):
+        settled[index] = remap_source_batch_item(outcome, member=index)
+    if len(outcomes) != len(valid_urls):
+        error = RPCError(
+            "Internal source batch result count did not match validated input count",
+        )
+        for index in valid_positions[len(outcomes) :]:
+            settled[index] = unknown_source_batch_item(urls[index], error, member=index)
+        known = [item for item in settled if item is not None]
+        preserve_batch_projection_failure(error, known)
+        raise error
+
+    finalized_outcomes = [item for item in settled if item is not None]
+    if len(finalized_outcomes) != len(urls):
+        error = RPCError("Internal source batch settlement lost positional outcomes")
+        preserve_batch_projection_failure(error, finalized_outcomes)
+        raise error
+
     # Keep each added item's Source alongside its result dict so a synchronously-ready
     # web-page item can be annotated with the content-sanity warning after the loop,
     # concurrently — never N×fetch in-loop (reuses :func:`_annotate_thin_warnings`).
     ready_pairs: list[tuple[dict[str, Any], Source]] = []
-    for entry in urls:
-        try:
-            src = await _add_one(
-                client,
-                notebook_id,
-                entry,
-                source_type="url",
-                title=None,
-                mime_type=None,
-                allow_internal=allow_internal,
+    try:
+        for index, outcome in enumerate(finalized_outcomes):
+            projected, ready_source = project_source_batch_item(
+                outcome,
+                error_payload=tool_error_payload,
             )
-        except Exception as exc:  # noqa: BLE001 - per-item isolation; CancelledError (BaseException) still propagates
-            # A service/infra failure (auth expiry, rate limit, upstream 5xx) is not
-            # specific to this URL — re-raise so the tool call fails at the top level
-            # (letting the agent re-auth/retry) instead of masking it as a per-item
-            # "error" in a success envelope. Only per-URL 4xx-input failures isolate.
-            # Shares REST's classifier via _app.source_batch (#1871).
-            if batch_item_is_fatal(exc):
-                raise
-            results.append({"input": entry, "status": "error", "error": tool_error_payload(exc)})
-        else:
-            item: dict[str, Any] = {
-                "input": entry,
-                "status": "added",
-                "source_id": src.id,
-                "title": src.title,
-                "status_label": source_status_to_str(src.status),
-            }
-            if src.is_error:
-                item["warning"] = (
-                    "Import failed: the source row was created but processing errored "
-                    "(status_label='error'). Delete it with source_delete, or list "
-                    "failures via source_list(status='error')."
-                )
-            elif src.is_ready:
-                ready_pairs.append((item, src))
-            results.append(item)
-    # Annotate any synchronously-ready web-page items with a thin / soft-404 warning
-    # (concurrent; web-page-filtered; degrades any fetch failure to no warning).
-    await _annotate_thin_warnings(client, notebook_id, ready_pairs)
+            results[index] = projected
+            if ready_source is not None:
+                ready_pairs.append((projected, ready_source))
+        finalized = [item for item in results if item is not None]
+        if len(finalized) != len(urls):
+            raise RPCError(
+                "Internal source batch projection lost positional outcomes",
+            )
+        # Annotate any synchronously-ready web-page items with a thin / soft-404 warning
+        # (concurrent; web-page-filtered; degrades any ordinary fetch failure to no warning).
+        # Cancellation still propagates with the already-settled batch evidence attached.
+        await _annotate_thin_warnings(client, notebook_id, ready_pairs)
+    except BaseException as exc:
+        preserve_batch_projection_failure(exc, finalized_outcomes)
+        raise
     # Derive the tallies from `results` (single source of truth) rather than
     # maintaining parallel counters that must be kept in sync with each append.
-    added = sum(1 for item in results if item["status"] == "added")
+    added = sum(1 for item in finalized if item["status"] == "added")
     return {
         # "added" once at least one source was added; "error" when every item
         # failed (so the top-level envelope can't claim success while
@@ -904,8 +1141,8 @@ async def _add_url_batch(
         "status": "added" if added else "error",
         "notebook_id": notebook_id,
         "added": added,
-        "failed": len(results) - added,
-        "results": results,
+        "failed": len(finalized) - added,
+        "results": finalized,
     }
 
 
@@ -945,6 +1182,8 @@ async def _wait_after_add(
     source_type: str,
     timeout: float,
     interval: float,
+    requested_title: str | None = None,
+    fallback: dict[str, Any] | None = None,
 ) -> ToolResult:
     """Block on a freshly-added source and return the ``source_wait`` aggregate.
 
@@ -957,6 +1196,14 @@ async def _wait_after_add(
     decodes to the ambiguous code 14 → GOOGLE_SPREADSHEET; carry the already-stamped
     code from ``src`` onto the ready outcome so the waited label matches ``source_add``
     without ``wait`` (#1828).
+
+    ``requested_title`` closes the ``wait=True`` half of the #1960 title contract
+    (#1989): the immediate tail flags a rename miss but this one used to return the
+    aggregate with no title signal at all, so the SAME add reported the miss with
+    ``wait=False`` and stayed silent with ``wait=True``. The check runs only on a
+    READY outcome — a timed-out or failed source has no final title to judge — and
+    against the GET_NOTEBOOK title, which is the backend's own final answer rather
+    than the locally-patched one the immediate tail sees.
     """
     outcome = await wait_core.execute_source_wait(
         client,
@@ -968,6 +1215,18 @@ async def _wait_after_add(
         outcome.source._type_code = src._type_code
     result = await _aggregate_wait_outcomes(client, notebook_id, [outcome])
     result["source_id"] = src.id
+    if isinstance(outcome, wait_core.SourceWaitReady):
+        requested = _title_override_miss(outcome.source.title, requested_title)
+        if requested is not None:
+            result["title_override_applied"] = False
+            # Top-level, alongside ``source_id`` — the per-source ``warning`` slot
+            # inside ``ready[]`` belongs to the thin-content annotator.
+            result["warning"] = (
+                f"Requested title {requested!r} was not applied; the source is ready "
+                f"with title {outcome.source.title!r}. Retry with source_rename."
+            )
+    if fallback is not None:
+        result["fallback"] = fallback
     return _json_tool_result(result)
 
 

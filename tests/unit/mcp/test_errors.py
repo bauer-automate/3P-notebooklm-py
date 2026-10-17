@@ -53,7 +53,7 @@ _EXEMPLARS: list[tuple[ErrorCategory, BaseException]] = [
     (ErrorCategory.TIMEOUT, exc.WaitTimeoutError("generic wait timed out")),
     (ErrorCategory.SERVER, exc.ServerError("upstream 503")),
     (ErrorCategory.RPC, exc.RPCError("decode failed", method_id="abc123")),
-    (ErrorCategory.SOURCE_MUTATION, SourceMutationError("ambiguous", "AMBIGUOUS_ID")),
+    (ErrorCategory.SOURCE_MUTATION, SourceMutationError("ambiguous_id", token="ambiguous")),
     (ErrorCategory.SOURCE_ADD, exc.SourceAddError("http://bad.example")),
     (ErrorCategory.LIBRARY, exc.NotebookLMError("some library error")),
     (ErrorCategory.UNEXPECTED, RuntimeError("boom")),
@@ -136,6 +136,32 @@ def test_retriable_categories_are_marked_retriable() -> None:
         assert tool_error_payload(exception)["retriable"] is (category in retriable)
 
 
+@pytest.mark.parametrize(
+    ("cause", "code", "retriable"),
+    [
+        (exc.NetworkError("offline"), "NETWORK", True),
+        (exc.ServerError("unavailable"), "SERVER", True),
+        (exc.AuthError("expired"), "AUTH", False),
+        (exc.RateLimitError("slow down"), "RATE_LIMITED", True),
+        (exc.ValidationError("rejected file"), "VALIDATION", False),
+    ],
+)
+def test_partial_upload_error_projects_its_cause_consistently(
+    cause: Exception, code: str, retriable: bool
+) -> None:
+    """``raise_partial_upload_failure()`` attaches ``source_id``/``stage`` directly
+    to the real cause rather than wrapping it, so it must project exactly like an
+    ordinary instance of its own type.
+    """
+    cause.source_id = "source-1"  # type: ignore[attr-defined]
+    cause.stage = "upload_finalize"  # type: ignore[attr-defined]
+
+    payload = tool_error_payload(cause)
+
+    assert payload["code"] == code
+    assert payload["retriable"] is retriable
+
+
 def test_message_is_redaction_capped_but_code_preserved() -> None:
     """A very long message is capped; code + retriable still present and correct."""
     long = exc.ValidationError("x" * 2000)
@@ -146,10 +172,42 @@ def test_message_is_redaction_capped_but_code_preserved() -> None:
 
 
 def test_to_tool_error_returns_tool_error_with_payload() -> None:
+    """A typed rate-limit error retains its machine-readable code on the wire."""
     err = to_tool_error(exc.RateLimitError("slow", retry_after=3))
     assert isinstance(err, ToolError)
     # FastMCP ToolError surfaces the structured payload; the code must be readable.
     assert "RATE_LIMITED" in str(err)
+
+
+@pytest.mark.parametrize("retry_after", [0, 300])
+def test_rate_limit_delay_reaches_structured_and_flat_errors(retry_after: int) -> None:
+    """Known delays, including zero, survive both MCP error representations."""
+    error = exc.RateLimitError("slow down", retry_after=retry_after)
+
+    payload = tool_error_payload(error)
+    assert payload["retry_after_seconds"] == retry_after
+    assert payload["retriable"] is True
+    assert f"retry_after_seconds={retry_after}" in str(to_tool_error(error))
+
+
+@pytest.mark.parametrize("error", [exc.RateLimitError("unknown delay"), exc.ServerError("busy")])
+def test_unknown_retry_delay_is_omitted(error: Exception) -> None:
+    """An absent delay stays unknown rather than becoming a synthetic zero."""
+    assert "retry_after_seconds" not in tool_error_payload(error)
+    assert "retry_after_seconds" not in str(to_tool_error(error))
+
+
+def test_retry_delay_does_not_make_unconfirmed_mutation_retriable() -> None:
+    """Retry timing metadata cannot override an unknown mutation outcome."""
+    from notebooklm._idempotency import mark_unconfirmed
+
+    error = mark_unconfirmed(exc.RateLimitError("commit unknown", retry_after=300))
+    payload = tool_error_payload(error)
+    assert payload["retry_after_seconds"] == 300
+    assert payload["retriable"] is False
+    assert payload["unconfirmed"] is True
+    wire = str(to_tool_error(error))
+    assert "retriable=false unconfirmed=true retry_after_seconds=300" in wire
 
 
 def test_not_found_candidates_surface_in_payload_and_did_you_mean_hint() -> None:
@@ -234,7 +292,7 @@ def test_decoder_null_result_error_does_not_leak_rpc_id_to_mcp_wire(
     numeric code nor a ``Found IDs`` dump — while the structured attributes are
     still preserved on the exception.
     """
-    from notebooklm.rpc.decoder import decode_response
+    from notebooklm._web.wire.decoder import decode_response
     from notebooklm.rpc.types import RPCMethod
 
     rpc_id = RPCMethod.GET_NOTEBOOK.value
@@ -423,3 +481,77 @@ def test_redact_runs_before_truncation_so_secret_not_half_cut() -> None:
     out = redact(f"{filler} Cookie: SID={secret}")
     assert secret not in out
     assert "1111-this-is-a-secret" not in out  # no partial tail survived the cap
+
+
+def test_unconfirmed_create_is_surfaced_in_the_mcp_payload() -> None:
+    """An unconfirmed create must not reach a client as an opaque failure (#2220).
+
+    These errors are forced to the RPC category, whose hint is ``None`` — and
+    the underlying exception is frequently a bare connection failure whose own
+    message says nothing about a possible write. So without this the client sees
+    a generic message plus ``retriable: false`` and has no way to learn that a
+    source may already exist, which is the one fact it needs to avoid creating a
+    duplicate on its next call.
+    """
+    from notebooklm._app.errors import unconfirmed_hint
+    from notebooklm._idempotency import mark_unconfirmed
+    from notebooklm.mcp._errors import tool_error_payload
+
+    error = mark_unconfirmed(exc.NetworkError("connection reset"))
+    payload = tool_error_payload(error)
+
+    assert payload["unconfirmed"] is True
+    assert payload["retriable"] is False
+    assert payload["hint"] == unconfirmed_hint(error)
+    # The point is the override: NETWORK's own hint is "Transient connectivity
+    # issue; retry.", which is the exact advice that would duplicate the source.
+    from notebooklm._app.errors import CATEGORY_HINTS
+
+    assert payload["hint"] != CATEGORY_HINTS[ErrorCategory.NETWORK]
+
+
+@pytest.mark.parametrize("operation", ["sources.add_url", "sources.add_drive", "sources.add_text"])
+def test_source_add_unknown_operations_project_reconciliation_guidance(operation: str) -> None:
+    from notebooklm._idempotency import mark_unconfirmed
+
+    error = mark_unconfirmed(exc.SourceAddError("input"), operation=operation)
+    payload = tool_error_payload(error)
+
+    assert payload["unconfirmed"] is True
+    assert payload["retriable"] is False
+    assert "source list" in payload["hint"]
+
+
+def test_chat_unknown_operation_projects_conversation_history_guidance() -> None:
+    from notebooklm._idempotency import mark_unconfirmed
+
+    payload = tool_error_payload(
+        mark_unconfirmed(exc.NetworkError("stream lost"), operation="chat")
+    )
+
+    assert payload["unconfirmed"] is True
+    assert "conversation history" in payload["hint"]
+
+
+def test_ordinary_errors_carry_no_unconfirmed_field() -> None:
+    """The field is opt-in, so its presence is meaningful."""
+    from notebooklm.mcp._errors import tool_error_payload
+
+    assert "unconfirmed" not in tool_error_payload(exc.NetworkError("connection reset"))
+
+
+def test_unconfirmed_marker_reaches_a_single_tool_error_message() -> None:
+    """A single MCP call is serialized through ``ToolError``'s message only (#2220).
+
+    Only the batch shapes carry the payload dict to the wire, so a marker left
+    in the dict would never reach the client for an ordinary notebook/source
+    create — precisely the caller most at risk of retrying a write that may
+    already exist. It has to ride in the flattened message.
+    """
+    from notebooklm._idempotency import mark_unconfirmed
+    from notebooklm.mcp._errors import to_tool_error
+
+    marked = str(to_tool_error(mark_unconfirmed(exc.NetworkError("connection reset"))))
+    assert "unconfirmed=true" in marked
+    # Opt-in: an ordinary failure's message is unchanged.
+    assert "unconfirmed" not in str(to_tool_error(exc.NetworkError("connection reset")))

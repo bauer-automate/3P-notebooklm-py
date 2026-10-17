@@ -20,6 +20,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests._helpers.downloads import (
+    configure_complete_artifact_listing,
+    configure_prepared_artifact_downloads,
+)
+
 
 # The canonical contributor install (`uv sync --frozen --extra browser --extra dev
 # --extra markdown`) omits the `mcp` extra, so `fastmcp` may be absent. A bare
@@ -71,17 +76,44 @@ def mock_client() -> MagicMock:
     client = MagicMock()
     for namespace in _NAMESPACES:
         setattr(client, namespace, MagicMock())
-    # `_app.download.execute_download` probes `client.artifacts._list_for_download`
-    # (the #1488 raw-rows fast path). A bare MagicMock auto-vivifies it as a
-    # truthy, non-awaitable attr; pin it to None so download tests exercise the
-    # public `.list` fallback they mock (the fast path is covered by the _app
-    # download tests, which use the real client).
-    client.artifacts._list_for_download = None
+
+    from notebooklm.outcomes import SourceBatchItemOutcome
+
+    async def _batch_add(notebook_id: str, urls: list[str]) -> list[SourceBatchItemOutcome]:
+        """Adapter-test seam: model typed batch outcomes through mocked add_url.
+
+        Production reaches the real one-RPC ``SourcesAPI._add_urls_batch``;
+        this keeps existing tool tests focused on their JSON contract while
+        dedicated source-batch service tests pin the wire call count/shape.
+        """
+        from notebooklm._idempotency import mark_unconfirmed
+        from notebooklm.exceptions import NetworkError, RateLimitError, ServerError
+
+        outcomes: list[SourceBatchItemOutcome] = []
+        for url in urls:
+            try:
+                source = await client.sources.add_url(notebook_id, url)
+            except Exception as exc:  # noqa: BLE001 - scripted per-item outcome
+                # Production sends every URL in one write. Any transport-class
+                # failure leaves its committed subset unknown and is therefore
+                # projected as non-retriable RPC, not as NETWORK / 429 / 5xx.
+                if isinstance(exc, (NetworkError, RateLimitError, ServerError)):
+                    mark_unconfirmed(exc)
+                outcomes.append(SourceBatchItemOutcome(url=url, error=exc))
+            else:
+                outcomes.append(SourceBatchItemOutcome(url=url, source=source))
+        return outcomes
+
+    client.sources.add_urls_batch = AsyncMock(side_effect=_batch_add)
+    client.sources._add_urls_batch = client.sources.add_urls_batch
+    configure_prepared_artifact_downloads(client)
+    configure_complete_artifact_listing(client)
     # Identity accessors used by ``server_info(include_account=True)`` — both are
     # top-level client methods (not namespace attrs), so pin them explicitly:
     # ``get_account_email`` is awaited, ``get_account_authuser`` is sync.
     client.get_account_email = AsyncMock(return_value=None)
     client.get_account_authuser = MagicMock(return_value=0)
+    client.chat.get_conversation_id = AsyncMock(return_value=None)
     return client
 
 

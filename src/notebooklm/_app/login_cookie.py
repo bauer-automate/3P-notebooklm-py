@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -69,12 +69,12 @@ class CookieImportFailure:
 
 @dataclass(frozen=True, slots=True)
 class BrowserCookieProbeRequest:
-    """One already-read rookiepy cookie set to probe."""
+    """One already-read browser-extractor cookie set to probe."""
 
     raw_cookies: list[dict[str, Any]] = field(repr=False)
     browser_name: str
     browser_profile: str | None
-    quiet: bool
+    abort_on_network_error: bool
     validate_before_probe: bool
 
 
@@ -108,17 +108,20 @@ class StorageStateFilter(Protocol):
 
 
 class LoginWriter(Protocol):
-    """Canonical full-replacement login writer."""
+    """Native path-shaped login/import profile writer."""
 
     def __call__(
         self,
         path: Path,
-        state: dict[str, Any],
+        state: Mapping[str, Any],
         *,
         include_domains: set[str] | None,
         include_optional: bool = False,
+        account_mode: Literal["keep", "clear", "set"] = "keep",
+        account_authuser: int | None = None,
+        account_email: str | None = None,
         backup: bool = False,
-    ) -> auth.LoginWriteOutcome: ...
+    ) -> auth.ReplaceResult: ...
 
 
 class ValidateWithRecovery(Protocol):
@@ -270,7 +273,7 @@ def import_cookie_payload(
     request: CookieImportRequest,
     *,
     filter_storage_state: StorageStateFilter,
-    replace_from_login: LoginWriter,
+    replace_profile_from_login: LoginWriter,
 ) -> CookieImportSuccess | CookieImportFailure:
     """Normalize, validate, filter, and persist a cookie payload."""
     payload = storage_path = include_domains = include_optional = None
@@ -351,11 +354,12 @@ def import_cookie_payload(
             )
             return result
 
-        outcome = replace_from_login(
+        outcome = replace_profile_from_login(
             storage_path,
             sanitized_state,
             include_domains=include_domains,
             include_optional=include_optional,
+            account_mode="keep",
             backup=True,
         )
         if outcome.required_cookies_dropped:
@@ -388,7 +392,7 @@ def import_cookie_payload(
         del normalized_state, filtered_state, shaped_entries, raw_entry, raw_names
         del empty_required, sanitized_state, cookie_names, secondary_present
         del raw_cookie, sanitized, sanitized_rows, outcome, result
-        del filter_storage_state, replace_from_login
+        del filter_storage_state, replace_profile_from_login
 
 
 def project_browser_account(
@@ -440,7 +444,9 @@ def probe_browser_cookie_jar(
     validate_with_recovery: ValidateWithRecovery,
 ) -> BrowserCookieProbeSuccess | BrowserCookieProbeFailure:
     """Validate and probe one browser cookie set."""
-    raw_cookies = browser_name = browser_profile = quiet = validate_before_probe = None
+    raw_cookies = browser_name = browser_profile = abort_on_network_error = (
+        validate_before_probe
+    ) = None
     storage_state = validation_error = cookie_names = hint = None
     cookie_map = jar = probe_coroutine = accounts = account = projected = projected_accounts = None
     result: BrowserCookieProbeSuccess | BrowserCookieProbeFailure | None = None
@@ -448,7 +454,7 @@ def probe_browser_cookie_jar(
         raw_cookies = request.raw_cookies
         browser_name = request.browser_name
         browser_profile = request.browser_profile
-        quiet = request.quiet
+        abort_on_network_error = request.abort_on_network_error
         validate_before_probe = request.validate_before_probe
 
         if validate_before_probe:
@@ -484,7 +490,7 @@ def probe_browser_cookie_jar(
             result = BrowserCookieProbeFailure(code="STALE_COOKIES", detail=str(exc))
             return result
         except httpx.RequestError as exc:
-            if quiet:
+            if abort_on_network_error:
                 raise
             result = BrowserCookieProbeFailure(code="NETWORK_ERROR", detail=str(exc))
             return result
@@ -518,7 +524,7 @@ def probe_browser_cookie_jar(
         result = BrowserCookieProbeSuccess(accounts=projected)
         return result
     finally:
-        del request, raw_cookies, browser_name, browser_profile, quiet
+        del request, raw_cookies, browser_name, browser_profile, abort_on_network_error
         del validate_before_probe, storage_state, validation_error, cookie_names, hint
         del (
             cookie_map,

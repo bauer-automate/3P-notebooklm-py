@@ -18,10 +18,10 @@ Top of the leaf-ward DAG: imports from :mod:`.browser_accounts`,
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn, Protocol
 
 import httpx
 
@@ -31,16 +31,16 @@ import httpx
 # it through the public ``auth`` facade — ``cli/`` may not import private
 # ``_auth.*`` modules (tests/_guardrails/test_cli_boundary.py).
 from ....auth import (
-    CLEAR_ACCOUNT,
-    AccountRecord,
+    ReplaceResult,
     cookie_names_from_storage,
     fetch_tokens_with_domains,
     missing_cookies_hint,
     read_account_metadata,
-    replace_from_login,
+    replace_profile_from_login,
     validate_with_recovery,
 )
 from ....client import NotebookLMClient
+from ....exceptions import AuthError
 from ....paths import get_storage_path
 from ...language_cmd import set_language
 from .browser_accounts import _enumerate_browser_accounts, _read_browser_cookies
@@ -60,6 +60,22 @@ from .profile_targets import (
 # Click command layer injects ``functools.partial(click.confirm,
 # default=False)`` so interactive runs prompt before overwriting.
 ConfirmCallback = Callable[[str], bool]
+
+
+class ReplaceProfileFromLogin(Protocol):
+    def __call__(
+        self,
+        path: Path,
+        state: Mapping[str, Any],
+        *,
+        include_domains: set[str] | None,
+        include_optional: bool = False,
+        account_mode: Literal["keep", "clear", "set"] = "keep",
+        account_authuser: int | None = None,
+        account_email: str | None = None,
+        backup: bool = False,
+    ) -> ReplaceResult: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +267,7 @@ def _login_all_accounts_from_browser(
     """Extract every signed-in Google account into its own profile.
 
     Args:
-        browser_cookies: rookiepy browser alias forwarded to
+        browser_cookies: rookie-cookies browser alias forwarded to
             :func:`_enumerate_browser_accounts`.
         update: When True and the natural profile name for an account
             (e.g. ``alice`` for ``alice@gmail.com``) already exists but has
@@ -391,11 +407,11 @@ def _login_with_browser_cookies(
     io: LoginIO | None = None,
     deps: RefreshDeps | None = None,
 ) -> None:
-    """Extract Google cookies from an installed browser via rookiepy.
+    """Extract Google cookies from an installed browser via rookie-cookies.
 
     Args:
         storage_path: Where to write storage_state.json.
-        browser_name: "auto" to use rookiepy.load(), or a specific browser name.
+        browser_name: "auto" to use automatic browser discovery, or a specific browser name.
         profile: Profile name (forwarded to verification step).
         authuser: Internal Google account index fallback for this profile.
         email: Optional account email to record for stable routing.
@@ -433,15 +449,15 @@ def _login_with_browser_cookies(
     # full jar). Even on a default-account login (authuser=0, no email) the
     # account binding is CLEARED in the same write so refreshed cookies cannot
     # keep routing to an older account.
-    account = (
-        AccountRecord(authuser=authuser, email=email) if (authuser or email) else CLEAR_ACCOUNT
-    )
+    account_mode: Literal["clear", "set"] = "set" if (authuser or email) else "clear"
     try:
-        outcome = deps.replace_from_login(
+        outcome = deps.replace_profile_from_login(
             storage_path,
             storage_state,
             include_domains=include_domains,
-            account=account,
+            account_mode=account_mode,
+            account_authuser=authuser if account_mode == "set" else None,
+            account_email=email if account_mode == "set" else None,
         )
     except OSError as e:
         # G6: redact the bound exception in the log line (use the type name) so
@@ -474,8 +490,8 @@ def _login_with_browser_cookies(
         )
         io.fail(1)
 
-    # replace_from_login already scrubbed the legacy sibling context.json[account]
-    # key as part of its own atomic write (_auth/storage.py).
+    # replace_profile_from_login already scrubbed the legacy sibling context.json[account]
+    # key after its native profile write (_auth/profile_migration.py).
 
     saved_msg = f"\n[green]Authentication saved to:[/green] {storage_path}"
     if email:
@@ -487,7 +503,7 @@ def _login_with_browser_cookies(
         io.run_async(deps.fetch_tokens_with_domains(storage_path, profile))
         logger.info("Cookies verified successfully")
         _emit(io, "[green]Cookies verified successfully.[/green]")
-    except ValueError as e:
+    except (ValueError, AuthError) as e:
         # Cookie validation failed - the extracted cookies are invalid
         logger.error("Extracted cookies are invalid: %s", e)
         _emit(
@@ -543,6 +559,9 @@ def _sync_server_language_to_config(
             kwargs["path"] = str(storage_path)
         if profile is not None:
             kwargs["profile"] = profile
+        from ...._app.client_config import adapter_client_config
+
+        kwargs["config"] = adapter_client_config()
         async with NotebookLMClient.from_storage(**kwargs) as client:
             return await client.settings.get_output_language()
 
@@ -577,7 +596,7 @@ class RefreshDeps:
     profiles_by_account_email: Callable[..., Any]
     read_account_metadata: Callable[..., Any]
     read_browser_cookies: Callable[..., Any]
-    replace_from_login: Callable[..., Any]
+    replace_profile_from_login: ReplaceProfileFromLogin
     resolve_all_accounts_target: Callable[..., Any]
     select_account: Callable[..., Any]
     select_refresh_account: Callable[..., Any]
@@ -599,7 +618,7 @@ def default_refresh_deps() -> RefreshDeps:
         profiles_by_account_email=_profiles_by_account_email,
         read_account_metadata=read_account_metadata,
         read_browser_cookies=_read_browser_cookies,
-        replace_from_login=replace_from_login,
+        replace_profile_from_login=replace_profile_from_login,
         resolve_all_accounts_target=_resolve_all_accounts_target,
         select_account=_select_account,
         select_refresh_account=_select_refresh_account,
