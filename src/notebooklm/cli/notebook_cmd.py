@@ -3,7 +3,6 @@
 Commands:
     list       List all notebooks
     create     Create a new notebook
-    copy       Copy a notebook, including sources and Studio artifacts
     delete     Delete a notebook
     rename     Rename a notebook
     summary    Get notebook summary with AI-generated insights
@@ -12,57 +11,23 @@ Commands:
 Note: Sharing commands moved to 'share' command group.
 """
 
-from functools import partial
-
 import click
 
 from .._app.notebooks import (
-    execute_notebook_copy,
     execute_notebook_create,
     execute_notebook_delete,
     execute_notebook_describe,
     execute_notebook_metadata,
     execute_notebook_rename,
 )
-from .._app.views import notebook_viewed_keys
-from ..types import Notebook, share_permission_to_str
 from .auth_runtime import resolve_client_factory, with_client
 from .context import clear_context, get_current_notebook, set_current_notebook
 from .error_handler import _output_error
 from .options import json_option, list_options, notebook_option
-from .rendering import (
-    cli_print,
-    console,
-    get_notebook_access_display,
-    json_output_response,
-    render_list,
-)
+from .rendering import cli_print, console, json_output_response, render_list
 from .resolve import require_notebook, resolve_notebook_id
 from .services.confirming_mutation import MutationPlan, run_confirmed_mutation
 from .services.listing import ListSpec, prepare_list
-
-
-def _notebook_mutation_payload(notebook: Notebook) -> dict:
-    """Serialize the stable notebook shape shared by create/copy JSON output."""
-    return {
-        "id": notebook.id,
-        "title": notebook.title,
-        "role": (share_permission_to_str(notebook.role) if notebook.role is not None else None),
-        "created_at": notebook.created_at.isoformat() if notebook.created_at else None,
-        **notebook_viewed_keys(notebook),
-    }
-
-
-def _set_notebook_context(notebook: Notebook) -> None:
-    """Persist a newly created or copied notebook as the active context."""
-    created = notebook.created_at.strftime("%Y-%m-%d") if notebook.created_at else None
-    set_current_notebook(
-        notebook.id,
-        notebook.title,
-        notebook.is_owner,
-        created,
-        role=(share_permission_to_str(notebook.role) if notebook.role is not None else None),
-    )
 
 
 def register_notebook_commands(cli):
@@ -91,17 +56,14 @@ def register_notebook_commands(cli):
                         "id": nb.id,
                         "title": nb.title,
                         "is_owner": nb.is_owner,
-                        "role": share_permission_to_str(nb.role) if nb.role is not None else None,
                         "created_at": nb.created_at.isoformat() if nb.created_at else None,
-                        **notebook_viewed_keys(nb),
+                        "modified_at": nb.modified_at.isoformat() if nb.modified_at else None,
                     },
-                    # "Access" (not "Owner") because the column now reports the
-                    # caller's actual role — Owner / Editor / Viewer (#2125).
-                    columns=["ID", "Title", "Access", "Created"],
+                    columns=["ID", "Title", "Owner", "Created"],
                     row=lambda nb: [
                         nb.id,
                         nb.title,
-                        get_notebook_access_display(nb.role),
+                        "Owner" if nb.is_owner else "Shared",
                         nb.created_at.strftime("%Y-%m-%d") if nb.created_at else "-",
                     ],
                 )
@@ -142,12 +104,18 @@ def register_notebook_commands(cli):
                 nb = (await execute_notebook_create(client, title)).notebook
 
                 if switch_context:
-                    _set_notebook_context(nb)
+                    created_str = nb.created_at.strftime("%Y-%m-%d") if nb.created_at else None
+                    set_current_notebook(nb.id, nb.title, nb.is_owner, created_str)
 
                 if json_output:
-                    # Kept in step with `list --json` / `use --json` so
-                    # automation sees one notebook shape (#2125).
-                    data: dict = {"notebook": _notebook_mutation_payload(nb)}
+                    data: dict = {
+                        "notebook": {
+                            "id": nb.id,
+                            "title": nb.title,
+                            "created_at": nb.created_at.isoformat() if nb.created_at else None,
+                            "modified_at": nb.modified_at.isoformat() if nb.modified_at else None,
+                        }
+                    }
                     # When --use switched the active context, surface the new
                     # active notebook id at the top level so callers can
                     # branch on the field without scraping the "Context set
@@ -160,74 +128,6 @@ def register_notebook_commands(cli):
                 cli_print(f"[green]Created notebook:[/green] {nb.id} - {nb.title}", ctx=ctx)
                 if switch_context:
                     cli_print("[dim]Context set to new notebook[/dim]", ctx=ctx)
-                else:
-                    cli_print(
-                        f"[dim]Tip: pass --use next time, or run 'notebooklm use {nb.id}'.[/dim]",
-                        ctx=ctx,
-                    )
-
-        return _run()
-
-    @cli.command("copy")
-    @click.argument("title")
-    @notebook_option
-    @click.option(
-        "--use",
-        "-u",
-        "switch_context",
-        is_flag=True,
-        help="Set the copied notebook as the current context.",
-    )
-    @json_option
-    @with_client
-    def copy_cmd(ctx, title, notebook_id, switch_context, json_output, client_auth):
-        """Copy a notebook, including its sources and Studio artifacts.
-
-        Uses the current notebook unless ``-n/--notebook`` is supplied. Partial
-        notebook IDs are accepted. The server creates one new notebook with
-        TITLE; pass ``--use`` to make that copy the active context.
-
-        The copy is not automatically retried if the response is lost, because
-        it may already have committed on the server.
-
-        \b
-        Examples:
-          notebooklm copy "Research — Copy"
-          notebooklm copy "Research — Copy" -n abc123 --use
-          notebooklm copy "Research — Copy" -n abc123 --json
-        """
-        source_id = require_notebook(notebook_id, json_output=json_output)
-
-        async def _run():
-            async with resolve_client_factory(ctx)(client_auth) as client:
-                result = await execute_notebook_copy(
-                    client,
-                    source_id,
-                    title,
-                    resolve_notebook_id=partial(resolve_notebook_id, json_output=json_output),
-                )
-                nb = result.notebook
-
-                if switch_context:
-                    _set_notebook_context(nb)
-
-                if json_output:
-                    data: dict = {
-                        "source_notebook_id": result.source_notebook_id,
-                        "notebook": _notebook_mutation_payload(nb),
-                    }
-                    if switch_context:
-                        data["active_notebook_id"] = nb.id
-                    json_output_response(data)
-                    return
-
-                cli_print(
-                    f"[green]Copied notebook:[/green] {result.source_notebook_id} -> "
-                    f"{nb.id} - {nb.title}",
-                    ctx=ctx,
-                )
-                if switch_context:
-                    cli_print("[dim]Context set to copied notebook[/dim]", ctx=ctx)
                 else:
                     cli_print(
                         f"[dim]Tip: pass --use next time, or run 'notebooklm use {nb.id}'.[/dim]",
@@ -348,7 +248,8 @@ def register_notebook_commands(cli):
                     client,
                     notebook_id,
                     new_title,
-                    resolve_notebook_id=partial(resolve_notebook_id, json_output=json_output),
+                    resolve_notebook_id=resolve_notebook_id,
+                    json_output=json_output,
                 )
                 resolved_id = result.notebook_id
                 if json_output:
@@ -388,7 +289,8 @@ def register_notebook_commands(cli):
                 describe_result = await execute_notebook_describe(
                     client,
                     notebook_id,
-                    resolve_notebook_id=partial(resolve_notebook_id, json_output=json_output),
+                    resolve_notebook_id=resolve_notebook_id,
+                    json_output=json_output,
                 )
                 resolved_id = describe_result.notebook_id
                 description = describe_result.description
@@ -457,7 +359,8 @@ def register_notebook_commands(cli):
                 metadata_result = await execute_notebook_metadata(
                     client,
                     notebook_id,
-                    resolve_notebook_id=partial(resolve_notebook_id, json_output=json_output),
+                    resolve_notebook_id=resolve_notebook_id,
+                    json_output=json_output,
                 )
                 metadata = metadata_result.metadata
 
@@ -473,9 +376,8 @@ def register_notebook_commands(cli):
                         console.print(
                             f"[dim]Created:[/dim] {metadata.created_at.strftime('%Y-%m-%d %H:%M')}"
                         )
-                    console.print(
-                        f"[dim]Access:[/dim] {get_notebook_access_display(metadata.role)}"
-                    )
+                    owner_status = "Owner" if metadata.is_owner else "Shared"
+                    console.print(f"[dim]Access:[/dim] {owner_status}")
 
                     console.print(f"\n[bold]Sources ({len(metadata.sources)}):[/bold]")
                     if not metadata.sources:

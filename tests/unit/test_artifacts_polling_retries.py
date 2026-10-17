@@ -5,14 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from notebooklm._artifact.polling import ArtifactPollingService
-from notebooklm._artifacts import GenerationStatus
+from notebooklm._artifacts import ArtifactsAPI, GenerationStatus
 from notebooklm._polling_registry import PollRegistry
-from notebooklm._web.artifacts import WebArtifactsAPI
 from notebooklm.exceptions import ArtifactPendingTimeoutError
 from notebooklm.rpc import AuthError, NetworkError, RPCTimeoutError
 
 
-class _FakeSupervisor:
+class _FakeTransportProvider:
     # ``ArtifactPollingService.wait_for_completion`` calls
     # the injected loop guard. ``None`` is the documented
     # silent-no-op value for the affinity helper, so this stub stays correct
@@ -44,9 +43,6 @@ class _FakeSupervisor:
         self.finish_tokens: list[object] = []
         self.finish_started = asyncio.Event()
         self.finish_finished = asyncio.Event()
-        self.spawn_labels: list[str] = []
-        self.spawn_parents: list[asyncio.Task[object]] = []
-        self.drain_hooks: dict[str, object] = {}
 
     async def rpc_call(self, *args, **kwargs):
         raise AssertionError("unexpected rpc_call")
@@ -56,17 +52,6 @@ class _FakeSupervisor:
 
     async def next_reqid(self, step: int = 100000) -> int:
         return step
-
-    def register_drain_hook(self, name: str, hook: object) -> None:
-        self.drain_hooks[name] = hook
-
-    async def spawn_child(self, label, factory, *, inherit_operation=True):
-        assert inherit_operation is False
-        parent = asyncio.current_task()
-        assert parent is not None
-        self.spawn_labels.append(label)
-        self.spawn_parents.append(parent)
-        return asyncio.create_task(factory(), name=label)
 
     def operation_scope(self, log_label: str):
         provider = self
@@ -106,15 +91,16 @@ class _FakeSupervisor:
 
 @pytest.fixture
 def api():
-    from notebooklm._web.mind_maps import NoteBackedMindMapService
-    from notebooklm._web.notes import NoteService
+    from notebooklm._mind_map import NoteBackedMindMapService
+    from notebooklm._note_service import NoteService
 
     core = _make_session_core()
     mock_notebooks = MagicMock()
     mock_notebooks.get_source_ids = AsyncMock(return_value=[])
-    return WebArtifactsAPI(
+    return ArtifactsAPI(
         rpc=core,
-        supervisor=core,
+        drain=core,
+        lifecycle=core,
         notebooks=mock_notebooks,
         mind_maps=MagicMock(spec=NoteBackedMindMapService),
         note_service=MagicMock(spec=NoteService),
@@ -123,14 +109,9 @@ def api():
 
 def _make_session_core() -> MagicMock:
     core = MagicMock()
-
-    async def _spawn_child(label, factory, *, inherit_operation=True):
-        assert inherit_operation is False
-        return asyncio.create_task(factory(), name=label)
-
+    # Real registry backing so wait_for_completion can ``dict.get(key)``.
     core.assert_bound_loop = MagicMock(return_value=None)
     core.operation_scope = MagicMock(side_effect=lambda _label: _noop_operation_scope())
-    core.spawn_child = AsyncMock(side_effect=_spawn_child)
     return core
 
 
@@ -166,7 +147,7 @@ async def test_wait_for_completion_retry_success(api):
 
 @pytest.mark.asyncio
 async def test_polling_service_clamps_transient_retry_sleep_to_remaining_timeout() -> None:
-    provider = _FakeSupervisor()
+    provider = _FakeTransportProvider()
     clock = 0.0
     sleeps: list[float] = []
 
@@ -179,7 +160,8 @@ async def test_polling_service_clamps_transient_retry_sleep_to_remaining_timeout
         clock += seconds
 
     service = ArtifactPollingService(
-        supervisor=provider,
+        loop_guard=provider,
+        op_scope=provider,
         poll_registry=provider.poll_registry,
         sleep=sleep,
         monotonic=monotonic,
@@ -198,7 +180,7 @@ async def test_polling_service_clamps_transient_retry_sleep_to_remaining_timeout
 
 @pytest.mark.asyncio
 async def test_polling_service_clamps_poll_interval_to_remaining_timeout() -> None:
-    provider = _FakeSupervisor()
+    provider = _FakeTransportProvider()
     clock = 0.0
     sleeps: list[float] = []
 
@@ -211,7 +193,8 @@ async def test_polling_service_clamps_poll_interval_to_remaining_timeout() -> No
         clock += seconds
 
     service = ArtifactPollingService(
-        supervisor=provider,
+        loop_guard=provider,
+        op_scope=provider,
         poll_registry=provider.poll_registry,
         sleep=sleep,
         monotonic=monotonic,
@@ -259,17 +242,17 @@ async def test_wait_for_completion_no_retry_on_auth_error(api):
 
 
 @pytest.mark.asyncio
-async def test_polling_service_uses_one_supervisor_for_waiter_child_and_drain() -> None:
+async def test_polling_service_operation_scope_wraps_spawned_poll_task() -> None:
     token = object()
-    provider = _FakeSupervisor(token=token)
-    service = ArtifactPollingService(supervisor=provider, poll_registry=provider.poll_registry)
+    provider = _FakeTransportProvider(token=token)
+    service = ArtifactPollingService(
+        loop_guard=provider, op_scope=provider, poll_registry=provider.poll_registry
+    )
 
     async def poll_status(notebook_id: str, task_id: str) -> GenerationStatus:
         assert (notebook_id, task_id) == ("nb1", "task1")
         return GenerationStatus(task_id=task_id, status="completed")
 
-    caller = asyncio.current_task()
-    assert caller is not None
     result = await service.wait_for_completion(
         "nb1",
         "task1",
@@ -280,21 +263,24 @@ async def test_polling_service_uses_one_supervisor_for_waiter_child_and_drain() 
     )
 
     assert result.status == "completed"
-    assert provider.begin_tasks == [caller]
+    assert len(provider.begin_tasks) == 1
+    poll_task = provider.begin_tasks[0]
+    assert isinstance(poll_task, asyncio.Task)
+    assert poll_task.done()
+    assert poll_task.get_name() == "artifact-poll-nb1-task1"
     assert provider.begin_task_done_states == [False]
-    assert provider.begin_labels == ["artifact waiter task1"]
-    assert provider.spawn_parents == [caller]
-    assert provider.spawn_labels == ["artifact-poll-nb1-task1"]
-    assert provider.drain_hooks == {"artifacts.polls": service.drain}
+    assert provider.begin_labels == ["artifact wait task1"]
     await asyncio.wait_for(provider.finish_finished.wait(), timeout=1.0)
     assert provider.finish_tokens == [token]
 
 
 @pytest.mark.asyncio
-async def test_polling_service_admits_waiters_before_reserving_poll_leader() -> None:
+async def test_polling_service_registers_pending_before_transport_begin_completes() -> None:
     begin_release = asyncio.Event()
-    provider = _FakeSupervisor(begin_release=begin_release)
-    service = ArtifactPollingService(supervisor=provider, poll_registry=provider.poll_registry)
+    provider = _FakeTransportProvider(begin_release=begin_release)
+    service = ArtifactPollingService(
+        loop_guard=provider, op_scope=provider, poll_registry=provider.poll_registry
+    )
     poll_call_count = 0
 
     async def poll_status(notebook_id: str, task_id: str) -> GenerationStatus:
@@ -316,8 +302,7 @@ async def test_polling_service_admits_waiters_before_reserving_poll_leader() -> 
     key = ("nb1", "task1")
     try:
         await asyncio.wait_for(provider.begin_started.wait(), timeout=1.0)
-        assert provider.poll_registry.get(key) is None
-        assert provider.spawn_labels == []
+        assert provider.poll_registry.get(key) is not None
 
         follower = asyncio.create_task(
             service.wait_for_completion(
@@ -330,8 +315,6 @@ async def test_polling_service_admits_waiters_before_reserving_poll_leader() -> 
             )
         )
         await asyncio.sleep(0)
-        assert provider.poll_registry.get(key) is None
-        assert len(provider.begin_tasks) == 2
         begin_release.set()
 
         leader_result = await asyncio.wait_for(leader, timeout=1.0)
@@ -342,9 +325,6 @@ async def test_polling_service_admits_waiters_before_reserving_poll_leader() -> 
         assert poll_call_count == 1
         await asyncio.wait_for(provider.finish_finished.wait(), timeout=1.0)
         assert provider.poll_registry.get(key) is None
-        assert provider.begin_labels == ["artifact waiter task1", "artifact waiter task1"]
-        assert provider.spawn_labels == ["artifact-poll-nb1-task1"]
-        assert provider.finish_tokens == [provider.token, provider.token]
     finally:
         begin_release.set()
         cleanup_tasks = [
@@ -360,8 +340,10 @@ async def test_polling_service_admits_waiters_before_reserving_poll_leader() -> 
 async def test_polling_service_resolves_wait_before_slow_transport_finish() -> None:
     token = object()
     finish_release = asyncio.Event()
-    provider = _FakeSupervisor(token=token, finish_release=finish_release)
-    service = ArtifactPollingService(supervisor=provider, poll_registry=provider.poll_registry)
+    provider = _FakeTransportProvider(token=token, finish_release=finish_release)
+    service = ArtifactPollingService(
+        loop_guard=provider, op_scope=provider, poll_registry=provider.poll_registry
+    )
 
     async def poll_status(notebook_id: str, task_id: str) -> GenerationStatus:
         return GenerationStatus(task_id=task_id, status="completed")
@@ -394,11 +376,13 @@ async def test_polling_service_resolves_wait_before_slow_transport_finish() -> N
 
 
 @pytest.mark.asyncio
-async def test_polling_service_drain_leaves_completed_child_result_intact() -> None:
+async def test_polling_service_drain_waits_for_bookkeeping_without_active_polls() -> None:
     token = object()
     finish_release = asyncio.Event()
-    provider = _FakeSupervisor(token=token, finish_release=finish_release)
-    service = ArtifactPollingService(supervisor=provider, poll_registry=provider.poll_registry)
+    provider = _FakeTransportProvider(token=token, finish_release=finish_release)
+    service = ArtifactPollingService(
+        loop_guard=provider, op_scope=provider, poll_registry=provider.poll_registry
+    )
 
     async def poll_status(notebook_id: str, task_id: str) -> GenerationStatus:
         return GenerationStatus(task_id=task_id, status="completed")
@@ -419,11 +403,13 @@ async def test_polling_service_drain_leaves_completed_child_result_intact() -> N
 
     drain_task = asyncio.create_task(service.drain())
     try:
-        await asyncio.wait_for(drain_task, timeout=1.0)
-        assert not waiter.done()
+        await asyncio.sleep(0)
+        assert not drain_task.done()
 
         finish_release.set()
-        result = await asyncio.wait_for(waiter, timeout=1.0)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(waiter, timeout=1.0)
+        await asyncio.wait_for(drain_task, timeout=1.0)
     finally:
         finish_release.set()
         if not waiter.done():
@@ -434,62 +420,15 @@ async def test_polling_service_drain_leaves_completed_child_result_intact() -> N
             await asyncio.gather(drain_task, return_exceptions=True)
 
     assert provider.finish_tokens == [token]
-    assert result.status == "completed"
-
-
-@pytest.mark.asyncio
-async def test_polling_drain_cancels_reserved_leader_before_task_attachment() -> None:
-    """A ``(future, None)`` reservation must remain visible to the drain hook."""
-    provider = _FakeSupervisor()
-    spawn_started = asyncio.Event()
-    factory_invoked = False
-
-    async def _spawn_child(label, factory, *, inherit_operation=True):
-        assert inherit_operation is False
-        del label, factory
-        spawn_started.set()
-        await asyncio.Future()
-        raise AssertionError("unreachable")
-
-    provider.spawn_child = _spawn_child  # type: ignore[method-assign]
-    service = ArtifactPollingService(
-        supervisor=provider,
-        poll_registry=provider.poll_registry,
-    )
-
-    async def _poll_status(notebook_id: str, task_id: str) -> GenerationStatus:
-        nonlocal factory_invoked
-        del notebook_id
-        factory_invoked = True
-        return GenerationStatus(task_id=task_id, status="completed")
-
-    waiter = asyncio.create_task(
-        service.wait_for_completion(
-            "nb1",
-            "reserved",
-            initial_interval=0.0,
-            max_interval=0.0,
-            timeout=1.0,
-            poll_status=_poll_status,
-        )
-    )
-    await spawn_started.wait()
-    assert provider.poll_registry.get(("nb1", "reserved")) is not None
-
-    await asyncio.wait_for(service.drain(), timeout=1.0)
-
-    with pytest.raises(asyncio.CancelledError):
-        await waiter
-    assert provider.poll_registry.get(("nb1", "reserved")) is None
-    assert provider.poll_registry.active_tasks() == []
-    assert factory_invoked is False
 
 
 @pytest.mark.asyncio
 async def test_polling_service_finishes_transport_token_once_after_poll_failure() -> None:
     token = object()
-    provider = _FakeSupervisor(token=token)
-    service = ArtifactPollingService(supervisor=provider, poll_registry=provider.poll_registry)
+    provider = _FakeTransportProvider(token=token)
+    service = ArtifactPollingService(
+        loop_guard=provider, op_scope=provider, poll_registry=provider.poll_registry
+    )
 
     async def poll_status(notebook_id: str, task_id: str) -> GenerationStatus:
         raise ValueError(f"poll failed: {notebook_id}/{task_id}")
@@ -505,8 +444,7 @@ async def test_polling_service_finishes_transport_token_once_after_poll_failure(
         )
 
     assert len(provider.begin_tasks) == 1
-    assert provider.begin_tasks[0] is asyncio.current_task()
-    assert provider.spawn_labels == ["artifact-poll-nb1-task1"]
+    assert provider.begin_tasks[0].done()
     await asyncio.wait_for(provider.finish_finished.wait(), timeout=1.0)
     assert provider.finish_tokens == [token]
 
@@ -514,11 +452,13 @@ async def test_polling_service_finishes_transport_token_once_after_poll_failure(
 @pytest.mark.asyncio
 async def test_polling_service_cancels_and_drains_spawned_poll_task_if_begin_fails() -> None:
     begin_error = RuntimeError("draining")
-    provider = _FakeSupervisor(
+    provider = _FakeTransportProvider(
         begin_error=begin_error,
         yield_before_begin_error=True,
     )
-    service = ArtifactPollingService(supervisor=provider, poll_registry=provider.poll_registry)
+    service = ArtifactPollingService(
+        loop_guard=provider, op_scope=provider, poll_registry=provider.poll_registry
+    )
 
     async def poll_status(notebook_id: str, task_id: str) -> GenerationStatus:
         raise AssertionError("poll should not start when operation admission fails")
@@ -534,8 +474,7 @@ async def test_polling_service_cancels_and_drains_spawned_poll_task_if_begin_fai
         )
 
     assert len(provider.begin_tasks) == 1
-    assert provider.begin_tasks[0] is asyncio.current_task()
-    assert provider.spawn_labels == []
+    assert provider.begin_tasks[0].done()
     assert provider.poll_registry.get(("nb1", "task1")) is None
     assert not provider.finish_started.is_set()
     assert provider.finish_tokens == []
@@ -543,13 +482,14 @@ async def test_polling_service_cancels_and_drains_spawned_poll_task_if_begin_fai
 
 @pytest.mark.asyncio
 async def test_wait_for_completion_follower_cancellation_does_not_cancel_leader_or_later_waiter():
-    from notebooklm._web.mind_maps import NoteBackedMindMapService
-    from notebooklm._web.notes import NoteService
+    from notebooklm._mind_map import NoteBackedMindMapService
+    from notebooklm._note_service import NoteService
 
     core = _make_session_core()
-    api = WebArtifactsAPI(
+    api = ArtifactsAPI(
         rpc=core,
-        supervisor=core,
+        drain=core,
+        lifecycle=core,
         notebooks=MagicMock(),
         mind_maps=MagicMock(spec=NoteBackedMindMapService),
         note_service=MagicMock(spec=NoteService),

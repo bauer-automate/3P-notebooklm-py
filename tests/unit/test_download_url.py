@@ -1,8 +1,11 @@
 """Unit tests for ``ArtifactsAPI._download_url`` httpx-error wrapping.
 
-These tests pin the contract: authentication HTTP failures surface as
-``AuthError`` while generic HTTP and transport failures remain
-``ArtifactDownloadError``. No raw ``httpx`` subclass escapes.
+These tests pin the contract: every httpx failure (auth, generic HTTP,
+timeout, connection error) is surfaced as :class:`ArtifactDownloadError`,
+never as a raw ``httpx`` subclass. 401/403 carry an explicit
+``Authentication required ... try `notebooklm login``` hint plus the
+``status_code`` attribute on the exception; other HTTP errors keep their
+``status_code``; transport errors leave ``status_code`` ``None``.
 """
 
 from __future__ import annotations
@@ -16,15 +19,15 @@ import httpx
 import pytest
 
 import notebooklm._artifact.downloads as _downloads_mod
-from notebooklm._web.artifacts import WebArtifactsAPI
-from notebooklm.exceptions import ArtifactDownloadError, AuthError
+from notebooklm._artifacts import ArtifactsAPI
+from notebooklm.types import ArtifactDownloadError
 
 
 @pytest.fixture
 def mock_artifacts_api():
     """ArtifactsAPI wired to MagicMocks -- no real I/O."""
-    from notebooklm._web.mind_maps import NoteBackedMindMapService
-    from notebooklm._web.notes import NoteService
+    from notebooklm._mind_map import NoteBackedMindMapService
+    from notebooklm._note_service import NoteService
     from tests._fixtures.fake_core import make_fake_core
 
     mock_core = make_fake_core(
@@ -34,9 +37,10 @@ def mock_artifacts_api():
     mind_maps = MagicMock(spec=NoteBackedMindMapService)
     mind_maps.list_mind_maps = AsyncMock(return_value=[])
     note_service = MagicMock(spec=NoteService)
-    api = WebArtifactsAPI(
+    api = ArtifactsAPI(
         rpc=mock_core,
-        supervisor=mock_core,
+        drain=mock_core,
+        lifecycle=mock_core,
         notebooks=MagicMock(),
         mind_maps=mind_maps,
         note_service=note_service,
@@ -188,8 +192,8 @@ class TestDownloadUrlErrorWrapping:
         assert output_path.read_bytes() == b"binary media payload"
 
     @pytest.mark.asyncio
-    async def test_401_raises_auth_error_with_auth_hint(self, mock_artifacts_api):
-        """401 is an authentication failure, preserving its HTTP cause on web."""
+    async def test_401_raises_artifact_download_error_with_auth_hint(self, mock_artifacts_api):
+        """401 -> ArtifactDownloadError mentioning re-auth, status_code=401."""
         api = mock_artifacts_api
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -201,11 +205,12 @@ class TestDownloadUrlErrorWrapping:
             with (
                 client_patch,
                 cookies_patch,
-                pytest.raises(AuthError) as exc_info,
+                pytest.raises(ArtifactDownloadError) as exc_info,
             ):
                 await api._download_url("https://storage.googleapis.com/file.mp4", output_path)
 
-            assert "Authentication failed (HTTP 401)" in str(exc_info.value)
+            assert exc_info.value.status_code == 401
+            assert "Authentication required" in str(exc_info.value)
             assert "notebooklm login" in str(exc_info.value)
             # Cause preserved for diagnostics.
             assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
@@ -214,8 +219,8 @@ class TestDownloadUrlErrorWrapping:
             assert not os.path.exists(output_path + ".tmp")
 
     @pytest.mark.asyncio
-    async def test_403_raises_auth_error_with_auth_hint(self, mock_artifacts_api):
-        """403 follows the same auth path and preserves its HTTP cause on web."""
+    async def test_403_raises_artifact_download_error_with_auth_hint(self, mock_artifacts_api):
+        """403 follows the same auth-hint path as 401, with status_code=403."""
         api = mock_artifacts_api
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -227,26 +232,24 @@ class TestDownloadUrlErrorWrapping:
             with (
                 client_patch,
                 cookies_patch,
-                pytest.raises(AuthError) as exc_info,
+                pytest.raises(ArtifactDownloadError) as exc_info,
             ):
                 await api._download_url("https://storage.googleapis.com/file.mp4", output_path)
 
-            assert "Authentication failed (HTTP 403)" in str(exc_info.value)
+            assert exc_info.value.status_code == 403
+            assert "Authentication required" in str(exc_info.value)
             assert "notebooklm login" in str(exc_info.value)
-            assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("error", "expected", "error_type"),
+        ("error", "expected"),
         [
-            (_make_http_status_error(403), "Authentication failed", AuthError),
-            (_make_http_status_error(500), "HTTP error downloading", ArtifactDownloadError),
-            (httpx.ReadTimeout("read timed out"), "Network error", ArtifactDownloadError),
+            (_make_http_status_error(403), "Authentication required"),
+            (_make_http_status_error(500), "HTTP error downloading"),
+            (httpx.ReadTimeout("read timed out"), "Network error"),
         ],
     )
-    async def test_error_details_redact_userinfo(
-        self, mock_artifacts_api, error, expected, error_type
-    ):
+    async def test_error_details_redact_userinfo(self, mock_artifacts_api, error, expected):
         """Trusted URLs may contain userinfo, but diagnostics must not echo it."""
         api = mock_artifacts_api
 
@@ -261,7 +264,7 @@ class TestDownloadUrlErrorWrapping:
             with (
                 client_patch,
                 cookies_patch,
-                pytest.raises(error_type) as exc_info,
+                pytest.raises(ArtifactDownloadError) as exc_info,
             ):
                 await api._download_url(
                     "https://user:pass@storage.googleapis.com:443/file.mp4",

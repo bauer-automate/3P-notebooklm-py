@@ -8,8 +8,9 @@ persists; UPDATE_NOTE applies the title/content payload that callers expect).
 Post-fix:
 - UPDATE_NOTE call is wrapped in ``asyncio.shield`` so an outer cancel cannot
   abort an in-flight finalize.
-- On ``CancelledError`` raised during child publication or the shielded await,
-  a best-effort DELETE_NOTE child is supervised without blocking the re-raise.
+- On ``CancelledError`` raised by the shielded await, a best-effort
+  DELETE_NOTE fires via ``asyncio.create_task`` (NOT awaited — re-raise must
+  not block on cleanup), then the cancellation re-raises.
 
 Acceptance invariant:
   cancel mid-flight after CREATE_NOTE returns but before UPDATE_NOTE
@@ -24,14 +25,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 
 import httpx
 import pytest
 
 from notebooklm import NotebookLMClient
 from notebooklm.rpc import RPCMethod
-from tests._helpers.client_factory import build_client_shell_for_tests
+from tests._fixtures.kernel_test_helpers import install_http_client_for_test
 
 # mock-transport cancel-during-create tests; no HTTP, no cassette.
 # Opt out of the tier-enforcement hook in tests/integration/conftest.py.
@@ -53,26 +53,20 @@ def _rpc_id_in_request(request: httpx.Request) -> str | None:
     return None
 
 
-async def _open_client_with_transport(
+def _make_client_with_transport(
     transport: httpx.AsyncBaseTransport, auth_tokens
 ) -> NotebookLMClient:
-    """Open through the root lifecycle with a synthetic HTTP transport."""
-
-    def _client_factory(**kwargs: Any) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=transport, **kwargs)
-
-    client = build_client_shell_for_tests(
-        auth_tokens,
-        async_client_factory=_client_factory,
+    """Wire a ``NotebookLMClient`` to a mock transport, bypassing full open()."""
+    client = NotebookLMClient(auth_tokens)
+    install_http_client_for_test(
+        client._collaborators.kernel,
+        httpx.AsyncClient(
+            transport=transport,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            },
+        ),
     )
-    await client.__aenter__()
-    generation = client._collaborators.call_supervisor._current
-    assert generation is not None
-    epoch = client._lifecycle._epoch
-    assert generation.epoch == epoch
-    assert client._web_runtime.web_transport._active_epoch == epoch
-    assert client._web_runtime.kernel._active_epoch == epoch
-    assert client._web_runtime.auth_coord._active_epoch == epoch
     return client
 
 
@@ -95,7 +89,7 @@ class _NoteCancelTransport(httpx.AsyncBaseTransport):
         self.captured.append((rpc_id, request))
 
         if rpc_id == RPCMethod.CREATE_NOTE.value:
-            # CREATE_NOTE returns the new note id; mirrors the web mind-map note service.
+            # CREATE_NOTE returns the new note id; mirrors _mind_map.create_note
             # parsing path that pulls ``result[0][0]`` when result is nested.
             return httpx.Response(
                 200,
@@ -135,7 +129,7 @@ async def test_cancel_during_update_note_shields_or_cleans_up(auth_tokens) -> No
     transport. Either branch proves the orphan-note bug is gone.
     """
     transport = _NoteCancelTransport()
-    client = await _open_client_with_transport(transport, auth_tokens)
+    client = _make_client_with_transport(transport, auth_tokens)
 
     try:
         create_task = asyncio.create_task(
@@ -143,30 +137,21 @@ async def test_cancel_during_update_note_shields_or_cleans_up(auth_tokens) -> No
         )
 
         # Let CREATE_NOTE run to completion AND let UPDATE_NOTE enter the
-        # transport. The child reaches this seam before NoteTaskRegistry.spawn
-        # necessarily publishes it back to the parent, pinning both the
-        # publication-reservation race and the later shielded-await window.
+        # transport. This is the window where the bug used to allow an
+        # orphan note to be left behind on cancel.
         await asyncio.wait_for(transport.update_started.wait(), timeout=2.0)
-        registry = client.notes._notes._task_registry
-        active_tasks = registry.active_tasks()
-        assert len(active_tasks) == 1
-        active_task = active_tasks[0]
-        assert active_task is create_task or active_task.get_name() == (
-            "note-update-nb_test-note_new_001"
-        )
 
-        # Cancel mid-UPDATE_NOTE. If the child has been published, the shield
-        # keeps it running; if publication is still reserved, spawn_child
-        # cancels and settles it. Both paths must schedule DELETE_NOTE.
+        # Cancel mid-UPDATE_NOTE. With the shield in place, UPDATE_NOTE
+        # keeps running until release_update is set; the outer awaiter
+        # receives CancelledError and schedules best-effort DELETE_NOTE.
         create_task.cancel()
 
         # Yield so the cancellation can be delivered and any best-effort
         # cleanup task can be scheduled.
         await asyncio.sleep(0)
 
-        # Release UPDATE_NOTE so the published/shielded branch can finish. In
-        # the reserved-publication branch the supervisor has already cancelled
-        # and settled it, so setting the event is harmless.
+        # Release the in-flight UPDATE_NOTE so the inner shielded task can
+        # finish (it would otherwise hang the mock transport indefinitely).
         transport.release_update.set()
 
         # Drain the outer task. May raise CancelledError (cancel propagated
@@ -218,13 +203,11 @@ async def test_cancel_during_update_note_shields_or_cleans_up(auth_tokens) -> No
                 f"cleanup should only run on cancel: rpc_ids={rpc_ids!r}"
             )
     finally:
-        # Never leave the mock UPDATE barrier closed when an assertion fails.
-        # Once ``update_started`` fires, scheduling may leave the registry in
-        # either its reservation state or its published-child state; both are
-        # valid, but a failure before the release above must not turn into a
-        # misleading global-timeout failure inside graceful client shutdown.
-        transport.release_update.set()
-        await client.close()
+        # Defensive cleanup so a failing assertion doesn't leak the http
+        # client and warn at gc time.
+        if client._collaborators.kernel.http_client is not None:
+            await client._collaborators.kernel.get_http_client().aclose()
+            install_http_client_for_test(client._collaborators.kernel, None)
 
 
 @pytest.mark.asyncio
@@ -237,7 +220,7 @@ async def test_no_cancel_no_cleanup(auth_tokens) -> None:
     transport = _NoteCancelTransport()
     # Release UPDATE_NOTE immediately — no cancel will arrive.
     transport.release_update.set()
-    client = await _open_client_with_transport(transport, auth_tokens)
+    client = _make_client_with_transport(transport, auth_tokens)
 
     try:
         note = await client.notes.create("nb_test", title="Hello", content="World")
@@ -251,4 +234,6 @@ async def test_no_cancel_no_cleanup(auth_tokens) -> None:
             f"over-eager: rpc_ids={rpc_ids!r}"
         )
     finally:
-        await client.close()
+        if client._collaborators.kernel.http_client is not None:
+            await client._collaborators.kernel.get_http_client().aclose()
+            install_http_client_for_test(client._collaborators.kernel, None)

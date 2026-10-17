@@ -36,7 +36,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .._adapter_support import redact as _shared_redact
 from .._app.errors import (
     CATEGORY_HINTS,
     ClassifiedError,
@@ -44,11 +43,9 @@ from .._app.errors import (
     classify,
     did_you_mean_hint,
     is_retriable,
-    unconfirmed_hint,
 )
+from .._redact import redact as _shared_redact
 from ..exceptions import NotebookLMError
-from ..outcomes import operation_metadata_payload
-from ._profiles import PROFILE_HEADER
 
 __all__ = [
     "CATEGORY_STATUS",
@@ -180,15 +177,7 @@ def _validation_summary(exc: RequestValidationError) -> str:
     return "; ".join(parts) or "invalid request body"
 
 
-class ProfileHTTPError(StarletteHTTPException):
-    """A profile-routing failure with a stable machine-readable code."""
-
-    def __init__(self, status: int, code: str, detail: str) -> None:
-        super().__init__(status_code=status, detail=detail)
-        self.code = code
-
-
-def http_error_response(status: int, detail: object, *, code: str | None = None) -> JSONResponse:
+def http_error_response(status: int, detail: object) -> JSONResponse:
     """Build the typed envelope for a hand-raised ``HTTPException``.
 
     Renders ``HTTPException``s (the auth dependency's 401/403, an artifact poll's
@@ -208,8 +197,6 @@ def http_error_response(status: int, detail: object, *, code: str | None = None)
         "category": _http_category_label(status),
         "message": _redact(detail),
     }
-    if code is not None:
-        body["code"] = code
     category = _STATUS_CATEGORY.get(status)
     if category is not None:
         body["retriable"] = is_retriable(category)
@@ -231,14 +218,7 @@ def _project_classified(exc: BaseException, classified: ClassifiedError) -> dict
         "message": message,
         "retriable": classified.retriable,
     }
-    body.update(operation_metadata_payload(exc))
     hint = CATEGORY_HINTS.get(category)
-    # An UNCONFIRMED create (#2220) is forced to the RPC category (HTTP 502),
-    # whose hint is None — so without this the caller gets an opaque message and
-    # ``retriable: false`` with nothing saying a source may already exist.
-    if getattr(exc, "unconfirmed", False):
-        body["unconfirmed"] = True
-        hint = unconfirmed_hint(exc)
     # A failed *name* lookup may carry near-miss candidates (issue #1787); surface
     # them and swap the generic NOT_FOUND hint for a "Did you mean …" one.
     candidates = list(getattr(exc, "candidates", ()) or ())
@@ -309,7 +289,7 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _handle_http(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        return http_error_response(exc.status_code, exc.detail, code=getattr(exc, "code", None))
+        return http_error_response(exc.status_code, exc.detail)
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -321,12 +301,4 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(_request: Request, exc: Exception) -> JSONResponse:
-        response = error_response(exc)
-        # ServerErrorMiddleware sits outside user middleware: its response does
-        # not pass back through the ordinary profile-header decorator.
-        state = getattr(_request.state, "notebooklm_profile_state", None)
-        if state is not None:
-            response.headers[PROFILE_HEADER] = state.profile
-            response.headers["Cache-Control"] = "no-store"
-            response.headers["Vary"] = PROFILE_HEADER
-        return response
+        return error_response(exc)

@@ -8,12 +8,9 @@ the start→status poll shape, the import workflow, and error projection.
 
 from __future__ import annotations
 
-import asyncio
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 from enum import Enum
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,7 +23,6 @@ from fastmcp.exceptions import ToolError  # noqa: E402 - after importorskip guar
 
 from notebooklm import ResearchStartUnavailableError  # noqa: E402 - after importorskip guard
 from notebooklm.types import (  # noqa: E402 - after importorskip guard
-    DiscoveryMode,
     ResearchSource,
     ResearchStatus,
     ResearchTask,
@@ -60,21 +56,13 @@ class FakeSource:
     url: str
     title: str
     report_markdown: str = ""
-    hint: str = ""
 
     def to_public_dict(self) -> dict[str, str]:
         # Mirror the real ``ResearchSource.to_public_dict``: ``report_markdown``
-        # and ``hint`` are only emitted when truthy. NOTE this is a hand-mirror,
-        # so a test asserting a key here proves the TOOL forwards it, not that
-        # the real model emits it — that guarantee lives in
-        # ``tests/unit/app/test_app_research.py`` and
-        # ``tests/unit/test_research_task_parser.py``, both of which drive the
-        # real ``ResearchSource``.
+        # is only emitted when truthy.
         public = {"url": self.url, "title": self.title}
         if self.report_markdown:
             public["report_markdown"] = self.report_markdown
-        if self.hint:
-            public["hint"] = self.hint
         return public
 
 
@@ -88,12 +76,6 @@ class FakeResearchTask:
     task_id: str = TASK_ID
     status_code: int | None = None
     source_type: int | None = None
-    # #2122 run metadata. Defaults are the "poll made no claim" state, so the
-    # existing tests keep asserting the absent shape; the dedicated #2122 test
-    # sets them from the live-observed values.
-    discovery_mode: DiscoveryMode | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
 
     # Delegate the #1964 derivations to a REAL ``ResearchTask`` rather than
     # restating them here, so this fake cannot drift from the shipped
@@ -113,8 +95,6 @@ class FakeResearchTask:
             sources=tuple(ResearchSource(url=s.url, title=s.title) for s in self.sources),
             status_code=self.status_code,
             source_type=self.source_type,
-            created_at=self.created_at,
-            updated_at=self.updated_at,
         )
 
     @property
@@ -128,10 +108,6 @@ class FakeResearchTask:
     @property
     def hint(self) -> str | None:
         return self._derived.hint
-
-    @property
-    def duration(self) -> timedelta | None:
-        return self._derived.duration
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -1315,137 +1291,3 @@ async def test_research_import_allow_duplicate_threads_through(mcp_call, mock_cl
     assert sc["already_present_count"] == 0
     _, kwargs = mock_client.research.import_sources_with_verification.await_args
     assert kwargs.get("allow_duplicate") is True
-
-
-# ---------------------------------------------------------------------------
-# run metadata on the research_status payload (#2122)
-# ---------------------------------------------------------------------------
-
-
-async def test_research_status_surfaces_run_metadata(mcp_call, mock_client) -> None:
-    """An agent can confirm which mode a run is executing under and how long it
-    has been going, from the poll it already makes."""
-    mock_client.research.poll = AsyncMock(
-        return_value=FakeResearchTask(
-            status=FakeResearchStatus.IN_PROGRESS,
-            status_code=1,
-            discovery_mode=DiscoveryMode.DEEP_RESEARCH,
-            created_at=datetime(2026, 8, 13, 11, 12, 58, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 8, 13, 11, 13, 5, tzinfo=timezone.utc),
-        )
-    )
-    content = (await mcp_call("research_status", {"notebook": NB_ID})).structured_content
-
-    assert content["discovery_mode"] == "deep_research"
-    assert content["created_at"] == "2026-08-13T11:12:58+00:00"
-    assert content["updated_at"] == "2026-08-13T11:13:05+00:00"
-    assert content["duration_seconds"] == 7.0
-
-
-async def test_research_status_run_metadata_is_none_when_absent(mcp_call, mock_client) -> None:
-    mock_client.research.poll = AsyncMock(
-        return_value=FakeResearchTask(status=FakeResearchStatus.COMPLETED, status_code=2)
-    )
-    content = (await mcp_call("research_status", {"notebook": NB_ID})).structured_content
-
-    assert content["discovery_mode"] is None
-    assert content["created_at"] is None
-    assert content["updated_at"] is None
-    assert content["duration_seconds"] is None
-
-
-async def test_research_status_sources_carry_their_hints(mcp_call, mock_client) -> None:
-    mock_client.research.poll = AsyncMock(
-        return_value=FakeResearchTask(
-            status=FakeResearchStatus.COMPLETED,
-            status_code=2,
-            sources=[FakeSource(url="https://example.com/1", title="S1", hint="why this one")],
-        )
-    )
-    content = (await mcp_call("research_status", {"notebook": NB_ID})).structured_content
-
-    assert content["sources"][0]["hint"] == "why this one"
-
-
-def _bind_operation(mock_client: Any, timeout: float | None = None) -> Any:
-    from notebooklm import NotebookLMClient
-    from notebooklm._client_metrics import ClientMetrics
-    from notebooklm._runtime.call_supervisor import CallSupervisor
-
-    supervisor = CallSupervisor(
-        metrics=ClientMetrics(), max_concurrent_rpcs=1, operation_timeout=timeout
-    )
-    supervisor.prepare_generation(1)
-    supervisor.start_accepting(1)
-    real = object.__new__(NotebookLMClient)
-    real._collaborators = SimpleNamespace(call_supervisor=supervisor)
-    mock_client.operation = real.operation
-    return supervisor
-
-
-async def test_research_import_does_not_dispatch_import_after_poll_exhausts_budget(
-    mcp_call, mock_client
-) -> None:
-    supervisor = _bind_operation(mock_client, 0.06)
-    calls: list[str] = []
-
-    async def poll(notebook_id, task_id=None):
-        async with supervisor.operation_scope("research.poll"):
-            calls.append("poll")
-            await asyncio.sleep(0.05)
-            return FakeResearchTask(
-                status=FakeResearchStatus.COMPLETED,
-                sources=[FakeSource(url="http://a", title="A")],
-                task_id=TASK_ID,
-            )
-
-    async def import_sources_with_verification(notebook_id, task_id, sources, **kwargs):
-        async with supervisor.operation_scope("research.import_sources"):
-            await asyncio.sleep(0.05)
-            async with supervisor.call_scope("import.dispatch", None, None):
-                calls.append("import")
-            return [{"id": "src-1", "title": "A"}]
-
-    mock_client.research.poll = poll
-    mock_client.research.import_sources_with_verification = import_sources_with_verification
-    with pytest.raises(ToolError):
-        await mcp_call("research_import", {"notebook": NB_ID, "poll_task_id": TASK_ID})
-    assert calls == ["poll"]
-
-
-async def test_research_import_drain_rejects_new_work_between_poll_and_import(
-    mcp_call, mock_client
-) -> None:
-    supervisor = _bind_operation(mock_client)
-    poll_started = asyncio.Event()
-    resume_poll = asyncio.Event()
-    imported: list[str] = []
-
-    async def poll(notebook_id, task_id=None):
-        async with supervisor.operation_scope("research.poll"):
-            poll_started.set()
-            await resume_poll.wait()
-            return FakeResearchTask(
-                status=FakeResearchStatus.COMPLETED,
-                sources=[FakeSource(url="http://a", title="A")],
-                task_id=task_id or TASK_ID,
-            )
-
-    async def import_sources_with_verification(notebook_id, task_id, sources, **kwargs):
-        async with supervisor.operation_scope("research.import_sources"):
-            imported.append(task_id)
-            return [{"id": "src-1", "title": "A"}]
-
-    mock_client.research.poll = poll
-    mock_client.research.import_sources_with_verification = import_sources_with_verification
-    action = asyncio.create_task(
-        mcp_call("research_import", {"notebook": NB_ID, "poll_task_id": TASK_ID})
-    )
-    await poll_started.wait()
-    await supervisor.stop_accepting(1)
-    with pytest.raises(ToolError):
-        await mcp_call("research_import", {"notebook": NB_ID, "poll_task_id": "run-2"})
-    resume_poll.set()
-    result = await action
-    assert result.structured_content["status"] == "imported"
-    assert imported == [TASK_ID]

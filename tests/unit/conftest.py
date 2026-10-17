@@ -5,9 +5,7 @@ test modules (e.g. ``from tests.unit.conftest import make_core``) now that
 the ``tests`` package chain is complete and fully qualified.
 """
 
-import asyncio
-import warnings
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -27,7 +25,7 @@ def install_post_as_stream(
     """Adapt a ``fake_post(...) -> Response`` mock to the streaming API.
 
     The RPC POST path uses :meth:`httpx.AsyncClient.stream` (so a running
-    size guard can enforce :data:`notebooklm._web.transport.streaming_post.MAX_RPC_RESPONSE_BYTES`).
+    size guard can enforce :data:`notebooklm._streaming_post.MAX_RPC_RESPONSE_BYTES`).
     The bulk of the unit suite predates that switch and still expresses test
     intent as ``monkeypatch.setattr(client, "post", fake_post)``. This helper
     bridges the gap: it installs an ``async with client.stream(...)``-compatible
@@ -105,26 +103,6 @@ def install_post_as_stream(
 
 
 @pytest.fixture
-def restore_event_loop_policy() -> Iterator[None]:
-    """Put back the event-loop policy a test replaces.
-
-    The CLI's selector opt-in sets the global policy on Python 3.10, and some
-    Windows tests install a selector policy on purpose. Without this, later
-    tests in the same worker would inherit it, and on Windows a selector loop
-    cannot start subprocesses.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        original = asyncio.get_event_loop_policy()
-    try:
-        yield
-    finally:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            asyncio.set_event_loop_policy(original)
-
-
-@pytest.fixture
 def auth_tokens():
     """Create test authentication tokens for unit tests.
 
@@ -176,10 +154,10 @@ async def make_core(refresh_callback=None, transport=None, refresh_retry_delay=0
         # can observe real httpx.Request construction (cookie merge, headers).
         # Capture the cookie jar BEFORE aclose() — reading attributes off a
         # closed AsyncClient is brittle across httpx versions.
-        prior_cookies = core._web_runtime.kernel.get_http_client().cookies
-        await core._web_runtime.kernel.get_http_client().aclose()
+        prior_cookies = core._collaborators.kernel.get_http_client().cookies
+        await core._collaborators.kernel.get_http_client().aclose()
         install_http_client_for_test(
-            core._web_runtime.kernel,
+            core._collaborators.kernel,
             httpx.AsyncClient(
                 cookies=prior_cookies,
                 transport=transport,

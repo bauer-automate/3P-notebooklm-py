@@ -15,12 +15,6 @@ changed line is a deliberate, reviewed acknowledgement of a public-surface chang
 
     python scripts/regen_baselines.py
 
-Shrink-only baselines accept tightening/removals with the ordinary command. A
-ceiling increase, new policy caller, or new large guardrail literal additionally
-requires explicit review and acknowledgement::
-
-    python scripts/regen_baselines.py --allow-growth
-
 **Dev-only-regen invariant (ADR-0022):** CI never regenerates — it only diffs the
 committed files against ``derive()``. This script (and the underlying fixture)
 refuses to run when a CI environment is detected, so it cannot silently rewrite
@@ -69,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     if result.returncode == 0:
         print(
             "baselines regenerated; review `git diff` — each change is a "
-            "deliberate acknowledgement.",
+            "deliberate public-surface acknowledgement.",
             file=sys.stderr,
         )
     return result.returncode

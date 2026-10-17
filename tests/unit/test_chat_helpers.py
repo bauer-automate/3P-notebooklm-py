@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from notebooklm._chat import _extract_next_turn_content
-from notebooklm._web.chat import WebChatAPI
+from notebooklm._chat import ChatAPI, _extract_next_turn_content
 from notebooklm.exceptions import UnknownRPCMethodError
 
 # ---------------------------------------------------------------------------
@@ -91,4 +90,4 @@ def test_parse_turns_to_qa_pairs_drift_raises() -> None:
     ]
 
     with pytest.raises(UnknownRPCMethodError):
-        WebChatAPI._parse_turns_to_qa_pairs(turns_data)
+        ChatAPI._parse_turns_to_qa_pairs(turns_data)

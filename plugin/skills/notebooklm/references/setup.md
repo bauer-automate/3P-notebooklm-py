@@ -79,9 +79,7 @@ For automated environments, multiple accounts, or parallel agent workflows:
 | `NOTEBOOKLM_PROFILE` | Active profile name (default: `default`) |
 | `NOTEBOOKLM_AUTH_JSON` | Inline auth JSON - no file writes needed |
 
-**CI/CD setup (preferred):** use durable master-token auth. Install `pip install "notebooklm-py[headless]"`, run `notebooklm login --master-token --account <email>` on a trusted workstation, then write the `master_token.json` secret (mode `0600`) into the selected profile and run `notebooklm auth refresh` to mint `storage_state.json`. A sibling master token re-mints expired cookies automatically.
-
-**CI/CD fallback:** `NOTEBOOKLM_AUTH_JSON` from a secret holding your `storage_state.json` is short-lived and bypasses that recovery. Add `--passive` to `auth check --test --json` when the check must be strictly read-only.
+**CI/CD setup:** Set `NOTEBOOKLM_AUTH_JSON` from a secret containing your `storage_state.json` contents.
 
 **Multiple accounts:** Use named profiles (`notebooklm profile create work`, then `notebooklm -p work login`). Alternatively, use different `NOTEBOOKLM_HOME` directories per account.
 

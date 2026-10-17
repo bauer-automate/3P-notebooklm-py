@@ -24,14 +24,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, TypeAlias, cast
 
 from fastmcp.server.dependencies import get_http_request
-from fastmcp.tools import ToolResult
+from fastmcp.tools.tool import ToolResult
 from mcp.types import ResourceLink, TextContent
-from pydantic import BeforeValidator, WithJsonSchema
+from pydantic import AnyUrl, BeforeValidator, WithJsonSchema
 
 from ..._app import download as download_core
 from ..._app import download_specs as download_specs_core
 from ..._app.resolve import resolve_ref
-from ...exceptions import AuthError, NotebookLMError, ValidationError
+from ...exceptions import NotebookLMError, ValidationError
 from .._filelink import DOWNLOAD_TTL, FileTransferConfig
 
 if TYPE_CHECKING:
@@ -101,7 +101,6 @@ class _InlineText(NamedTuple):
     truncated: bool
     artifact_id: str | None
     title: str | None
-    size_bytes: int | None
 
 
 def _read_bounded_text(path: str) -> tuple[str, int, bool]:
@@ -342,10 +341,6 @@ async def _do_read_inline_artifact_text(
                 notebook_resolver=_passthrough_download_notebook,
                 artifact_resolver=_resolve_artifact_id,
             )
-        except AuthError:
-            # Authentication is actionable and must reach ``mcp_errors`` so
-            # the tool returns the typed AUTH envelope instead of link-only.
-            raise
         except NotebookLMError:
             # Upstream list/RPC failure (execute_download does not wrap its own list
             # call). Inline text is best-effort, so degrade to link-only rather than
@@ -370,9 +365,7 @@ async def _do_read_inline_artifact_text(
     # The concrete artifact execute_download selected — id + title — so the broker can
     # PIN the link to it (the "latest" path passed no id but resolved one here).
     selected = result.artifact or {}
-    return _InlineText(
-        content, char_count, truncated, selected.get("id"), selected.get("title"), result.size_bytes
-    )
+    return _InlineText(content, char_count, truncated, selected.get("id"), selected.get("title"))
 
 
 def _broker_download(
@@ -384,7 +377,6 @@ def _broker_download(
     *,
     title: str | None = None,
     inline: tuple[str, int, bool] | None = None,
-    size_bytes: int | None = None,
 ) -> ToolResult:
     """Mint a signed download URL + a clickable ``resource_link`` for a remote
     ``studio_download``.
@@ -398,11 +390,8 @@ def _broker_download(
     the type name on the latest-by-type path where no id was resolved — plus the
     format-resolved extension) and ``mime_type`` both come from the SAME central
     helpers the ``/files/dl`` route serves with, so the advertised metadata and the
-    streamed bytes can't drift. ``size_bytes`` preserves the measured file size
-    when the existing inline-text fetch downloaded the artifact. It remains
-    ``None`` for link-only results: minting a link must not add an eager fetch.
-    The size describes the full file, including bytes removed by inline decoding
-    or truncation; it must never be inferred from ``content`` or ``char_count``.
+    streamed bytes can't drift. ``size_bytes`` is ``None``: it can't be known
+    without eagerly fetching the artifact, which this must not do.
 
     ``inline`` (``(content, char_count, truncated)``, from
     :func:`_read_inline_artifact_text` for text kinds — report / data-table) adds the
@@ -427,7 +416,9 @@ def _broker_download(
         "artifact_type": artifact_type,
         "filename": download_filename(spec, title, output_format),
         "mime_type": download_mime_type(spec, output_format),
-        "size_bytes": size_bytes,
+        # Unknown without eagerly downloading (which we refuse to do); the route
+        # sets the real Content-Length when the link is opened.
+        "size_bytes": None,
         "url": url,
         "expires_at": int(time.time()) + DOWNLOAD_TTL,
     }
@@ -442,7 +433,10 @@ def _broker_download(
     link = ResourceLink(
         type="resource_link",
         name=f"{artifact_type} download",
-        uri=url,
+        # ResourceLink.uri is an AnyUrl — construct it explicitly rather than
+        # passing the raw str (keeps mypy happy across pydantic-stub versions:
+        # a bare str needed a [arg-type] ignore that CI's stubs flagged unused).
+        uri=AnyUrl(url),
         description=desc,
     )
     content: list[Any] = [link]

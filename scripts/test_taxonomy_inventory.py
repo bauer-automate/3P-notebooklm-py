@@ -8,7 +8,6 @@ import contextlib
 import io
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,11 +40,9 @@ class ItemRecord:
 
 class CollectionRecorder:
     def __init__(self) -> None:
-        self.items: list[pytest.Item] = []
+        self.items: list[object] = []
 
-    def pytest_collection_modifyitems(
-        self, config: pytest.Config, items: list[pytest.Item]
-    ) -> None:
+    def pytest_collection_modifyitems(self, config, items) -> None:
         self.items = list(items)
 
 
@@ -145,22 +142,10 @@ def _markdown_list(values: list[str], *, empty: str = "None.") -> str:
     return "\n".join(f"- `{value}`" for value in values)
 
 
-def _allowlist(entries: list[str], rationale: str | Callable[[str], str]) -> str:
+def _allowlist(entries: list[str], rationale: str) -> str:
     if not entries:
         return "# No entries.\n"
-    return (
-        "\n".join(
-            f"{entry} # {rationale(entry) if callable(rationale) else rationale}"
-            for entry in sorted(entries)
-        )
-        + "\n"
-    )
-
-
-def _no_vcr_rationale(entry: str) -> str:
-    if entry.startswith("tests/integration/faults/"):
-        return "real loopback fault service; socket failures cannot be reproduced by VCR"
-    return ALLOW_NO_VCR_RATIONALE
+    return "\n".join(f"{entry} # {rationale}" for entry in sorted(entries)) + "\n"
 
 
 def allowlist_entries_from_text(content: str) -> list[str]:
@@ -353,11 +338,11 @@ def rendered_baseline_outputs(records: list[ItemRecord]) -> dict[Path, str]:
     return {
         ALLOW_NO_VCR_FILES_PATH: _allowlist(
             _sorted_paths({record.path for record in allow_no_vcr}),
-            _no_vcr_rationale,
+            ALLOW_NO_VCR_RATIONALE,
         ),
         ALLOW_NO_VCR_NODEIDS_PATH: _allowlist(
             [record.nodeid for record in allow_no_vcr],
-            _no_vcr_rationale,
+            ALLOW_NO_VCR_RATIONALE,
         ),
         VCR_ALLOW_NO_VCR_NODEIDS_PATH: _allowlist(
             [record.nodeid for record in overlap],
@@ -381,8 +366,8 @@ def check_outputs(outputs: dict[Path, str]) -> int:
             stale.append(_repo_relative(path))
     if stale:
         print("taxonomy inventory outputs are stale:", file=sys.stderr)
-        for stale_path in stale:
-            print(f"  {stale_path}", file=sys.stderr)
+        for path in stale:
+            print(f"  {path}", file=sys.stderr)
         return 1
     return 0
 

@@ -25,9 +25,7 @@ The auth-snapshot lock hardened the invariant by:
   ``AuthSnapshot`` rather than reading ``self.auth`` LIVE — that
   prior live-read was the actual torn-read hazard, since it let a
   refresh's write to ``self.auth.session_id`` slip into the URL between
-  snapshot capture and request build; and
-- serializing the no-await stored-profile install, so cookies and the
-  ``authuser``/``account_email`` route advance as one generation.
+  snapshot capture and request build.
 
 This file *locks* the invariant in four ways:
 
@@ -69,11 +67,10 @@ import textwrap
 import httpx
 import pytest
 
-from notebooklm._auth.cookie_types import CookieJar
-from notebooklm._web.transport.auth import AuthRefreshCoordinator
-from notebooklm._web.transport.executor import RpcExecutor
-from notebooklm._web.transport.middleware.auth_refresh import AuthRefreshMiddleware
-from notebooklm._web.transport.runtime import RuntimeTransport
+from notebooklm._middleware.auth_refresh import AuthRefreshMiddleware
+from notebooklm._rpc_executor import RpcExecutor
+from notebooklm._runtime.auth import AuthRefreshCoordinator
+from notebooklm._runtime.transport import RuntimeTransport
 from notebooklm.auth import AuthTokens
 from notebooklm.rpc import RPCMethod
 from tests._fixtures.kernel_test_helpers import install_http_client_for_test
@@ -106,7 +103,7 @@ def test_kernel_post_terminal_has_no_await_before_post_per_attempt():
     # Locate the ``try`` block guarding the POST. Post-PR-12.9 the leaf
     # has no ``while`` retry loop and no ``async with`` semaphore wrap;
     # the try sits at the top of the function body (the semaphore is
-    # held by ``CallSupervisor`` outside the chain).
+    # held by ``SemaphoreMiddleware`` higher up the chain).
     def _find_first_try(parent: ast.AST) -> ast.Try | None:
         for child in ast.iter_child_nodes(parent):
             if isinstance(child, ast.Try):
@@ -411,85 +408,6 @@ def test_update_auth_tokens_has_no_await_inside_mutation_block():
     )
 
 
-def test_profile_session_install_has_no_await_inside_mutation_block() -> None:
-    """Stored cookies and account routing must advance in one locked block."""
-    src = textwrap.dedent(inspect.getsource(AuthRefreshCoordinator.install_profile_session))
-    tree = ast.parse(src)
-    func = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef))
-    mutation_try = next(
-        (
-            node
-            for node in ast.walk(func)
-            if isinstance(node, ast.Try)
-            and any(
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr == "_replace_profile_session"
-                for statement in node.body
-                for call in ast.walk(statement)
-            )
-        ),
-        None,
-    )
-    assert mutation_try is not None
-    assert [node for node in ast.walk(mutation_try) if isinstance(node, ast.Await)] == []
-
-
-async def test_stale_account_only_profile_install_cannot_overwrite_newer_route() -> None:
-    """The install CAS includes route/generation even when cookie bytes are equal."""
-    auth = AuthTokens(
-        cookies={"SID": "same", "__Secure-1PSIDTS": "same-ts"},
-        csrf_token="csrf",
-        session_id="session",
-        authuser=1,
-        account_email="first@example.com",
-    )
-    client = build_client_shell_for_tests(auth)
-    coordinator = client._web_runtime.auth_coord
-    target = auth.cookie_jar
-    assert target is not None
-    expected = CookieJar.from_httpx(target)
-    same_source = httpx.Cookies(target)
-    lock = coordinator.get_auth_snapshot_lock()
-
-    await lock.acquire()
-    try:
-        stale_install = asyncio.create_task(
-            coordinator.install_profile_session(
-                auth=auth,
-                target_cookie_jar=target,
-                source_cookie_jar=same_source,
-                expected_cookie_jar=expected,
-                expected_authuser=1,
-                expected_account_email="first@example.com",
-                expected_generation=0,
-                authuser=2,
-                account_email="stale@example.com",
-            )
-        )
-        await asyncio.sleep(0)
-        assert not stale_install.done()
-        assert (
-            auth._replace_profile_session(
-                target_cookie_jar=target,
-                source_cookie_jar=same_source,
-                expected_cookie_jar=expected,
-                expected_authuser=1,
-                expected_account_email="first@example.com",
-                expected_generation=0,
-                authuser=3,
-                account_email="newer@example.com",
-            )
-            is True
-        )
-    finally:
-        lock.release()
-
-    assert await stale_install is None
-    assert (auth.authuser, auth.account_email) == (3, "newer@example.com")
-    assert auth._profile_session_generation == 1
-
-
 def _synthetic_rpc_response_text(rpc_id: str) -> str:
     """Build a minimal valid batchexecute response that decodes to []."""
     inner = json.dumps([])
@@ -556,10 +474,10 @@ async def test_concurrent_refresh_does_not_corrupt_inflight_rpc_request(rpc_firs
         # transport so we can observe the real ``httpx.Request`` (cookie
         # merge, headers, body, URL). Mirrors the ``make_core`` post-open
         # transport-install dance verbatim.
-        prior_cookies = core._web_runtime.kernel.get_http_client().cookies
-        await core._web_runtime.kernel.get_http_client().aclose()
+        prior_cookies = core._collaborators.kernel.get_http_client().cookies
+        await core._collaborators.kernel.get_http_client().aclose()
         install_http_client_for_test(
-            core._web_runtime.kernel,
+            core._collaborators.kernel,
             httpx.AsyncClient(
                 cookies=prior_cookies,
                 transport=transport,
@@ -575,7 +493,7 @@ async def test_concurrent_refresh_does_not_corrupt_inflight_rpc_request(rpc_firs
         try:
             if rpc_first:
                 rpc_task = asyncio.create_task(
-                    core._web_runtime.executor.rpc_call(RPCMethod.LIST_NOTEBOOKS, [])
+                    core._rpc_executor.rpc_call(RPCMethod.LIST_NOTEBOOKS, [])
                 )
                 await asyncio.wait_for(rpc_send_entered.wait(), EVENT_TIMEOUT_S)
                 refresh_task = asyncio.create_task(client.refresh_auth())
@@ -588,7 +506,7 @@ async def test_concurrent_refresh_does_not_corrupt_inflight_rpc_request(rpc_firs
                 refresh_task = asyncio.create_task(client.refresh_auth())
                 await asyncio.wait_for(get_entered.wait(), EVENT_TIMEOUT_S)
                 rpc_task = asyncio.create_task(
-                    core._web_runtime.executor.rpc_call(RPCMethod.LIST_NOTEBOOKS, [])
+                    core._rpc_executor.rpc_call(RPCMethod.LIST_NOTEBOOKS, [])
                 )
                 await asyncio.wait_for(rpc_send_entered.wait(), EVENT_TIMEOUT_S)
                 let_get_complete.set()

@@ -16,8 +16,6 @@
       "show"
     ],
     "artifact": [
-      "choices",
-      "copy",
       "delete",
       "export",
       "get",
@@ -96,8 +94,6 @@
     ],
     "research": [
       "cancel",
-      "discover",
-      "import",
       "status",
       "wait"
     ],
@@ -118,15 +114,10 @@
     ],
     "source": [
       "add",
-      "add-async",
-      "add-book",
       "add-drive",
       "add-drive-file",
       "add-research",
-      "append",
-      "books",
       "clean",
-      "copy",
       "delete",
       "delete-by-title",
       "fulltext",
@@ -135,7 +126,6 @@
       "list",
       "refresh",
       "rename",
-      "search",
       "stale",
       "wait"
     ]
@@ -172,8 +162,6 @@
     "artifact": {
       "class": "Group",
       "commands": [
-        "choices",
-        "copy",
         "delete",
         "export",
         "get",
@@ -187,119 +175,6 @@
       ],
       "params": [],
       "short_help": "Artifact management commands."
-    },
-    "artifact choices": {
-      "class": "Command",
-      "params": [
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Show the Studio \"Customize\" option tables..."
-    },
-    "artifact copy": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "artifact_ids",
-          "nargs": -1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": "Sentinel.UNSET",
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Target notebook id (or unique prefix)",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "target",
-          "opts": [
-            "--to"
-          ],
-          "required": true,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Copy Studio artifacts into another..."
     },
     "artifact delete": {
       "class": "Command",
@@ -617,9 +492,7 @@
               "infographic",
               "data-table",
               "mind-map",
-              "report",
-              "fantasy-map",
-              "file"
+              "report"
             ],
             "name": "choice"
           }
@@ -1418,7 +1291,7 @@
           "default": "auto",
           "envvar": null,
           "has_custom_shell_complete": false,
-          "help": "Browser to read cookies from (chrome, firefox, brave, edge, safari, arc, ...). 'auto' picks the first one rookie-cookies can read. Use 'chrome::<profile>' for one Chromium profile or 'firefox::<container>' for one Firefox container. Requires: pip install 'notebooklm-py[cookies]'",
+          "help": "Browser to read cookies from (chrome, firefox, brave, edge, safari, arc, ...). 'auto' picks the first one rookiepy can read. Use 'chrome::<profile>' for one Chromium profile or 'firefox::<container>' for one Firefox container. Requires: pip install 'notebooklm-py[cookies]'",
           "is_flag": false,
           "kind": "option",
           "multiple": false,
@@ -2067,77 +1940,6 @@
       ],
       "short_help": "Configure chat persona and response settings."
     },
-    "copy": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "title",
-          "nargs": 1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Set the copied notebook as the current context.",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "switch_context",
-          "opts": [
-            "--use",
-            "-u"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Copy a notebook, including its sources and..."
-    },
     "create": {
       "class": "Command",
       "params": [
@@ -2292,7 +2094,7 @@
           }
         }
       ],
-      "short_help": "Check profile setup, local auth material,..."
+      "short_help": "Check profile setup, auth status, and..."
     },
     "download": {
       "class": "Group",
@@ -7845,27 +7647,6 @@
           }
         },
         {
-          "default": 300,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Seconds to wait for a human to complete browser sign-in.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "browser_timeout",
-          "opts": [
-            "--browser-timeout"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "clamp": false,
-            "max": null,
-            "min": 1,
-            "name": "integer range"
-          }
-        },
-        {
           "default": null,
           "envvar": null,
           "has_custom_shell_complete": false,
@@ -8573,7 +8354,6 @@
         "collection",
         "completion",
         "configure",
-        "copy",
         "create",
         "delete",
         "doctor",
@@ -8594,10 +8374,8 @@
         "skill",
         "source",
         "status",
-        "suggest-next-steps",
         "suggest-prompts",
         "summary",
-        "usage",
         "use"
       ],
       "params": [
@@ -8662,29 +8440,6 @@
           "secondary_opts": [],
           "type": {
             "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Preferred API backend (default: $NOTEBOOKLM_BACKEND, else web).",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "backend",
-          "opts": [
-            "--backend"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "case_sensitive": true,
-            "choices": [
-              "web",
-              "android"
-            ],
-            "name": "choice"
           }
         },
         {
@@ -9000,8 +8755,6 @@
       "class": "Group",
       "commands": [
         "cancel",
-        "discover",
-        "import",
         "status",
         "wait"
       ],
@@ -9060,219 +8813,6 @@
       ],
       "short_help": "Cancel an in-flight research run."
     },
-    "research discover": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "query",
-          "nargs": 1,
-          "required": false,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": "default",
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Search mode. 'curious' and 'curious_raw' let the backend pick a topic and accept an empty QUERY.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "mode",
-          "opts": [
-            "--mode"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "case_sensitive": false,
-            "choices": [
-              "default",
-              "raw",
-              "curious",
-              "curious_raw"
-            ],
-            "name": "choice"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Discover web sources for QUERY in one..."
-    },
-    "research import": {
-      "class": "Command",
-      "params": [
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Run to import. Omit it and the notebook's single research run is used; with more than one run this errors rather than guessing, so pass the id ('research status' shows it).",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "run_id",
-          "opts": [
-            "--run-id"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Import only report-cited sources",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "cited_only",
-          "opts": [
-            "--cited-only"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": 1800,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Seconds budget for read-only candidate inspection after an unknown import outcome (default: 1800). IMPORT_RESEARCH is sent once. The command never waits for the RUN to finish. Matches 'research wait --timeout'.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "timeout",
-          "opts": [
-            "--timeout"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "integer"
-          }
-        },
-        {
-          "default": null,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Import at most N sources (default: all)",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "max_sources",
-          "opts": [
-            "--max-sources"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "clamp": false,
-            "max": null,
-            "min": 1,
-            "name": "integer range"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Re-add sources whose URL is already in the notebook",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "allow_duplicate",
-          "opts": [
-            "--allow-duplicate"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Import a completed research run's sources."
-    },
     "research status": {
       "class": "Command",
       "params": [
@@ -9288,25 +8828,6 @@
           "opts": [
             "-n",
             "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Poll one exact research run instead of the notebook's unfiltered history.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "run_id",
-          "opts": [
-            "--run-id",
-            "--task-id"
           ],
           "required": false,
           "secondary_opts": [],
@@ -9358,29 +8879,10 @@
           }
         },
         {
-          "default": null,
+          "default": 300,
           "envvar": null,
           "has_custom_shell_complete": false,
-          "help": "Wait for one exact research run instead of selecting from notebook history.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "run_id",
-          "opts": [
-            "--run-id",
-            "--task-id"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": 1800,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Per-phase seconds budget for (a) the research-completion poll loop and (b) read-only candidate inspection after an unknown --import-all outcome (default: 1800). The import mutation is sent once. Each phase gets the full budget independently, so worst-case total wall time is up to 2\u00d7 this value. Matches 'source add-research --timeout' semantics.",
+          "help": "Maximum seconds to wait (default: 300)",
           "is_flag": false,
           "kind": "option",
           "multiple": false,
@@ -10218,7 +9720,7 @@
           }
         }
       ],
-      "short_help": "Check installed skill targets, versions,..."
+      "short_help": "Check installed skill targets and version..."
     },
     "skill uninstall": {
       "class": "Command",
@@ -10277,15 +9779,10 @@
       "class": "Group",
       "commands": [
         "add",
-        "add-async",
-        "add-book",
         "add-drive",
         "add-drive-file",
         "add-research",
-        "append",
-        "books",
         "clean",
-        "copy",
         "delete",
         "delete-by-title",
         "fulltext",
@@ -10294,7 +9791,6 @@
         "list",
         "refresh",
         "rename",
-        "search",
         "stale",
         "wait"
       ],
@@ -10452,42 +9948,6 @@
           "default": false,
           "envvar": null,
           "has_custom_shell_complete": false,
-          "help": "Recover failed web URLs as static text.",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "fallback_fetch",
-          "opts": [
-            "--fallback-fetch"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Remove attributable ghosts after recovery.",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "cleanup_on_failure",
-          "opts": [
-            "--cleanup-on-failure"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
           "help": "Output as JSON",
           "is_flag": true,
           "kind": "option",
@@ -10504,146 +9964,6 @@
         }
       ],
       "short_help": "Add a source to a notebook."
-    },
-    "source add-async": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "urls",
-          "nargs": -1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Allow private/loopback/link-local hosts (same gate as `source add`).",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "allow_internal",
-          "opts": [
-            "--allow-internal"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Queue one or more URL sources without..."
-    },
-    "source add-book": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "content_id",
-          "nargs": 1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Wait for processing to finish",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "wait",
-          "opts": [
-            "--wait"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Add a Google Play Book as a source by its..."
     },
     "source add-drive": {
       "class": "Command",
@@ -10972,7 +10292,7 @@
           "default": 1800,
           "envvar": null,
           "has_custom_shell_complete": false,
-          "help": "Per-phase seconds budget for (a) the research-completion poll loop and (b) read-only candidate inspection after an unknown --import-all outcome (default: 1800). The import mutation is sent once. Each phase gets the full budget independently, so worst-case total wall time is up to 2\u00d7 this value. Matches 'research wait --timeout' semantics. Bumping this is required for deep research that runs longer than the legacy 5-minute cap \u2014 otherwise the CLI gives up before IMPORT_RESEARCH fires and the NotebookLM web UI is left showing an 'Add sources?' modal.",
+          "help": "Per-phase seconds budget for (a) the research-completion poll loop and (b) the --import-all retry loop (default: 1800). Each phase gets the full budget independently, so worst-case total wall time is up to 2\u00d7 this value. Matches 'research wait --timeout' semantics. Bumping this is required for deep research that runs longer than the legacy 5-minute cap \u2014 otherwise the CLI gives up before IMPORT_RESEARCH fires and the NotebookLM web UI is left showing an 'Add sources?' modal.",
           "is_flag": false,
           "kind": "option",
           "multiple": false,
@@ -11006,109 +10326,6 @@
         }
       ],
       "short_help": "Search web or drive and add sources from..."
-    },
-    "source append": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "source_id",
-          "nargs": 1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "kind": "argument",
-          "name": "text",
-          "nargs": 1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": "",
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Optional block header (accepted by the backend; not shown in fulltext)",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "header",
-          "opts": [
-            "--header"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Append a plain-text block to an existing..."
-    },
-    "source books": {
-      "class": "Command",
-      "params": [
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "List Google Play Books eligible to be..."
     },
     "source clean": {
       "class": "Command",
@@ -11189,76 +10406,6 @@
         }
       ],
       "short_help": "Automatically remove duplicate, error, and..."
-    },
-    "source copy": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "source_ids",
-          "nargs": -1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": "Sentinel.UNSET",
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Target notebook id (or unique prefix)",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "target",
-          "opts": [
-            "--to"
-          ],
-          "required": true,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Copy sources into another notebook..."
     },
     "source delete": {
       "class": "Command",
@@ -11707,32 +10854,6 @@
           "default": null,
           "envvar": null,
           "has_custom_shell_complete": false,
-          "help": "Only list sources with this status. Use 'preparing' to find rows a failed add left behind.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "status_filter",
-          "opts": [
-            "--status"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "case_sensitive": true,
-            "choices": [
-              "unknown",
-              "processing",
-              "ready",
-              "error",
-              "preparing"
-            ],
-            "name": "choice"
-          }
-        },
-        {
-          "default": null,
-          "envvar": null,
-          "has_custom_shell_complete": false,
           "help": "Show at most N rows. 0 = show no rows. Omit for unlimited. Applies to both text and --json output.",
           "is_flag": false,
           "kind": "option",
@@ -11883,98 +11004,6 @@
         }
       ],
       "short_help": "Rename a source."
-    },
-    "source search": {
-      "class": "Command",
-      "params": [
-        {
-          "kind": "argument",
-          "name": "query",
-          "nargs": 1,
-          "required": true,
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": "NOTEBOOKLM_NOTEBOOK",
-          "has_custom_shell_complete": true,
-          "help": "Notebook ID (uses current if not set). Supports partial IDs.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "notebook_id",
-          "opts": [
-            "-n",
-            "--notebook"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": "Sentinel.UNSET",
-          "envvar": null,
-          "has_custom_shell_complete": true,
-          "help": "Limit to specific source IDs",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": true,
-          "name": "source_ids",
-          "opts": [
-            "--source",
-            "-s"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "text"
-          }
-        },
-        {
-          "default": null,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Maximum number of globally ranked passages to return.",
-          "is_flag": false,
-          "kind": "option",
-          "multiple": false,
-          "name": "limit",
-          "opts": [
-            "--limit"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "clamp": false,
-            "max": null,
-            "min": 1,
-            "name": "integer range"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Search indexed passages across notebook..."
     },
     "source stale": {
       "class": "Command",
@@ -12338,49 +11367,6 @@
       ],
       "short_help": "Get notebook summary with AI-generated..."
     },
-    "usage": {
-      "class": "Command",
-      "params": [
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Include usage categories, availability, and estimated costs.",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "show_categories",
-          "opts": [
-            "--categories",
-            "--actions"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        },
-        {
-          "default": false,
-          "envvar": null,
-          "has_custom_shell_complete": false,
-          "help": "Output as JSON",
-          "is_flag": true,
-          "kind": "option",
-          "multiple": false,
-          "name": "json_output",
-          "opts": [
-            "--json"
-          ],
-          "required": false,
-          "secondary_opts": [],
-          "type": {
-            "name": "boolean"
-          }
-        }
-      ],
-      "short_help": "Show live compute usage for the current..."
-    },
     "use": {
       "class": "Command",
       "params": [
@@ -12446,7 +11432,6 @@
     "collection",
     "completion",
     "configure",
-    "copy",
     "create",
     "delete",
     "doctor",
@@ -12467,10 +11452,8 @@
     "skill",
     "source",
     "status",
-    "suggest-next-steps",
     "suggest-prompts",
     "summary",
-    "usage",
     "use"
   ],
   "schema_version": 1,
@@ -12484,7 +11467,6 @@
     "notebook": [
       "list",
       "create",
-      "copy",
       "delete",
       "rename",
       "metadata",
@@ -12495,7 +11477,6 @@
       "auth",
       "use",
       "status",
-      "usage",
       "clear"
     ]
   },

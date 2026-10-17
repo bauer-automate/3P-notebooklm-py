@@ -1,4 +1,4 @@
-"""Unit tests for :func:`notebooklm._web.transport.chat.chat_aware_authed_post`.
+"""Unit tests for :func:`notebooklm._chat.transport.chat_aware_authed_post`.
 
 Exercises the chat-domain error-mapping seam over the generic transport
 primitives. Each test injects a stub ``transport`` whose
@@ -7,9 +7,13 @@ primitives. Each test injects a stub ``transport`` whose
 failure to the expected ``ChatError`` / ``NetworkError`` shape, message,
 and exception chain.
 
-Admission and finalization belong to ``CallSupervisor`` around the logical
-chat call. ``chat_aware_authed_post`` only delegates the web transport
-operation, so these tests stub only ``perform_authed_post``.
+As of Tier-12 PR 12.5 the drain-tracking bookkeeping
+(``_begin_transport_post`` / ``_finish_transport_post``) has moved into
+``DrainMiddleware`` at the outermost chain position around
+``RuntimeTransport.perform_authed_post``. ``chat_aware_authed_post`` no
+longer brackets its own transport call with explicit drain calls —
+admission and finalization are middleware concerns now. The tests
+correspondingly stub only ``perform_authed_post`` on the transport.
 
 As of Wave 8 of the session-decoupling plan (ADR-0014 Rule 2 Corollary),
 ``chat_aware_authed_post`` takes the :class:`RuntimeTransport` collaborator
@@ -20,8 +24,9 @@ on it.
 The stub ``transport`` is a lightweight ``SimpleNamespace`` rather than a
 ``MagicMock(spec=RuntimeTransport)`` so the tests stay independent of the
 class's exact member set — they only need the transport primitive the
-function actually calls. The settlement-on-exception invariant is covered by
-``tests/unit/test_call_supervisor.py``.
+function actually calls. The drain-fires-on-exception invariant is now
+covered by
+``tests/unit/test_drain_middleware.py::test_finish_fires_on_exception``.
 """
 
 from __future__ import annotations
@@ -33,8 +38,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from notebooklm._web.transport.chat import chat_aware_authed_post
-from notebooklm._web.transport.errors import (
+from notebooklm._chat.transport import chat_aware_authed_post
+from notebooklm._transport_errors import (
     TransportAuthExpired,
     TransportRateLimited,
     TransportServerError,
@@ -69,8 +74,9 @@ def _make_stub_transport(
     to make it return that response unchanged. Exactly one of the two
     should be supplied per test — they are mutually exclusive.
 
-    The stub needs no admission methods because ``chat_aware_authed_post``
-    does not call them. Wave 8 of
+    PR 12.5 lifted ``_begin_transport_post`` / ``_finish_transport_post``
+    into DrainMiddleware, so the stub no longer needs to mock them —
+    ``chat_aware_authed_post`` does not call them. Wave 8 of
     session-decoupling switched the helper to take a
     :class:`RuntimeTransport` directly, so the stub exposes the
     transport's ``perform_authed_post`` method (the chat-side
@@ -244,7 +250,7 @@ async def test_transport_server_error_with_http_status_error_maps_to_chat_error(
 
     message = str(excinfo.value)
     assert "HTTP 503" in message
-    assert getattr(excinfo.value, "unconfirmed", False) is True
+    assert "after retries" in message
     assert excinfo.value.__cause__ is transport_exc
 
 
@@ -262,11 +268,10 @@ async def test_transport_server_error_with_request_error_maps_to_network_error()
         )
 
     message = str(excinfo.value)
-    assert "network error" in message
+    assert "network error after retries" in message
     assert "timed out" not in message
     assert excinfo.value.original_error is original
     assert excinfo.value.__cause__ is transport_exc
-    assert getattr(excinfo.value, "unconfirmed", False) is True
 
 
 @pytest.mark.asyncio
@@ -381,14 +386,17 @@ async def test_raw_http_status_error_maps_to_chat_error():
 
 
 # ---------------------------------------------------------------------------
-# Finalization invariant (owned by CallSupervisor)
+# Finalization invariant (PR 12.5: moved into DrainMiddleware)
 # ---------------------------------------------------------------------------
 #
 # The pre-PR-12.5 contract that ``chat_aware_authed_post`` ran
 # ``_finish_transport_post`` in its own ``finally`` is no longer this
-# function's responsibility. The exception-path finalization invariant is
-# pinned by ``tests/unit/test_call_supervisor.py`` against the supervisor's
-# generation counter.
+# function's responsibility — drain admission/finalization moved into
+# ``DrainMiddleware`` at the outermost chain position. The exception-
+# path finalization invariant is now pinned by
+# ``tests/unit/test_drain_middleware.py::test_finish_fires_on_exception``,
+# which exercises a real ``TransportDrainTracker`` end-to-end rather
+# than mocking the bookkeeping.
 #
 # What remains here as a chat-specific invariant: the error-mapping
 # still raises ``ChatError`` even when the underlying transport raises.

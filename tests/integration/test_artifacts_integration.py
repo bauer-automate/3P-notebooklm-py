@@ -19,16 +19,15 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from notebooklm import NotebookLMClient
-from notebooklm._web.artifacts import WebArtifactsAPI
-from notebooklm._web.mind_maps import NoteBackedMindMapService
-from notebooklm._web.notes import NoteService
+from notebooklm._artifacts import ArtifactsAPI
+from notebooklm._mind_map import NoteBackedMindMapService
+from notebooklm._note_service import NoteService
 from notebooklm.exceptions import (
     ArtifactNotFoundError,
     RateLimitError,
     UnknownRPCMethodError,
     ValidationError,
 )
-from notebooklm.options import ClientConfig, RetryOptions
 from notebooklm.rpc import (
     AudioFormat,
     AudioLength,
@@ -41,7 +40,6 @@ from notebooklm.rpc import (
 from notebooklm.types import (
     ArtifactDownloadError,
     ArtifactFeatureUnavailableError,
-    ArtifactListing,
     ArtifactNotReadyError,
     ArtifactParseError,
     ArtifactType,
@@ -406,9 +404,10 @@ class TestArtifactsAPI:
         from tests._fixtures.fake_core import make_fake_core
 
         core = make_fake_core(rpc_call=AsyncMock(return_value=[[]]))
-        api = WebArtifactsAPI(
+        api = ArtifactsAPI(
             rpc=core,
-            supervisor=core,
+            drain=core,
+            lifecycle=core,
             notebooks=MagicMock(),
             mind_maps=MagicMock(spec=NoteBackedMindMapService),
             note_service=MagicMock(spec=NoteService),
@@ -426,7 +425,6 @@ class TestArtifactsAPI:
             [[2], "nb_123", 'NOT artifact.status = "ARTIFACT_STATUS_SUGGESTED"'],
             source_path="/notebook/nb_123",
             allow_null=True,
-            raise_on_null_status=True,
         )
 
     @pytest.mark.asyncio
@@ -439,9 +437,10 @@ class TestArtifactsAPI:
             ["art_002", "Audio Overview", 1, None, 3],
         ]
         core = make_fake_core(rpc_call=AsyncMock(return_value=artifact_rows))
-        api = WebArtifactsAPI(
+        api = ArtifactsAPI(
             rpc=core,
-            supervisor=core,
+            drain=core,
+            lifecycle=core,
             notebooks=MagicMock(),
             mind_maps=MagicMock(spec=NoteBackedMindMapService),
             note_service=MagicMock(spec=NoteService),
@@ -462,9 +461,10 @@ class TestArtifactsAPI:
             ["mind_map_001", '{"name":"Map"}', [1, "user", [1704067200, 0]], None, "Map"],
         ]
         core = make_fake_core(rpc_call=AsyncMock(return_value=[[studio_artifact]]))
-        api = WebArtifactsAPI(
+        api = ArtifactsAPI(
             rpc=core,
-            supervisor=core,
+            drain=core,
+            lifecycle=core,
             notebooks=MagicMock(),
             mind_maps=MagicMock(spec=NoteBackedMindMapService),
             note_service=MagicMock(spec=NoteService),
@@ -482,35 +482,6 @@ class TestArtifactsAPI:
         assert [artifact.id for artifact in artifacts] == ["art_001", "mind_map_001"]
 
     @pytest.mark.asyncio
-    async def test_poll_status_uses_one_studio_rpc_and_zero_note_calls(self):
-        """Each poll tick is exactly one LIST_ARTIFACTS, never the merged note listing."""
-        from tests._fixtures.fake_core import make_fake_core
-
-        studio_artifact = ["task_123", "My Report", 2, None, 3]
-        core = make_fake_core(rpc_call=AsyncMock(return_value=[[studio_artifact]]))
-        mind_maps = MagicMock(spec=NoteBackedMindMapService)
-        mind_maps.list_mind_maps = AsyncMock()
-        api = WebArtifactsAPI(
-            rpc=core,
-            supervisor=core,
-            notebooks=MagicMock(),
-            mind_maps=mind_maps,
-            note_service=MagicMock(spec=NoteService),
-        )
-
-        status = await api.poll_status("nb_123", "task_123")
-
-        assert status.status == "completed"
-        core.rpc_call.assert_awaited_once_with(
-            RPCMethod.LIST_ARTIFACTS,
-            [[2], "nb_123", 'NOT artifact.status = "ARTIFACT_STATUS_SUGGESTED"'],
-            source_path="/notebook/nb_123",
-            allow_null=True,
-            raise_on_null_status=True,
-        )
-        mind_maps.list_mind_maps.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_list_skips_mind_map_callback_for_non_mind_map_filter(self):
         """Filtering to studio-only kinds must not fetch mind maps."""
         from tests._fixtures.fake_core import make_fake_core
@@ -518,9 +489,10 @@ class TestArtifactsAPI:
         core = make_fake_core(
             rpc_call=AsyncMock(return_value=[[["art_001", "My Report", 2, None, 3]]])
         )
-        api = WebArtifactsAPI(
+        api = ArtifactsAPI(
             rpc=core,
-            supervisor=core,
+            drain=core,
+            lifecycle=core,
             notebooks=MagicMock(),
             mind_maps=MagicMock(spec=NoteBackedMindMapService),
             note_service=MagicMock(spec=NoteService),
@@ -537,12 +509,13 @@ class TestArtifactsAPI:
         list_mind_maps.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_get_uses_authoritative_listing_callback(self):
-        """get() projects its result from the completeness-aware listing."""
+    async def test_get_uses_public_list_callback(self):
+        """get() delegates through the public list callback."""
         core = MagicMock()
-        api = WebArtifactsAPI(
+        api = ArtifactsAPI(
             rpc=core,
-            supervisor=core,
+            drain=core,
+            lifecycle=core,
             notebooks=MagicMock(),
             mind_maps=MagicMock(spec=NoteBackedMindMapService),
             note_service=MagicMock(spec=NoteService),
@@ -553,9 +526,7 @@ class TestArtifactsAPI:
         found.id = "art_found"
 
         with patch.object(
-            api,
-            "list_with_status",
-            new=AsyncMock(return_value=ArtifactListing((other, found), is_complete=True)),
+            api, "list", new=AsyncMock(return_value=[other, found])
         ) as list_artifacts:
             result = await api.get("nb_123", "art_found")
             # v0.8.0: a miss now raises ArtifactNotFoundError (issue #1247).
@@ -651,7 +622,7 @@ class TestArtifactsAPI:
         """A transport failure during hydration propagates, not ArtifactNotFoundError."""
         async with NotebookLMClient(auth_tokens) as client:
             rpc = AsyncMock(side_effect=[None, RPCError("boom during hydrate")])
-            client._web_runtime.executor.rpc_call = rpc
+            client._rpc_executor.rpc_call = rpc
             with pytest.raises(RPCError):
                 await client.artifacts.rename("nb_123", "art_001", "New Title")
 
@@ -665,7 +636,7 @@ class TestArtifactsAPI:
         """
         async with NotebookLMClient(auth_tokens) as client:
             rpc = AsyncMock(return_value=None)
-            client._web_runtime.executor.rpc_call = rpc
+            client._rpc_executor.rpc_call = rpc
             with pytest.raises(ArtifactNotFoundError):
                 await client.artifacts.rename("nb_123", "art_001", "New Title", return_object=False)
 
@@ -1284,9 +1255,8 @@ class TestArtifactErrorPaths:
                 "nb_123", output, output_format="pptx"
             )
         assert result == output
-        # C1's injected live-transfer owner supplies cookies for the request;
-        # the retired storage-loader compatibility seam is no longer exercised.
-        fake_loader.assert_not_called()
+        # Bite-check: the patched seam was actually exercised on the download path.
+        fake_loader.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_poll_status_in_progress(
@@ -1302,7 +1272,7 @@ class TestArtifactErrorPaths:
             "Report",
             2,  # REPORT type
             None,
-            2,  # PROCESSING status (ARTIFACT_STATUS_PROCESSING) — #2127
+            1,  # PROCESSING status
         ]
         response = build_rpc_response(RPCMethod.LIST_ARTIFACTS, [[artifact]])
         httpx_mock.add_response(content=response.encode())
@@ -1359,9 +1329,7 @@ class TestArtifactErrorPaths:
         """
         httpx_mock.add_response(status_code=500)
 
-        async with NotebookLMClient(
-            auth_tokens, config=ClientConfig(retry=RetryOptions(server_error_max_retries=0))
-        ) as client:
+        async with NotebookLMClient(auth_tokens, server_error_max_retries=0) as client:
             with pytest.raises(RPCError, match="Server error 500"):
                 await client.artifacts.list("nb_123")
 
@@ -1829,16 +1797,15 @@ class TestRetryFailedArtifact:
     """Tests for ArtifactsAPI.retry_failed (RETRY_ARTIFACT, issue #1319)."""
 
     @pytest.mark.asyncio
-    async def test_retry_failed_accepted_returns_pending(
+    async def test_retry_failed_accepted_returns_in_progress(
         self,
         auth_tokens,
         httpx_mock: HTTPXMock,
         build_rpc_response,
     ):
-        """An accepted retry returns the same artifact id, re-queued as pending."""
+        """An accepted retry returns the same artifact id as in_progress."""
         # Captured wire shape: the artifact row at index 0 carries the same id
-        # (row[0]) and status code 1 (row[4] → ARTIFACT_STATUS_INITIALIZED →
-        # "pending"; the worker has not picked the retry up yet — #2127).
+        # (row[0]) and status code 1 (row[4] → PROCESSING → in_progress).
         retry_response = build_rpc_response(
             RPCMethod.RETRY_ARTIFACT,
             [["artifact_456", "Video Overview", 3, [[["src_001"]]], 1]],
@@ -1852,7 +1819,7 @@ class TestRetryFailedArtifact:
             )
 
         assert result.task_id == "artifact_456"
-        assert result.status == "pending"
+        assert result.status == "in_progress"
 
     @pytest.mark.asyncio
     async def test_retry_failed_null_result_raises_feature_unavailable(

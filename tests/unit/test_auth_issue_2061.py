@@ -15,6 +15,7 @@ from pytest_httpx import HTTPXMock
 from notebooklm import auth
 from notebooklm._app.auth_check import AuthCheckPlan, run_auth_check
 from notebooklm._auth import (
+    browser_capture,
     cookie_semantics,
     cookies,
     psidts_recovery,
@@ -22,7 +23,6 @@ from notebooklm._auth import (
     tokens,
 )
 from notebooklm._auth.cookie_policy import RequiredCookieValidationError
-from notebooklm._browser import browser_capture
 from notebooklm.cli.services import auth_source
 from notebooklm.cli.services.auth_source import AuthSource, has_env_auth_json
 
@@ -99,14 +99,6 @@ def _rotate_requests(httpx_mock: HTTPXMock) -> list[httpx.Request]:
         (0, 0, False),
         (12.9, 12, False),
         ("12.9", 12, False),
-        # Firefox 142+ (schema >= 16) expiry read through the unscoped
-        # ``rookie_cookies.firefox()``/``any_browser()`` path arrives in
-        # milliseconds with no unit tag. Anything past year 3000 as seconds
-        # is implausible for a browser cookie, so it is rescaled.
-        (1_755_000_000_000, 1_755_000_000, False),
-        (1_755_000_000_000_000, 1_755_000_000, False),  # raw microseconds: rescaled twice
-        (32_503_680_000, 32_503_680_000, False),  # exactly year 3000: not rescaled
-        (32_503_680_001, 32_503_680, False),  # one second past: rescaled
     ],
 )
 def test_cookie_expiry_normalization_preserves_session_and_epoch(
@@ -476,7 +468,6 @@ def test_fresh_routed_loader_does_not_post(tmp_path: Path, httpx_mock: HTTPXMock
 def test_route_unusable_rookiepy_row_recovers_in_memory_without_file_save(
     httpx_mock: HTTPXMock,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     psidts_overrides: dict[str, object],
 ) -> None:
     rookiepy_rows = [
@@ -491,7 +482,11 @@ def test_route_unusable_rookiepy_row_recovers_in_memory_without_file_save(
             **psidts_overrides,
         },
     ]
-    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        storage,
+        "save_cookies_to_storage",
+        lambda *args, **kwargs: pytest.fail("in-memory recovery must not save to disk"),
+    )
     httpx_mock.add_response(url=_ROTATE_URL, **_rotate_response())
 
     state, error = psidts_recovery.validate_with_recovery(rookiepy_rows)
@@ -502,7 +497,6 @@ def test_route_unusable_rookiepy_row_recovers_in_memory_without_file_save(
         for row in state["cookies"]
     )
     assert len(_rotate_requests(httpx_mock)) == 1
-    assert not list(tmp_path.rglob("*")), "in-memory recovery must not create profile state"
 
 
 def test_contended_recovery_requires_routed_disk_state(
@@ -720,6 +714,7 @@ async def test_auth_check_test_recomputes_after_normal_recovery(
         has_home_env=False,
         auth_source_label="file",
         test_fetch=True,
+        json_output=False,
     )
 
     async def heal(_path: Path, _profile: str) -> tuple[str, str]:
@@ -753,6 +748,7 @@ async def test_auth_check_passive_continues_but_keeps_local_route_failure(
         has_home_env=False,
         auth_source_label="file",
         test_fetch=True,
+        json_output=False,
         passive=True,
     )
     passive = AsyncMock(return_value=("csrf", "session"))

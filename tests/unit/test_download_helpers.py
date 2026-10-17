@@ -2,7 +2,6 @@
 
 import pytest
 
-from notebooklm._app.download import DownloadPlanValidationError
 from notebooklm.cli.download_helpers import (
     artifact_title_to_filename,
     resolve_partial_artifact_id,
@@ -129,10 +128,8 @@ class TestSelectArtifact:
             {"id": "a2", "title": "Second", "created_at": 2000},
         ]
 
-        with pytest.raises(DownloadPlanValidationError) as exc_info:
+        with pytest.raises(ValueError, match="Cannot specify both"):
             select_artifact(artifacts, latest=True, earliest=True)
-
-        assert exc_info.value.reason == "conflicting_selection_order"
 
 
 class TestResolvePartialArtifactId:

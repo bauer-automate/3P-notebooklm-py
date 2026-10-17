@@ -31,36 +31,8 @@ pytest.importorskip("fastmcp")
 #: to ~36.0k). Move these DOWN as the surface gets leaner; a rise means
 #: description/param bloat that must be justified, not rubber-stamped.
 SCHEMA_CHAR_BUDGET = (
-    44_610  # total serialized inputSchema + description chars (current 44_590; +20 slack)
+    39_100  # total serialized inputSchema + description chars (current 39_081; +19 slack)
 )
-# P7 adds canonical-ID confirmation instructions to six existing tools and the
-# public four-state source-batch contract to ``source_add``. Tightening the
-# obsolete fatal-category prose pays for that guidance: 44_590 -> 44_219, so
-# the 44_610 ceiling is held (zero tool/budget growth; 391 chars remain).
-# #2303 adds the discrete mutating `chat_cancel` verb and a mutually exclusive
-# notebook/session mode to existing read-only `chat_status`. Their schemas and
-# the agent-facing cancellation/stream caveat move 43_386 -> 44_590 (+1_204);
-# ratcheted to 44_610 with the existing ~20-char slack convention.
-# Merge with main after #2292 (Play Books): 40_556 on main + 2_830 for this PR
-# (the pair's re-invoke protocol text, batch polling / queue states / timings,
-# the review's re-ask wording — itemised below) = 43_386; ratcheted to 43_410.
-# #2292 (Google Play Books sources) added two discrete-verb tools —
-# `source_list_play_books` and `source_add_play_book` — each with the
-# agent-facing description an LLM needs to use it (what Expert Intelligence is,
-# the `content_id`/`export_disabled` contract, and the web-backend-only caveat).
-# Two genuinely new source verbs, per ADR-0025's discrete-verb rationale. Net
-# 39_377 -> 40_556 (+1_179); ratcheted to 40_580 keeping the ~20-char slack.
-# #2129 added the genuine listable FANTASY_MAP and FILE artifact types to the
-# `studio_list.kind` enum. Their two required enum strings move the surface from
-# 39_349 to 39_377 (+28); ratcheted to 39_400 with the existing ~20-char slack.
-# #2111 (Drive-backed source health) added `drive_status_label` to the `source_list`
-# / `source_read` roster descriptions plus the two sentences an agent needs to act on
-# it: that it is a SEPARATE axis from `status_label`, and that a deleted/unshared
-# Drive file keeps reading `status_label="ready"` because ingestion did finish. That
-# is the whole point of the field — emitting it without saying what it means would
-# leave the signal as invisible in practice as it was on the wire. Net 39_081 ->
-# 39_349 (+268) after trimming the first draft (~+516) by half. Ratcheted UP to
-# 39_370, keeping the ~20-char slack convention.
 # #1964 (Drive research termination reasons, merged to main independently of this
 # ratchet) added `research_status`'s `termination_reason` field + docstring
 # paragraph explaining the no_results/cancelled/unknown split — genuine new

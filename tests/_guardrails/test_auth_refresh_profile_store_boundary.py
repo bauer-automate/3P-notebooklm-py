@@ -23,9 +23,9 @@ REFRESH_PATH = REPO_ROOT / "src" / "notebooklm" / "_auth" / "refresh.py"
 _HELPER = "_merge_domain_fetch_observation"
 _FETCH = "fetch_tokens_with_domains"
 _MERGE = "merge_cookie_observation"
-_MODULE_HASH = "9a91a78efccdd60628a730207dc7cfafa85fbf1b0a9aaafbee70a997acf0506f"
+_MODULE_HASH = "ab411febaecc908a4d7c2ff3b338dcefb7d979e44d1b36987a09808563ae863a"
 _HELPER_HASH = "96fa4345674a291eee8906a51d5511438bb822b0c75785dc7ec52e5ffd82cc0c"
-_FETCH_HASH = "771347babf356ed424a380e949fc76f809af3cb034d9087517a5f3a14453d573"
+_FETCH_HASH = "b1d2f00fbaea93d720d75547788dda8aa12a29e00026911c565cba3e76c7cf60"
 
 
 def _tree(source: str | None = None) -> ast.Module:
@@ -330,7 +330,7 @@ def _capability_violations(tree: ast.Module) -> set[str]:
 
 
 def _handoff_violations(function: ast.AsyncFunctionDef) -> set[str]:
-    """Pin loader, route-resolution, and persistence worker handoffs."""
+    """Pin the sole loader worker and sole persistence-capability worker calls."""
     parents = _parents(function)
     calls = sorted(
         (
@@ -341,28 +341,12 @@ def _handoff_violations(function: ast.AsyncFunctionDef) -> set[str]:
         key=lambda node: node.lineno,
     )
     expected = [
-        (
-            ["_auth_cookies._build_cookie_pair_from_storage", "storage_path"],
-            [],
-        ),
-        (
-            ["_resolve_token_route_kwargs", "route_path"],
-            [("authuser", "authuser"), ("account_email", "account_email")],
-        ),
-        (
-            [_HELPER, "store", "observation", "selected_baseline"],
-            [],
-        ),
+        ["_auth_cookies._build_cookie_pair_from_storage", "storage_path"],
+        [_HELPER, "store", "observation", "selected_baseline"],
     ]
-    actual = [
-        (
-            [ast.unparse(argument) for argument in call.args],
-            [(keyword.arg, ast.unparse(keyword.value)) for keyword in call.keywords],
-        )
-        for call in calls
-    ]
+    actual = [[ast.unparse(argument) for argument in call.args] for call in calls]
     violations: set[str] = set()
-    if actual != expected or any(not _is_awaited(call, parents) for call in calls):
+    if actual != expected or any(call.keywords or not _is_awaited(call, parents) for call in calls):
         violations.add("worker-projection")
         return violations
 
@@ -376,7 +360,7 @@ def _handoff_violations(function: ast.AsyncFunctionDef) -> set[str]:
     ):
         violations.add("pair-result")
 
-    merge_await = parents[calls[2]]
+    merge_await = parents[calls[1]]
     merge_assignment = parents.get(merge_await)
     if not (
         isinstance(merge_assignment, ast.Assign)
@@ -486,11 +470,10 @@ def test_fetch_has_exact_direct_positional_handoffs_and_ordering() -> None:
     worker_calls = sorted(by_name["asyncio.to_thread"], key=lambda call: call.lineno)
     ordered = [
         worker_calls[0].lineno,
-        worker_calls[1].lineno,
         by_name["_fetch_tokens_with_exact_baseline"][0].lineno,
         by_name["ProfileStore"][0].lineno,
         by_name["CookieJar.from_httpx"][0].lineno,
-        worker_calls[2].lineno,
+        worker_calls[1].lineno,
     ]
     assert ordered == sorted(ordered)
     assert not any(

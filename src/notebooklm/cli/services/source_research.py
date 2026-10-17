@@ -19,7 +19,6 @@ seam keeps landing. Command-layer rendering + exit codes live in
 
 from __future__ import annotations
 
-from functools import partial
 from typing import TYPE_CHECKING
 
 from ..._app.source_research import (
@@ -40,7 +39,7 @@ if TYPE_CHECKING:
 
 
 async def execute_source_add_research(
-    client: NotebookLMClient, plan: SourceAddResearchPlan, *, json_output: bool = False
+    client: NotebookLMClient, plan: SourceAddResearchPlan
 ) -> SourceAddResearchResult:
     """Run the neutral add-research workflow with the CLI source importer.
 
@@ -50,16 +49,7 @@ async def execute_source_add_research(
     resolved from the module namespace on every call so a
     ``monkeypatch.setattr`` against it takes effect.
     """
-    bound_importer = (
-        partial(import_research_sources, json_output=True)
-        if json_output
-        else import_research_sources
-    )
-    return await _execute_source_add_research(
-        client,
-        plan,
-        import_sources=bound_importer,
-    )
+    return await _execute_source_add_research(client, plan, import_sources=import_research_sources)
 
 
 __all__ = [

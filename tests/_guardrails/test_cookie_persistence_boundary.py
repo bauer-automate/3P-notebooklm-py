@@ -5,14 +5,13 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
-from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
 
 from notebooklm._auth.cookie_types import Cookie, CookieJar
-from notebooklm._web.transport.cookie_persistence import (
+from notebooklm._cookie_persistence import (
     FailedBaseline,
     ReadyBaseline,
     UninitializedBaseline,
@@ -23,12 +22,10 @@ pytestmark = pytest.mark.repo_lint
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src" / "notebooklm"
-PERSISTENCE_PATH = SRC_ROOT / "_web/transport/cookie_persistence.py"
+PERSISTENCE_PATH = SRC_ROOT / "_cookie_persistence.py"
 LIFECYCLE_PATH = SRC_ROOT / "_runtime" / "lifecycle.py"
-WEB_LIFECYCLE_PATH = SRC_ROOT / "_web" / "transport" / "lifecycle.py"
-INIT_PATH = SRC_ROOT / "_web" / "transport" / "init.py"
+INIT_PATH = SRC_ROOT / "_runtime" / "init.py"
 CLIENT_PATH = SRC_ROOT / "client.py"
-ASSEMBLY_PATH = SRC_ROOT / "_client_assembly.py"
 
 Call = tuple[str, str]
 Escape = tuple[str, str, str]
@@ -39,7 +36,6 @@ _PRIVATE_MEMBERS = frozenset(
         "register_open_baseline",
         "_prepare_open_baseline",
         "_save_canonical",
-        "_save_v0_callback",
     }
 )
 _PERSISTENCE_FIELDS = {
@@ -54,9 +50,7 @@ _FORBIDDEN_DYNAMIC_MEMBERS = _PRIVATE_MEMBERS | {
     "merge_cookie_observation",
     "_load_cookie_pair_pure",
 }
-_PERSISTENCE_MODULE = "notebooklm._web.transport.cookie_persistence"
-
-CookieSaveResultUse = tuple[str, str, str]
+_PERSISTENCE_MODULE = "notebooklm._cookie_persistence"
 
 
 def _tree(path: Path) -> ast.Module:
@@ -70,161 +64,6 @@ def _label(path: Path) -> str:
 def _owner(classes: list[str], functions: list[str]) -> str:
     names = [*classes, *functions[:1]]
     return ".".join(names) if names else "<module>"
-
-
-def _static_cookie_save_result_names(statements: Iterable[ast.stmt]) -> set[str]:
-    """Resolve same-scope names assigned the exact legacy result string."""
-    names: set[str] = set()
-
-    class Visitor(ast.NodeVisitor):
-        def visit_Assign(self, node: ast.Assign) -> None:
-            if isinstance(node.value, ast.Constant) and node.value.value == "CookieSaveResult":
-                for target in node.targets:
-                    names.update(_target_names(target))
-            self.visit(node.value)
-
-        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-            if (
-                node.value is not None
-                and isinstance(node.value, ast.Constant)
-                and node.value.value == "CookieSaveResult"
-            ):
-                names.update(_target_names(node.target))
-            if node.value is not None:
-                self.visit(node.value)
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            return
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            return
-
-    visitor = Visitor()
-    for statement in statements:
-        visitor.visit(statement)
-    return names
-
-
-def _cookie_save_result_inventory(path: Path, tree: ast.Module) -> Counter[CookieSaveResultUse]:
-    """Conservatively inventory every direct or qualified legacy-result spelling.
-
-    Attribute receivers are intentionally not narrowed to known storage-module
-    aliases: treating every ``*.CookieSaveResult`` as a candidate makes module
-    aliases, facade aliases, and future indirect import spellings fail closed.
-    """
-    inventory: Counter[CookieSaveResultUse] = Counter()
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.classes: list[str] = []
-            self.functions: list[str] = []
-            self.static_string_names = [_static_cookie_save_result_names(tree.body)]
-
-        @property
-        def owner(self) -> str:
-            return _owner(self.classes, self.functions)
-
-        def record(self, kind: str) -> None:
-            inventory[(_label(path), self.owner, kind)] += 1
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            if node.name == "CookieSaveResult":
-                self.record("definition")
-            self.classes.append(node.name)
-            self.static_string_names.append(_static_cookie_save_result_names(node.body))
-            self.generic_visit(node)
-            self.static_string_names.pop()
-            self.classes.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self.functions.append(node.name)
-            self.static_string_names.append(_static_cookie_save_result_names(node.body))
-            self.generic_visit(node)
-            self.static_string_names.pop()
-            self.functions.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            for alias in node.names:
-                if alias.name == "CookieSaveResult":
-                    self.record(f"import:{alias.asname or 'direct'}")
-
-        def visit_Name(self, node: ast.Name) -> None:
-            if node.id == "CookieSaveResult":
-                self.record(f"name:{type(node.ctx).__name__.lower()}")
-
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            if node.attr == "CookieSaveResult":
-                self.record(f"attribute:{type(node.ctx).__name__.lower()}")
-            self.generic_visit(node)
-
-        def is_cookie_save_result_key(self, node: ast.AST) -> bool:
-            if isinstance(node, ast.Constant):
-                return node.value == "CookieSaveResult"
-            return isinstance(node, ast.Name) and any(
-                node.id in names for names in reversed(self.static_string_names)
-            )
-
-        def visit_Call(self, node: ast.Call) -> None:
-            if (
-                isinstance(node.func, ast.Name)
-                and node.func.id in {"getattr", "hasattr"}
-                and len(node.args) >= 2
-                and self.is_cookie_save_result_key(node.args[1])
-            ):
-                self.record(f"dynamic:{node.func.id}")
-            self.generic_visit(node)
-
-        def visit_Subscript(self, node: ast.Subscript) -> None:
-            if self.is_cookie_save_result_key(node.slice):
-                self.record("dynamic:subscript")
-            self.generic_visit(node)
-
-    Visitor().visit(tree)
-    return inventory
-
-
-def _cookie_save_result_branch_owners(path: Path, tree: ast.Module) -> set[tuple[str, str]]:
-    owners: set[tuple[str, str]] = set()
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.classes: list[str] = []
-            self.functions: list[str] = []
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.classes.append(node.name)
-            self.generic_visit(node)
-            self.classes.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self.functions.append(node.name)
-            self.generic_visit(node)
-            self.functions.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_Call(self, node: ast.Call) -> None:
-            if (
-                isinstance(node.func, ast.Name)
-                and node.func.id == "isinstance"
-                and any(
-                    (isinstance(argument, ast.Name) and argument.id == "CookieSaveResult")
-                    or (isinstance(argument, ast.Attribute) and argument.attr == "CookieSaveResult")
-                    for argument in node.args[1:]
-                )
-            ):
-                owners.add((_label(path), _owner(self.classes, self.functions)))
-            self.generic_visit(node)
-
-    Visitor().visit(tree)
-    return owners
 
 
 def _target_names(node: ast.AST | None) -> set[str]:
@@ -530,7 +369,7 @@ class _MemberCollector(ast.NodeVisitor):
                 )
             qualified = ast.unparse(node.value)
             return (
-                qualified == "notebooklm._web.transport.cookie_persistence"
+                qualified == "notebooklm._cookie_persistence"
                 and self.bindings.get("notebooklm") == "root"
                 and not self._shadowed("notebooklm")
             )
@@ -555,12 +394,8 @@ class _MemberCollector(ast.NodeVisitor):
             self.path == CLIENT_PATH
             and self.owner == "_FromStorageContext._build"
             and len(self.functions) == 1
-            and ast.unparse(node) == "client._web_runtime.cookie_persistence"
+            and ast.unparse(node) == "client._collaborators.cookie_persistence"
             and self._local_client_is_canonical("client")
-        ) or (
-            self.path == ASSEMBLY_PATH
-            and self.owner == "_finalize_loaded_client"
-            and ast.unparse(node) == "client._web_runtime.cookie_persistence"
         )
 
     def _local_client_is_canonical(self, name: str) -> bool:
@@ -603,19 +438,6 @@ class _MemberCollector(ast.NodeVisitor):
     def _trusted_receiver(self, node: ast.expr, member: str) -> bool:
         if member == "_from_store":
             return self._class_receiver(node)
-        if (
-            self.path == WEB_LIFECYCLE_PATH
-            and self.owner
-            in {
-                "WebTransportLifecycle.open",
-                "WebTransportLifecycle.save_cookies",
-            }
-            and len(self.functions) == 1
-            and ast.unparse(node) == "self._cookie_persistence"
-        ):
-            # The concrete web transport receives this collaborator through
-            # its typed constructor and owns both persistence phases.
-            return True
         if (
             member == "merge_cookie_observation"
             and self.path == PERSISTENCE_PATH
@@ -1005,7 +827,7 @@ def test_persistence_and_legacy_adapter_own_exact_state() -> None:
         if isinstance(node, ast.ClassDef)
         and any(isinstance(base, ast.Name) and base.id == "Protocol" for base in node.bases)
     }
-    assert protocols == {"ToThread"}
+    assert protocols == {"SaveCookiesToStorage", "ToThread"}
     module_assignments = {
         name
         for node in tree.body
@@ -1018,6 +840,8 @@ def test_persistence_and_legacy_adapter_own_exact_state() -> None:
         "logger",
         "T",
         "BaselineState",
+        "_CANONICAL_COOKIE_SAVER",
+        "_BASELINE_ERRORS",
     }
 
 
@@ -1040,16 +864,14 @@ def test_auth_tokens_and_cookie_snapshot_accesses_are_confined() -> None:
         "_LegacySnapshotAdapter.set",
         "CookiePersistence.__init__",
     }
-    assert _attribute_owners(LIFECYCLE_PATH, "cookie_snapshot") == set()
-    assert _attribute_owners(WEB_LIFECYCLE_PATH, "cookie_snapshot") == {
-        "WebTransportLifecycle.open",
-        "WebTransportLifecycle.save_cookies",
+    assert _attribute_owners(LIFECYCLE_PATH, "cookie_snapshot") == {
+        "ClientLifecycle.open",
+        "ClientLifecycle.save_cookies",
     }
-    assert _attribute_owners(LIFECYCLE_PATH, "_auth") == set()
-    assert _attribute_owners(WEB_LIFECYCLE_PATH, "_auth") == {
-        "WebTransportLifecycle.__init__",
-        "WebTransportLifecycle.open",
-        "WebTransportLifecycle.save_cookies",
+    assert _attribute_owners(LIFECYCLE_PATH, "_auth") == {
+        "ClientLifecycle.__init__",
+        "ClientLifecycle.open",
+        "ClientLifecycle.save_cookies",
     }
 
 
@@ -1061,10 +883,10 @@ def test_private_persistence_callers_and_capabilities_are_exact() -> None:
         calls.update(found)
         escapes.update(rejected)
     assert calls == {
-        ("_web/transport/init.py", "_build_web_transport"),
-        ("_web/transport/lifecycle.py", "WebTransportLifecycle.open"),
-        ("_web/transport/lifecycle.py", "WebTransportLifecycle.save_cookies"),
-        ("_client_assembly.py", "_finalize_loaded_client"),
+        ("_runtime/init.py", "build_collaborators"),
+        ("_runtime/lifecycle.py", "ClientLifecycle.open"),
+        ("_runtime/lifecycle.py", "ClientLifecycle.save_cookies"),
+        ("client.py", "_FromStorageContext._build"),
     }
     assert escapes == set()
 
@@ -1073,163 +895,40 @@ def test_typed_merge_and_pair_parser_ownership_is_exact() -> None:
     calls, escapes = _member_projection(
         _tree(PERSISTENCE_PATH), PERSISTENCE_PATH, frozenset({"merge_cookie_observation"})
     )
-    assert calls == {("_web/transport/cookie_persistence.py", "CookiePersistence._save_canonical")}
+    assert calls == {("_cookie_persistence.py", "CookiePersistence._save_canonical")}
     assert escapes == set()
-    persistence_methods = _methods(_class(_tree(PERSISTENCE_PATH), "CookiePersistence"))
-    parser_callers = {
-        name
-        for name, method in persistence_methods.items()
-        if any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "read_cookie_pair"
-            for node in ast.walk(method)
-        )
-    }
-    assert parser_callers == {
-        "_adopt_reloaded_baseline",
-        "_prepare_open_baseline",
-        "_save_canonical",
-        "_save_v0_callback",
-    }
-    profile_path = SRC_ROOT / "_auth/profile_store.py"
-    profile_methods = _methods(_class(_tree(profile_path), "ProfileStore"))
+    methods = _methods(_class(_tree(PERSISTENCE_PATH), "CookiePersistence"))
     parser_owners = {
         name
-        for name, method in profile_methods.items()
+        for name, method in methods.items()
         if any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "_build_cookie_pair_from_storage_state"
+            and node.func.id == "_load_cookie_pair_pure"
             for node in ast.walk(method)
         )
     }
-    assert parser_owners == {"read_cookie_pair"}
+    assert parser_owners == {"_prepare_open_baseline", "_save_canonical", "save"}
 
 
-def test_canonical_and_explicit_v0_routes_keep_capabilities_separate() -> None:
+def test_canonical_and_legacy_routes_keep_capabilities_separate() -> None:
     tree = _tree(PERSISTENCE_PATH)
     methods = _methods(_class(tree, "CookiePersistence"))
     canonical = ast.unparse(methods["_save_canonical"])
-    legacy = ast.unparse(methods["_save_v0_callback"])
+    legacy = ast.unparse(methods["save"])
     assert "merge_cookie_observation" in canonical
     assert "save_cookies_to_storage" not in canonical
     assert "merge_cookie_observation" not in legacy
     assert "save_cookies_to_storage" in legacy
     lifecycle = ast.unparse(
-        _methods(_class(_tree(WEB_LIFECYCLE_PATH), "WebTransportLifecycle"))["save_cookies"]
+        _methods(_class(_tree(LIFECYCLE_PATH), "ClientLifecycle"))["save_cookies"]
     )
-    assert "if self._cookie_saver is None" in lifecycle
-    assert lifecycle.index("self._cookie_saver is None") < lifecycle.index("_save_canonical")
-    assert "_save_v0_callback" in lifecycle
-    init = ast.unparse(
-        _methods(_class(_tree(WEB_LIFECYCLE_PATH), "WebTransportLifecycle"))["__init__"]
+    assert "self._uses_default_cookie_saver and _canonical_cookie_saver_is_current()" in lifecycle
+    assert lifecycle.index("_canonical_cookie_saver_is_current") < lifecycle.index(
+        "_save_canonical"
     )
-    assert "self._cookie_saver = cookie_saver" in init
-    assert "_uses_default_cookie_saver" not in init
-
-
-def test_cookie_save_result_imports_and_consumers_are_exact() -> None:
-    inventory = sum(
-        (
-            _cookie_save_result_inventory(path, _tree(path))
-            for path in sorted(SRC_ROOT.rglob("*.py"))
-        ),
-        Counter(),
-    )
-    assert inventory == Counter(
-        {
-            ("_auth/storage.py", "<module>", "definition"): 1,
-            ("_auth/storage.py", "_cookie_save_return", "name:load"): 2,
-            ("_auth/storage.py", "save_cookies_to_storage", "name:load"): 1,
-            ("_auth/storage.py", "merge_cookie_delta", "name:load"): 4,
-            ("_types/common.py", "<module>", "import:direct"): 1,
-            (
-                "_types/common.py",
-                "SaveCookiesToStorage.__call__",
-                "name:load",
-            ): 1,
-            ("_web/transport/cookie_persistence.py", "<module>", "import:direct"): 1,
-            (
-                "_web/transport/cookie_persistence.py",
-                "CookiePersistence._save_v0_callback",
-                "name:load",
-            ): 1,
-            ("auth.py", "<module>", "name:store"): 1,
-            ("auth.py", "<module>", "attribute:load"): 1,
-        }
-    )
-
-    branch_owners = set().union(
-        *(
-            _cookie_save_result_branch_owners(path, _tree(path))
-            for path in sorted(SRC_ROOT.rglob("*.py"))
-        )
-    )
-    assert branch_owners == {
-        ("_web/transport/cookie_persistence.py", "CookiePersistence._save_v0_callback")
-    }
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        "import notebooklm._auth.storage as s\ndef bad(value):\n return isinstance(value, s.CookieSaveResult)",
-        "from notebooklm._auth import storage as s\ndef bad(value):\n return s.CookieSaveResult(False)",
-        "from notebooklm._auth.storage import CookieSaveResult as CSR\ndef bad(value):\n return CSR(False)",
-        "def bad(storage, value):\n return isinstance(value, getattr(storage, 'CookieSaveResult'))",
-        "import notebooklm._auth.storage as s\ndef bad(value):\n return isinstance(value, s.__dict__['CookieSaveResult'])",
-        "import notebooklm._auth.storage as s\nRESULT = 'CookieSaveResult'\ndef bad(value):\n return isinstance(value, getattr(s, RESULT))",
-    ],
-    ids=[
-        "import-alias",
-        "from-module-alias",
-        "direct-type-alias",
-        "dynamic",
-        "module-dict-subscript",
-        "constant-backed-dynamic",
-    ],
-)
-def test_cookie_save_result_inventory_catches_qualified_bypasses(source: str) -> None:
-    inventory = _cookie_save_result_inventory(SRC_ROOT / "synthetic.py", ast.parse(source))
-    assert inventory
-
-
-def test_persistence_route_debug_events_are_exact_and_value_free() -> None:
-    method = _methods(_class(_tree(WEB_LIFECYCLE_PATH), "WebTransportLifecycle"))["save_cookies"]
-    route = next(
-        statement
-        for statement in method.body
-        if isinstance(statement, ast.If)
-        and ast.unparse(statement.test) == "self._cookie_saver is None"
-    )
-
-    def debug_projection(statements: list[ast.stmt]) -> tuple[str, str]:
-        calls = [
-            node
-            for statement in statements
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "logger"
-            and node.func.attr == "debug"
-        ]
-        assert len(calls) == 1
-        assert not calls[0].keywords
-        assert len(calls[0].args) == 2
-        message = calls[0].args[0]
-        assert isinstance(message, ast.Constant) and isinstance(message.value, str)
-        return message.value, ast.unparse(calls[0].args[1])
-
-    assert debug_projection(route.body) == (
-        "Cookie persistence route: type=canonical_store status=dispatch path=%s",
-        "effective_path",
-    )
-    assert debug_projection(route.orelse) == (
-        "Cookie persistence route: type=explicit_v0_callback status=dispatch path=%s",
-        "effective_path",
-    )
+    init = ast.unparse(_methods(_class(_tree(LIFECYCLE_PATH), "ClientLifecycle"))["__init__"])
+    assert "self._uses_default_cookie_saver = cookie_saver is None" in init
 
 
 def test_runtime_factory_has_no_auth_tokens_persistence_handoff() -> None:
@@ -1270,7 +969,7 @@ def test_private_capability_escape_detector_bites(source: str) -> None:
 def test_private_caller_and_dynamic_detectors_fail_closed_on_shadow_and_rebinding() -> None:
     path = SRC_ROOT / "synthetic.py"
     tree = ast.parse(
-        "from notebooklm._web.transport.cookie_persistence import CookiePersistence as P\n"
+        "from notebooklm._cookie_persistence import CookiePersistence as P\n"
         "def deferred():\n    return P._from_store(None)\n"
         "P = object()\n"
         "def local(P):\n    return P._save_canonical()\n"
@@ -1299,7 +998,7 @@ def test_external_source_is_scanned_with_stable_label() -> None:
 
 def test_same_owner_later_rebinding_invalidates_deferred_provider_lookup() -> None:
     tree = ast.parse(
-        "from notebooklm._web.transport.cookie_persistence import CookiePersistence\n"
+        "from notebooklm._cookie_persistence import CookiePersistence\n"
         "def build_collaborators():\n"
         "    return CookiePersistence._from_store(None)\n"
         "CookiePersistence = object\n"
@@ -1307,7 +1006,7 @@ def test_same_owner_later_rebinding_invalidates_deferred_provider_lookup() -> No
     calls, escapes = _member_projection(tree, INIT_PATH, _PRIVATE_MEMBERS)
     assert calls == set()
     assert escapes == {
-        ("_web/transport/init.py", "build_collaborators", "untrusted-receiver:_from_store")
+        ("_runtime/init.py", "build_collaborators", "untrusted-receiver:_from_store")
     }
 
 
@@ -1348,7 +1047,7 @@ def test_same_owner_later_rebinding_invalidates_deferred_provider_lookup() -> No
 )
 def test_same_owner_receiver_rebinding_invalidates_annotated_capability(rebind: str) -> None:
     tree = ast.parse(
-        "from notebooklm._web.transport.cookie_persistence import CookiePersistence\n"
+        "from notebooklm._cookie_persistence import CookiePersistence\n"
         "class ClientLifecycle:\n"
         "    async def save_cookies(\n"
         "        self, cookie_persistence: CookiePersistence, condition=True\n"
@@ -1385,7 +1084,7 @@ def test_same_owner_receiver_rebinding_invalidates_annotated_capability(rebind: 
 )
 def test_nested_receiver_frames_never_fall_through_to_outer_capability(nested: str) -> None:
     tree = ast.parse(
-        "from notebooklm._web.transport.cookie_persistence import CookiePersistence\n"
+        "from notebooklm._cookie_persistence import CookiePersistence\n"
         "class ClientLifecycle:\n"
         "    async def save_cookies(\n"
         "        self, cookie_persistence: CookiePersistence\n"
@@ -1416,7 +1115,7 @@ def test_nested_receiver_frames_never_fall_through_to_outer_capability(nested: s
 )
 def test_module_control_flow_bindings_poison_deferred_provider(rebind: str) -> None:
     tree = ast.parse(
-        "from notebooklm._web.transport.cookie_persistence import CookiePersistence\n"
+        "from notebooklm._cookie_persistence import CookiePersistence\n"
         f"{rebind}"
         "def build_collaborators():\n"
         "    return CookiePersistence._from_store(None)\n"
@@ -1424,27 +1123,27 @@ def test_module_control_flow_bindings_poison_deferred_provider(rebind: str) -> N
     calls, escapes = _member_projection(tree, INIT_PATH, _PRIVATE_MEMBERS)
     assert calls == set()
     assert escapes == {
-        ("_web/transport/init.py", "build_collaborators", "untrusted-receiver:_from_store")
+        ("_runtime/init.py", "build_collaborators", "untrusted-receiver:_from_store")
     }
 
 
 def test_later_canonical_import_does_not_rehabilitate_ambiguous_provider() -> None:
     tree = ast.parse(
         "CookiePersistence = object\n"
-        "from notebooklm._web.transport.cookie_persistence import CookiePersistence\n"
+        "from notebooklm._cookie_persistence import CookiePersistence\n"
         "def build_collaborators():\n"
         "    return CookiePersistence._from_store(None)\n"
     )
     calls, escapes = _member_projection(tree, INIT_PATH, _PRIVATE_MEMBERS)
     assert calls == set()
     assert escapes == {
-        ("_web/transport/init.py", "build_collaborators", "untrusted-receiver:_from_store")
+        ("_runtime/init.py", "build_collaborators", "untrusted-receiver:_from_store")
     }
 
 
 def test_global_declaration_anywhere_poisons_deferred_module_provider() -> None:
     tree = ast.parse(
-        "from notebooklm._web.transport.cookie_persistence import CookiePersistence\n"
+        "from notebooklm._cookie_persistence import CookiePersistence\n"
         "def mutate_provider():\n"
         "    global CookiePersistence\n"
         "def build_collaborators():\n"
@@ -1453,29 +1152,34 @@ def test_global_declaration_anywhere_poisons_deferred_module_provider() -> None:
     calls, escapes = _member_projection(tree, INIT_PATH, _PRIVATE_MEMBERS)
     assert calls == set()
     assert escapes == {
-        ("_web/transport/init.py", "build_collaborators", "untrusted-receiver:_from_store")
+        ("_runtime/init.py", "build_collaborators", "untrusted-receiver:_from_store")
     }
 
 
 def test_client_registration_requires_exact_sequential_constructor_provenance() -> None:
     live_tree = ast.parse(
-        "def _finalize_loaded_client(client):\n"
-        "    client._web_runtime.cookie_persistence.register_open_baseline(None, None)\n"
+        "class _FromStorageContext:\n"
+        "    def _build(self):\n"
+        "        client = self._cls(auth=None)\n"
+        "        client._collaborators.cookie_persistence.register_open_baseline(None, None)\n"
     )
-    calls, escapes = _member_projection(live_tree, ASSEMBLY_PATH, _PRIVATE_MEMBERS)
-    assert calls == {("_client_assembly.py", "_finalize_loaded_client")}
+    calls, escapes = _member_projection(live_tree, CLIENT_PATH, _PRIVATE_MEMBERS)
+    assert calls == {("client.py", "_FromStorageContext._build")}
     assert escapes == set()
 
     evil_tree = ast.parse(
-        "def other(client):\n"
-        "    client._web_runtime.cookie_persistence.register_open_baseline(None, None)\n"
+        "class _FromStorageContext:\n"
+        "    def _build(self):\n"
+        "        client = self._cls(auth=None)\n"
+        "        client = make_evil()\n"
+        "        client._collaborators.cookie_persistence.register_open_baseline(None, None)\n"
     )
-    calls, escapes = _member_projection(evil_tree, ASSEMBLY_PATH, _PRIVATE_MEMBERS)
+    calls, escapes = _member_projection(evil_tree, CLIENT_PATH, _PRIVATE_MEMBERS)
     assert calls == set()
     assert escapes == {
         (
-            "_client_assembly.py",
-            "other",
+            "client.py",
+            "_FromStorageContext._build",
             "untrusted-receiver:register_open_baseline",
         )
     }
@@ -1485,7 +1189,7 @@ def test_client_chain_spelling_without_constructor_provenance_is_untrusted() -> 
     tree = ast.parse(
         "class _FromStorageContext:\n"
         "    def _build(self):\n"
-        "        client._web_runtime.cookie_persistence.register_open_baseline(None, None)\n"
+        "        client._collaborators.cookie_persistence.register_open_baseline(None, None)\n"
     )
     calls, escapes = _member_projection(tree, CLIENT_PATH, _PRIVATE_MEMBERS)
     assert calls == set()
@@ -1499,40 +1203,18 @@ def test_client_chain_spelling_without_constructor_provenance_is_untrusted() -> 
 
 
 def test_public_exports_and_compatibility_signatures_remain_narrow() -> None:
-    import notebooklm._web.transport.cookie_persistence as module
-    from notebooklm._client_contracts import CookieRotator, CookieSaver, SaveCookiesToStorage
+    import notebooklm._cookie_persistence as module
     from notebooklm._runtime.lifecycle import ClientLifecycle
-    from notebooklm._web.transport.lifecycle import (
-        CookieRotator as LegacyCookieRotator,
-    )
-    from notebooklm._web.transport.lifecycle import (
-        CookieSaver as LegacyCookieSaver,
-    )
-    from notebooklm._web.transport.lifecycle import (
-        WebTransportLifecycle,
-    )
 
     assert module.__all__ == ["CookiePersistence", "SaveCookiesToStorage"]
-    assert module.SaveCookiesToStorage is SaveCookiesToStorage
-    assert LegacyCookieSaver is CookieSaver is SaveCookiesToStorage
-    assert LegacyCookieRotator is CookieRotator
-    assert str(inspect.signature(module.SaveCookiesToStorage.__call__)) == (
-        "(self, cookie_jar: 'httpx.Cookies', path: 'Path', /, *, "
-        "original_snapshot: 'CookieSnapshot | None', return_result: 'bool') -> "
-        "'bool | CookieSaveResult'"
-    )
-    assert str(inspect.signature(module.CookiePersistence._save_v0_callback)) == (
+    assert str(inspect.signature(module.CookiePersistence.save)) == (
         "(self, jar: 'httpx.Cookies', path: 'Path | None' = None, *, "
         "save_cookies_to_storage: 'SaveCookiesToStorage', to_thread: 'ToThread') -> 'None'"
     )
-    assert "store" not in inspect.signature(module.CookiePersistence._save_v0_callback).parameters
+    assert "store" not in inspect.signature(module.CookiePersistence.save).parameters
     assert str(inspect.signature(module.CookiePersistence._save_canonical)) == (
         "(self, jar: 'httpx.Cookies', path: 'Path | None', *, to_thread: 'ToThread') -> 'None'"
     )
-    assert str(inspect.signature(ClientLifecycle)) == (
-        "(*, supervisor: 'LifecycleSupervisor', transports: 'Sequence[TransportLifecycle]', "
-        "loop_participants: 'Sequence[LoopParticipant]') -> 'None'"
-    )
-    web_lifecycle_parameters = inspect.signature(WebTransportLifecycle).parameters
-    assert web_lifecycle_parameters["auth"].default is inspect.Parameter.empty
-    assert web_lifecycle_parameters["cookie_persistence_path"].default is inspect.Parameter.empty
+    lifecycle_parameters = inspect.signature(ClientLifecycle).parameters
+    assert lifecycle_parameters["auth"].default is None
+    assert lifecycle_parameters["cookie_persistence_path"].default is None

@@ -34,7 +34,6 @@ class OAuthTokenCapture(Protocol):
         *,
         browser: str,
         cdp_url: str | None,
-        timeout_s: float,
     ) -> str: ...
 
 
@@ -79,7 +78,6 @@ def bootstrap_login(
     oauth_token: str | None,
     browser: str,
     cdp_url: str | None,
-    timeout_s: float = 300.0,
     capture_oauth_token: OAuthTokenCapture,
     run_async: CoroutineRunner,
 ) -> MasterTokenLoginSuccess:
@@ -99,11 +97,7 @@ def bootstrap_login(
         del preflight
         preflight = None
 
-        token = oauth_token or capture_oauth_token(
-            browser=browser,
-            cdp_url=cdp_url,
-            timeout_s=timeout_s,
-        )
+        token = oauth_token or capture_oauth_token(browser=browser, cdp_url=cdp_url)
         operation = auth.master_token_bootstrap(
             email=plan.email,
             oauth_token=token,
@@ -130,7 +124,6 @@ def bootstrap_login(
         del result
         del oauth_token
         del cdp_url
-        del timeout_s
         del capture_oauth_token
         del run_async
         del browser

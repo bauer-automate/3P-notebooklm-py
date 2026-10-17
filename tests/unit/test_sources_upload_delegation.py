@@ -1,23 +1,22 @@
 """Regression guard for the source-upload single-source-of-truth invariant.
 
 Issue #1326 consolidated all resumable-upload / streaming / file-registration
-logic into :class:`notebooklm._web.sources.upload.SourceUploadPipeline`. The public
-``WebSourcesAPI`` keeps only thin private upload hooks that forward verbatim to
-the pipeline; it must never re-grow a parallel implementation of the Scotty
-upload protocol.
+logic into :class:`notebooklm._source.upload.SourceUploadPipeline`. The public
+``SourcesAPI`` surface keeps only *thin delegators* that forward verbatim to the
+pipeline; it must never re-grow a parallel implementation of the Scotty upload
+protocol.
 
 These tests pin three things:
 
-1. ``WebSourcesAPI._uploader`` is built from ``_web/sources/upload.py`` — the upload
+1. ``SourcesAPI._uploader`` is built from ``_source/upload.py`` — the upload
    implementation collaborator.
-2. Every ``WebSourcesAPI`` upload entry point (``_send_upload`` and the private
+2. Every ``SourcesAPI`` upload entry point (``add_file`` and the private
    ``_register_file_source`` / ``_start_resumable_upload`` /
    ``_upload_file_streaming`` / ``_cancel_upload_session`` helpers) forwards its
    arguments unchanged to the matching ``SourceUploadPipeline`` method — verified
    down to the exact positional/keyword shape against the *real* helper
    signatures.
-3. ``_web/sources/__init__.py`` carries no resumable-upload HTTP/Scotty
-   implementation of its
+3. ``_sources.py`` carries no resumable-upload HTTP/Scotty implementation of its
    own — neither implementation tokens (token guard) nor anything beyond a
    single delegating ``await self._uploader.<method>(...)`` statement per helper
    (structural guard).
@@ -26,21 +25,19 @@ These tests pin three things:
 from __future__ import annotations
 
 import ast
-from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import notebooklm._web.sources as sources_module
+import notebooklm._sources as sources_module
+from notebooklm._source.upload import SourceUploadPipeline
 from notebooklm._sources import SourcesAPI
-from notebooklm._web.sources import WebSourcesAPI
-from notebooklm._web.sources.upload import SourceUploadPipeline
 from tests._fixtures.fake_core import make_fake_core
 
 
 def _parse_sources_module() -> ast.Module:
-    """Parse ``_web/sources/__init__.py`` from its on-disk source.
+    """Parse ``_sources.py`` from its on-disk source.
 
     Reads the file directly via ``Path.read_text(encoding="utf-8")`` rather than
     ``inspect.getsource`` so the structural guards stay robust under packaging /
@@ -59,11 +56,9 @@ def _parse_sources_module() -> ast.Module:
 
 
 def _sources_api_class(tree: ast.Module) -> ast.ClassDef:
-    """Return the ``WebSourcesAPI`` class node from the parsed web facade module."""
+    """Return the ``SourcesAPI`` class node from a parsed ``_sources`` module."""
     return next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "WebSourcesAPI"
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "SourcesAPI"
     )
 
 
@@ -71,7 +66,7 @@ class _RecordingPipeline:
     """Records each upload call's exact args/kwargs without performing I/O.
 
     Stands in for the real :class:`SourceUploadPipeline` so the delegation tests
-    can assert the precise call shape each ``WebSourcesAPI`` helper forwards.
+    can assert the precise call shape each ``SourcesAPI`` helper forwards.
     """
 
     def __init__(self) -> None:
@@ -84,10 +79,6 @@ class _RecordingPipeline:
 
         return _call
 
-    @asynccontextmanager
-    async def transport_operation_scope(self, _label: str):
-        yield 1
-
     def __getattr__(self, name: str):
         # Only fabricate recorders for the real upload entry points. Dunder
         # lookups (``__wrapped__``, ``__members__``, copy/pickle probes, etc.)
@@ -98,8 +89,8 @@ class _RecordingPipeline:
         return self._record(name)
 
 
-def _make_sources_api() -> WebSourcesAPI:
-    """Build a real ``WebSourcesAPI`` with a real ``SourceUploadPipeline``.
+def _make_sources_api() -> SourcesAPI:
+    """Build a real ``SourcesAPI`` with a real ``SourceUploadPipeline``.
 
     Mirrors the ``sources_api`` fixture in ``test_sources_upload.py``: the
     pipeline is constructed from the same mocked core so it structurally
@@ -121,16 +112,17 @@ def _make_sources_api() -> WebSourcesAPI:
     core.record_upload_queue_wait = MagicMock()
     uploader = SourceUploadPipeline(
         rpc=core,
-        supervisor=core,
+        drain=core,
+        lifecycle=core,
         kernel=core.kernel,
         auth=core.auth,
         record_upload_queue_wait=core.record_upload_queue_wait,
     )
-    return WebSourcesAPI(core, supervisor=core, uploader=uploader)
+    return SourcesAPI(core, uploader=uploader)
 
 
-def _make_api_with_recording_pipeline() -> tuple[WebSourcesAPI, _RecordingPipeline]:
-    """Return a ``WebSourcesAPI`` whose uploader is swapped for a recording double."""
+def _make_api_with_recording_pipeline() -> tuple[SourcesAPI, _RecordingPipeline]:
+    """Return a ``SourcesAPI`` whose uploader is swapped for a recording double."""
     api = _make_sources_api()
     pipeline = _RecordingPipeline()
     api._uploader = pipeline  # type: ignore[assignment]
@@ -139,20 +131,20 @@ def _make_api_with_recording_pipeline() -> tuple[WebSourcesAPI, _RecordingPipeli
 
 @pytest.mark.asyncio
 async def test_uploader_is_the_pipeline() -> None:
-    """WebSourcesAPI builds its upload collaborator from _web/sources/upload.py."""
+    """SourcesAPI builds its upload collaborator from _source/upload.py."""
     api = _make_sources_api()
     assert isinstance(api._uploader, SourceUploadPipeline)
 
 
 @pytest.mark.asyncio
-async def test_send_upload_delegates_to_pipeline() -> None:
-    """WebSourcesAPI._send_upload forwards its args verbatim to the pipeline."""
+async def test_add_file_delegates_to_pipeline() -> None:
+    """SourcesAPI.add_file forwards its args verbatim to the pipeline."""
     api, pipeline = _make_api_with_recording_pipeline()
 
     def progress(_done: int, _total: int) -> None:
         return None
 
-    result = await api._send_upload(
+    result = await api.add_file(
         "nb-1",
         "/tmp/report.pdf",
         "application/pdf",
@@ -163,9 +155,8 @@ async def test_send_upload_delegates_to_pipeline() -> None:
     )
 
     assert result == "<add_file-result>"
-    # WebSourcesAPI._send_upload forwards notebook_id / file_path positionally and
-    # mime_type / wait / wait_timeout / title / on_progress and the neutral
-    # finalizer as keywords.
+    # SourcesAPI.add_file forwards notebook_id / file_path positionally and
+    # mime_type / wait / wait_timeout / title / on_progress as keywords.
     args, kwargs = pipeline.calls["add_file"]
     assert args == ("nb-1", "/tmp/report.pdf")
     assert kwargs == {
@@ -174,7 +165,6 @@ async def test_send_upload_delegates_to_pipeline() -> None:
         "wait_timeout": 42.0,
         "title": "Report",
         "on_progress": progress,
-        "finalize_uploaded": SourcesAPI._finalize_uploaded_file,
     }
     # The public surface intentionally does NOT expose the pipeline's
     # ``upload_index`` knob; guard against it being forwarded by accident.
@@ -211,7 +201,7 @@ async def test_start_resumable_upload_delegates_to_pipeline() -> None:
     assert result == "<start_resumable_upload-result>"
     args, kwargs = pipeline.calls["start_resumable_upload"]
     assert args == ("nb-3", "movie.mp4", 123456, "src-abc", "video/mp4")
-    assert kwargs == {"expected_epoch": 1}
+    assert kwargs == {}
 
 
 @pytest.mark.asyncio
@@ -239,7 +229,6 @@ async def test_upload_file_streaming_delegates_to_pipeline() -> None:
     assert kwargs["filename"] == "movie.mp4"
     assert kwargs["on_progress"] is progress
     assert kwargs["total_bytes"] == 123456
-    assert kwargs["expected_epoch"] == 1
     assert "logger" in kwargs
 
 
@@ -265,7 +254,6 @@ async def test_cancel_upload_session_delegates_to_pipeline() -> None:
         "0",
     )
     assert "logger" in kwargs
-    assert kwargs["_expected_epoch"] == 1
 
 
 def _strip_docstrings(node: ast.AST) -> None:
@@ -288,11 +276,11 @@ def _strip_docstrings(node: ast.AST) -> None:
 
 
 def test_sources_module_holds_no_scotty_implementation() -> None:
-    """The web facade must not re-grow a parallel resumable-upload implementation.
+    """_sources.py must not re-grow a parallel resumable-upload implementation.
 
     The Scotty upload protocol (resumable start request, x-goog-upload-* headers,
     streaming finalize, shielded background finalize) lives only in
-    ``_web/sources/upload.py``. The facade should reference none of those
+    ``_source/upload.py``. ``_sources.py`` should reference none of those
     implementation tokens in executable code — it only delegates. Docstrings are
     excluded because the delegators legitimately *document* the contract they
     forward to.
@@ -311,18 +299,18 @@ def test_sources_module_holds_no_scotty_implementation() -> None:
     )
     leaked = [token for token in forbidden if token in code]
     assert not leaked, (
-        "_web/sources/__init__.py leaked resumable-upload implementation tokens in executable "
-        f"code (should delegate to notebooklm._web.sources.upload): {leaked}"
+        "_sources.py leaked resumable-upload implementation tokens in executable "
+        f"code (should delegate to notebooklm._source.upload): {leaked}"
     )
 
 
 def test_sources_upload_helpers_are_pure_delegators() -> None:
-    """Each WebSourcesAPI upload helper body must be delegation-only.
+    """Each SourcesAPI upload helper body must be delegation-only.
 
     Identifier-independent structural guard (complements the token check above):
     the body of every upload helper must be exactly one awaited
     ``self._uploader.<method>(...)`` statement — so re-introducing a parallel
-    implementation in ``_web/sources/__init__.py`` (even with renamed identifiers or a
+    implementation in ``_sources.py`` (even with renamed identifiers or a
     differently-cased header dict) is caught here.
     """
     # Strip docstrings first so a docstring that merely *mentions*
@@ -342,7 +330,7 @@ def test_sources_upload_helpers_are_pure_delegators() -> None:
         "_start_resumable_upload": "start_resumable_upload",
         "_upload_file_streaming": "upload_file_streaming",
         "_cancel_upload_session": "cancel_upload_session",
-        "_send_upload": "add_file",
+        "add_file": "add_file",
     }
 
     # Completeness guard: ``expected`` must be an exhaustive allowlist of the
@@ -353,9 +341,8 @@ def test_sources_upload_helpers_are_pure_delegators() -> None:
     # upload operation to it. ``add_drive_file`` (#1884) is excluded too: it only
     # reads the ``self._uploader.live_cookies`` seam to authenticate the Drive
     # fetch — it does not re-implement or delegate a resumable-upload operation
-    # (its upload leg goes through the inherited public ``self.add_file`` and
-    # selected private hook, already covered).
-    _uploader_seam_only = {"__init__", "add_drive_file", "add_url", "add_urls_batch"}
+    # (its upload leg goes through the public ``self.add_file``, already covered).
+    _uploader_seam_only = {"__init__", "add_drive_file"}
     uploader_methods = {
         node.name
         for node in class_def.body
@@ -364,7 +351,7 @@ def test_sources_upload_helpers_are_pure_delegators() -> None:
         and "self._uploader" in ast.unparse(node)
     }
     assert uploader_methods == set(expected), (
-        "WebSourcesAPI uploader-delegating methods drifted from the expected "
+        "SourcesAPI uploader-delegating methods drifted from the expected "
         f"allowlist: code has {sorted(uploader_methods)}, "
         f"expected covers {sorted(expected)}"
     )
@@ -389,18 +376,6 @@ def test_sources_upload_helpers_are_pure_delegators() -> None:
             f"{wrapper} must be a single-statement delegator, found {len(stmts)} statements"
         )
         ret = stmts[0]
-        if wrapper in {
-            "_start_resumable_upload",
-            "_upload_file_streaming",
-            "_cancel_upload_session",
-        }:
-            assert isinstance(ret, ast.AsyncWith), f"{wrapper} must hold an upload epoch scope"
-            assert len(ret.items) == 1 and len(ret.body) == 1
-            context_call = ret.items[0].context_expr
-            assert isinstance(context_call, ast.Call)
-            assert isinstance(context_call.func, ast.Attribute)
-            assert context_call.func.attr == "transport_operation_scope"
-            ret = ret.body[0]
         # ``_cancel_upload_session`` returns None (bare ``await`` Expr); the
         # others ``return await``. Accept either await-only delegation shape.
         assert isinstance(ret, (ast.Return, ast.Expr)), f"{wrapper} must await its delegation"

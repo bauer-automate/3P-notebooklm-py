@@ -212,11 +212,6 @@ class TestIsNotebookLMUnavailableRedirect:
             "https://notebooklm.google/?location=unsupported",
             "https://www.notebooklm.google/?location=unsupported",
             "http://notebooklm.google",
-            "https://notebook.google",
-            "https://notebook.google/",
-            "https://notebook.google/?location=unsupported",
-            "https://www.notebook.google/?location=unsupported",
-            "https://NOTEBOOK.GOOGLE/",
         ],
     )
     def test_marketing_host_is_gate(self, url: str):
@@ -234,12 +229,6 @@ class TestIsNotebookLMUnavailableRedirect:
             "https://notebooklm.google.evil.com/",
             "https://evil.com/notebooklm.google",
             "https://fakenotebooklm.google/",
-            "https://notebook.google.com/",
-            "https://notebook.google.com/notebook/abc",
-            "https://notebook.google.evil.com/",
-            "https://evil.com/notebook.google",
-            "https://fakenotebook.google/",
-            "https://notebook.google@evil.com/",
             "",
         ],
     )
@@ -354,10 +343,7 @@ class TestIsNotebookLMAppHost:
             "https://notebooklm.google.com/",
             "https://notebooklm.google.com/notebook/abc",
             "https://NotebookLM.Google.COM/",  # host comparison is case-insensitive
-            "https://notebooklm.cloud.google.com/",  # legacy enterprise host
-            "https://notebook.cloud.google.com/",
-            "https://Notebook.Cloud.Google.COM/",
-            "https://notebook.cloud.google.com/us/?project=123",
+            "https://notebooklm.cloud.google.com/",  # enterprise host
             # Post-rebrand personal alias. Omitting it would make a genuine app
             # response report as "the request never reached the app".
             "https://notebook.google.com/",
@@ -369,12 +355,12 @@ class TestIsNotebookLMAppHost:
     def test_alias_host_agrees_with_browser_capture(self):
         """The alias must match the one ``browser_capture`` already recognises.
 
-        ``_browser/browser_capture.url_matches_base_host`` treats
+        ``_auth/browser_capture.url_matches_base_host`` treats
         ``notebook.google.com`` as the personal-app alias. Two independent
         notions of "is this the app?" that disagree is how a valid app response
         gets reported as an environment problem, so pin them together.
         """
-        from notebooklm._browser.browser_capture import url_matches_base_host
+        from notebooklm._auth.browser_capture import url_matches_base_host
 
         url = "https://notebook.google.com/"
         assert url_matches_base_host(url) is True
@@ -386,18 +372,10 @@ class TestIsNotebookLMAppHost:
             # The marketing/gate host is a DIFFERENT host (no ``.com``) — the
             # exact-match rule is what keeps #1630's gate out of the app set.
             "https://notebooklm.google/?location=unsupported",
-            "https://notebook.google/?location=unsupported",
             "https://support.google.com/accounts/answer/32050",
             "https://accounts.google.com/signin",
             # Subdomains do not serve the app shell.
             "https://x.notebooklm.google.com/",
-            "https://x.notebook.cloud.google.com/",
-            "https://x.notebooklm.cloud.google.com/",
-            "https://notebook.cloud.google/",
-            "https://notebook.cloud.google.com.evil.com/",
-            "https://notebooklm.cloud.google.com.evil.com/",
-            "https://evil-notebook.cloud.google.com/",
-            "https://evil.com/notebook.cloud.google.com/",
             # Substring-bypass shapes (CodeQL py/incomplete-url-substring-sanitization).
             "https://notebooklm.google.com.evil.com/",
             "https://evil.com/notebooklm.google.com/",

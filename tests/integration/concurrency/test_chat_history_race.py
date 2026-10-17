@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
@@ -36,7 +35,7 @@ import pytest
 
 from notebooklm import NotebookLMClient
 from notebooklm.rpc import RPCMethod
-from tests._helpers.client_factory import build_client_shell_for_tests
+from tests._fixtures.kernel_test_helpers import install_http_client_for_test
 
 # Mock-only tests (no real HTTP, no cassette) — opt out of the
 # integration-tree enforcement hook in ``tests/integration/conftest.py``.
@@ -242,29 +241,23 @@ class _SerializingChatTransport(httpx.AsyncBaseTransport):
             self._events.append(("chat-end", notebook_id, question))
 
 
-async def _open_client(transport: httpx.AsyncBaseTransport, auth_tokens) -> NotebookLMClient:
-    """Open a ``NotebookLMClient`` wired to ``transport``.
+def _make_client(transport: httpx.AsyncBaseTransport, auth_tokens) -> NotebookLMClient:
+    """Build a ``NotebookLMClient`` wired to ``transport``.
 
-    The injected factory is consumed by the real root lifecycle, so loop binding,
-    generation activation, and admission all match production while chat POSTs
-    route through the synthetic transport.
+    Mirrors ``test_idempotency_create._make_client_with_transport``: stub
+    ``client._collaborators.kernel.http_client`` with a pre-built ``AsyncClient`` so the chat
+    POSTs route through the mock instead of opening a real socket.
     """
-
-    def _client_factory(**kwargs: Any) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=transport, **kwargs)
-
-    client = build_client_shell_for_tests(
-        auth_tokens,
-        async_client_factory=_client_factory,
+    client = NotebookLMClient(auth_tokens)
+    install_http_client_for_test(
+        client._collaborators.kernel,
+        httpx.AsyncClient(
+            transport=transport,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            },
+        ),
     )
-    await client.__aenter__()
-    generation = client._collaborators.call_supervisor._current
-    assert generation is not None
-    epoch = client._lifecycle._epoch
-    assert generation.epoch == epoch
-    assert client._web_runtime.web_transport._active_epoch == epoch
-    assert client._web_runtime.kernel._active_epoch == epoch
-    assert client._web_runtime.auth_coord._active_epoch == epoch
     return client
 
 
@@ -292,7 +285,7 @@ async def test_concurrent_follow_ups_serialize_on_conversation_id(auth_tokens) -
     transport.set_answer("q2", "answer-2")
     transport.set_answer("q3", "answer-3")
 
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         # Seed the conversation cache so both follow-ups have at least one
         # prior turn to read. ``ask`` would normally populate this on a
@@ -315,7 +308,7 @@ async def test_concurrent_follow_ups_serialize_on_conversation_id(auth_tokens) -
             return_exceptions=False,
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     # Sanity: both calls returned their respective answers.
     answers = sorted(r.answer for r in results)
@@ -384,7 +377,7 @@ async def test_different_conversation_ids_run_in_parallel(auth_tokens) -> None:
     transport.set_answer("qA", "answer-A")
     transport.set_answer("qB", "answer-B")
 
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         # Seed BOTH conversations so the asks take the follow-up path
         # (the path the lock protects). New-conversation asks would
@@ -398,7 +391,7 @@ async def test_different_conversation_ids_run_in_parallel(auth_tokens) -> None:
             client.chat.ask(notebook_id, "qB", source_ids=["src_001"], conversation_id=cid_b),
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert transport.peak_chat_inflight() == 2, (
         f"different-conversation follow-ups must run in parallel, "
@@ -429,14 +422,14 @@ async def test_same_notebook_new_conversation_asks_serialize_until_id_exists(
     transport.set_answer("q-new-1", "answer-new-1")
     transport.set_answer("q-new-2", "answer-new-2")
 
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         results = await asyncio.gather(
             client.chat.ask(notebook_id, "q-new-1", source_ids=["src_001"]),
             client.chat.ask(notebook_id, "q-new-2", source_ids=["src_001"]),
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert {result.conversation_id for result in results} == {conversation_id}
     assert transport.peak_chat_inflight() == 1, (
@@ -482,14 +475,14 @@ async def test_different_notebook_new_conversation_asks_run_in_parallel(auth_tok
     transport.set_answer("q-new-a", "answer-new-a")
     transport.set_answer("q-new-b", "answer-new-b")
 
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         results = await asyncio.gather(
             client.chat.ask(notebook_a, "q-new-a", source_ids=["src_001"]),
             client.chat.ask(notebook_b, "q-new-b", source_ids=["src_001"]),
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert {result.conversation_id for result in results} == {conversation_a, conversation_b}
     assert transport.peak_chat_inflight() == 2, (
@@ -528,7 +521,7 @@ async def test_new_conversation_cache_update_waits_for_resolved_conversation_loc
     transport.set_answer("q-new", "answer-new")
     transport.set_answer("q-follow", "answer-follow")
 
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         client.chat._cache.cache_conversation_turn(
             conversation_id,
@@ -547,7 +540,7 @@ async def test_new_conversation_cache_update_waits_for_resolved_conversation_loc
             ),
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     # Both asks serialize on the resolved conversation's lock: peak in-flight 1.
     assert transport.peak_chat_inflight() == 1, (
@@ -585,7 +578,7 @@ async def test_null_ask_serializes_with_explicit_current_conversation(auth_token
     transport.set_answer("q-null", "answer-null")
     transport.set_answer("q-follow", "answer-follow")
 
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         client.chat._cache.cache_conversation_turn(conversation_id, "q0", "answer-0", turn_number=1)
         await asyncio.gather(
@@ -598,7 +591,7 @@ async def test_null_ask_serializes_with_explicit_current_conversation(auth_token
             ),
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert transport.peak_chat_inflight() == 1, (
         "a null ask and an explicit follow-up on the notebook's current "
@@ -633,7 +626,7 @@ async def test_null_ask_parallel_with_followup_on_other_conversation(auth_tokens
     transport.set_answer("q-null", "answer-null")
     transport.set_answer("q-other", "answer-other")
 
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         client.chat._cache.cache_conversation_turn(conversation_y, "q0", "answer-0", turn_number=1)
         await asyncio.gather(
@@ -646,7 +639,7 @@ async def test_null_ask_parallel_with_followup_on_other_conversation(auth_tokens
             ),
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert transport.peak_chat_inflight() == 2, (
         "a null ask resolving to convX must not serialize with a follow-up on "
@@ -737,7 +730,7 @@ async def test_null_ask_recovers_when_current_conversation_deleted_mid_flight(
     transport = _DeleteRaceTransport(
         resolved_id=deleted_id, recovered_id=fresh_id, delete_delay=0.1
     )
-    client = await _open_client(transport, auth_tokens)
+    client = _make_client(transport, auth_tokens)
     try:
         # Seed a turn under the soon-to-be-deleted id so we can prove the cache
         # entry is gone (delete clears it) and the new turn lands under Y, not X.
@@ -749,7 +742,7 @@ async def test_null_ask_recovers_when_current_conversation_deleted_mid_flight(
             client.chat.ask(notebook_id, "q-after-delete", source_ids=["src_001"]),
         )
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     # The turn is reported and cached under the FRESH id, never the deleted one.
     assert result.conversation_id == fresh_id, (

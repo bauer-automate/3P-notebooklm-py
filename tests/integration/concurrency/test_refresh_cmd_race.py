@@ -17,7 +17,7 @@ cancellation / failure-propagation scenarios are preserved:
    spawns; exactly-once coalescing holds regardless of cancellation timing.
 4. **Cancel/settle race must not bump on failure** — a caller cancelled as the
    subprocess settles with failure leaves the epoch untouched.
-5. **Cancel-after-start must not phantom-bump** — only the leader body bumps,
+5. **Cancel-before-work must not phantom-bump** — only the leader body bumps,
    and only after real subprocess success (issue #816; warm-registry variant).
 """
 
@@ -28,8 +28,8 @@ import threading
 
 import httpx
 import pytest
-from pytest_httpx import HTTPXMock
 
+from notebooklm import auth as auth_mod
 from notebooklm._auth import refresh as _auth_refresh
 from notebooklm._auth import single_flight as _single_flight
 
@@ -51,7 +51,7 @@ def _epoch(storage) -> int:
 
 
 @pytest.mark.asyncio
-async def test_failed_refresh_does_not_skip_concurrent_waiter(tmp_path):
+async def test_failed_refresh_does_not_skip_concurrent_waiter(monkeypatch, tmp_path):
     """Concurrent callers — the refresh subprocess fails; neither skips silently.
 
     The old bug bumped the generation BEFORE the subprocess ran, so a concurrent
@@ -62,6 +62,8 @@ async def test_failed_refresh_does_not_skip_concurrent_waiter(tmp_path):
     """
     storage = tmp_path / "storage_state.json"
     storage.write_text('{"cookies": [], "origins": []}')
+    monkeypatch.setenv(auth_mod.NOTEBOOKLM_REFRESH_CMD_ENV, "dummy")
+
     refresh_calls = 0
     refresh_call_lock = threading.Lock()
 
@@ -73,17 +75,31 @@ async def test_failed_refresh_does_not_skip_concurrent_waiter(tmp_path):
         # All attempts fail in this scenario.
         raise RuntimeError(f"NOTEBOOKLM_REFRESH_CMD exited 2: synthetic failure {call_n}")
 
-    deps = _auth_refresh.RefreshCmdDeps(
-        run_refresh_cmd=fake_run_refresh_cmd,
-        derive_refresh_lock_path=lambda _path: None,
-    )
+    async def fake_fetch_tokens_with_jar(cookie_jar, storage_path, **kwargs):
+        if not getattr(cookie_jar, "_first_fetch_done", False):
+            cookie_jar._first_fetch_done = True
+            raise ValueError("Authentication expired. Run 'notebooklm login'.")
+        return "csrf-token", "session-id"
 
-    async def caller():
-        return await _auth_refresh._coalesced_run_refresh_cmd(
-            str(storage.resolve()), storage.resolve(), None, deps=deps
-        )
+    def fake_build(_p):
+        return httpx.Cookies()
 
-    results = await asyncio.gather(caller(), caller(), return_exceptions=True)
+    def fake_snapshot(_j):
+        return None
+
+    # The subprocess runner is INJECTED via ``RefreshCmdDeps`` rather than
+    # monkeypatched onto the module (plan §7 deps record).
+    deps = _auth_refresh.RefreshCmdDeps(run_refresh_cmd=fake_run_refresh_cmd)
+    monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+    monkeypatch.setattr(_auth_refresh, "build_httpx_cookies_from_storage", fake_build)
+    monkeypatch.setattr(_auth_refresh, "snapshot_cookie_jar", fake_snapshot)
+
+    async def caller(jar):
+        return await auth_mod._fetch_tokens_with_refresh(jar, storage_path=storage, deps=deps)
+
+    jar_a = httpx.Cookies()
+    jar_b = httpx.Cookies()
+    results = await asyncio.gather(caller(jar_a), caller(jar_b), return_exceptions=True)
 
     # Both must surface the subprocess failure — neither may silently succeed via
     # reloaded-stale-cookies on a phantom epoch bump.
@@ -103,7 +119,7 @@ async def test_failed_refresh_does_not_skip_concurrent_waiter(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sibling_success_between_epoch_read_and_claim_skips_subprocess(tmp_path):
+async def test_sibling_success_between_epoch_read_and_claim_skips_subprocess(monkeypatch, tmp_path):
     """Compare-under-exclusion: no redundant subprocess #2 on the late-waiter race.
 
     Models the interleaving the REVISION targets: a cross-loop sibling finishes
@@ -121,27 +137,31 @@ async def test_sibling_success_between_epoch_read_and_claim_skips_subprocess(tmp
     """
     storage = tmp_path / "storage_state.json"
     storage.write_text('{"cookies": [], "origins": []}')
+    monkeypatch.setenv(auth_mod.NOTEBOOKLM_REFRESH_CMD_ENV, "dummy")
     path_key = str(storage.expanduser().resolve())
 
     this_caller_subprocess_calls = 0
 
-    async def fake_run_refresh_cmd():
+    async def fake_run_refresh_cmd(storage_path, profile):
         nonlocal this_caller_subprocess_calls
         this_caller_subprocess_calls += 1
 
-    # Model the exact compare-under-exclusion operation with a fresh owner. The
-    # caller captured epoch 0, then a sibling completed before its claim.
-    single_flight = _single_flight.SingleFlight()
-    single_flight.note_success(path_key)
-    claimed = single_flight.claim_if_epoch_current(
-        (path_key, "refresh-cmd"),
-        fake_run_refresh_cmd,
-        path_key=path_key,
-        epoch_before=0,
+    # The subprocess runner is INJECTED via ``RefreshCmdDeps`` rather than
+    # monkeypatched onto the module (plan §7 deps record).
+    deps = _auth_refresh.RefreshCmdDeps(run_refresh_cmd=fake_run_refresh_cmd)
+
+    # The sibling already ran its subprocess and bumped the real epoch to 1.
+    _single_flight.note_success(path_key)  # models the sibling's one subprocess
+
+    # This caller captured its epoch_before BEFORE the sibling bumped: force the
+    # stale read so ``epoch_before == 0`` at the compare point.
+    monkeypatch.setattr(_single_flight, "read_success_epoch", lambda _pk: 0)
+
+    await _auth_refresh._coalesced_run_refresh_cmd(
+        path_key, storage.expanduser().resolve(), None, deps=deps
     )
 
     # This caller must have SKIPPED under exclusion — no redundant subprocess #2.
-    assert claimed is None
     assert this_caller_subprocess_calls == 0, (
         "compare-under-exclusion failed: this caller ran a redundant subprocess "
         "even though a sibling had already succeeded and bumped the epoch."
@@ -149,7 +169,7 @@ async def test_sibling_success_between_epoch_read_and_claim_skips_subprocess(tmp
 
 
 @pytest.mark.asyncio
-async def test_concurrent_refresh_failure_followup_sees_attempt(tmp_path):
+async def test_concurrent_refresh_failure_followup_sees_attempt(monkeypatch, tmp_path):
     """First refresh fails; a caller waiting behind it MUST run its own attempt.
 
     Caller A leads, its subprocess fails. Caller B, which arrived while A's
@@ -159,6 +179,8 @@ async def test_concurrent_refresh_failure_followup_sees_attempt(tmp_path):
     """
     storage = tmp_path / "storage_state.json"
     storage.write_text('{"cookies": [], "origins": []}')
+    monkeypatch.setenv(auth_mod.NOTEBOOKLM_REFRESH_CMD_ENV, "dummy")
+
     refresh_calls = 0
     refresh_call_lock = threading.Lock()
     enter_subprocess_event = asyncio.Event()
@@ -175,19 +197,34 @@ async def test_concurrent_refresh_failure_followup_sees_attempt(tmp_path):
             raise RuntimeError("NOTEBOOKLM_REFRESH_CMD exited 2: synthetic failure")
         # Subsequent calls succeed (storage refreshed).
 
-    deps = _auth_refresh.RefreshCmdDeps(
-        run_refresh_cmd=fake_run_refresh_cmd,
-        derive_refresh_lock_path=lambda _path: None,
-    )
+    async def fake_fetch_tokens_with_jar(cookie_jar, storage_path, **kwargs):
+        if not getattr(cookie_jar, "_first_fetch_done", False):
+            cookie_jar._first_fetch_done = True
+            raise ValueError("Authentication expired. Run 'notebooklm login'.")
+        return "csrf-token", "session-id"
 
-    async def caller():
-        return await _auth_refresh._coalesced_run_refresh_cmd(
-            str(storage.resolve()), storage.resolve(), None, deps=deps
-        )
+    def fake_build(_p):
+        return httpx.Cookies()
 
-    task_a = asyncio.create_task(caller())
+    def fake_snapshot(_j):
+        return None
+
+    # The subprocess runner is INJECTED via ``RefreshCmdDeps`` rather than
+    # monkeypatched onto the module (plan §7 deps record).
+    deps = _auth_refresh.RefreshCmdDeps(run_refresh_cmd=fake_run_refresh_cmd)
+    monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+    monkeypatch.setattr(_auth_refresh, "build_httpx_cookies_from_storage", fake_build)
+    monkeypatch.setattr(_auth_refresh, "snapshot_cookie_jar", fake_snapshot)
+
+    async def caller(jar):
+        return await auth_mod._fetch_tokens_with_refresh(jar, storage_path=storage, deps=deps)
+
+    jar_a = httpx.Cookies()
+    jar_b = httpx.Cookies()
+
+    task_a = asyncio.create_task(caller(jar_a))
     await enter_subprocess_event.wait()
-    task_b = asyncio.create_task(caller())
+    task_b = asyncio.create_task(caller(jar_b))
     # Yield so B enters the refresh path and coalesces onto A's in-flight flight.
     await asyncio.sleep(0.05)
 
@@ -205,15 +242,15 @@ async def test_concurrent_refresh_failure_followup_sees_attempt(tmp_path):
         f"Expected 2 subprocess calls (A failed, B retried), saw {refresh_calls}. "
         "Caller B short-circuited on the failed leader's phantom epoch bump."
     )
-    assert results[1] is None
+    assert not isinstance(results[1], BaseException), f"B raised: {results[1]!r}"
+    _csrf, _sid, refreshed, _snap = results[1]
+    assert refreshed is True
     # B's subprocess succeeded → epoch bumped exactly once.
     assert _epoch(storage) == 1
 
 
 @pytest.mark.asyncio
-async def test_waiter_cancellation_does_not_kill_inflight_subprocess(
-    monkeypatch, tmp_path, httpx_mock: HTTPXMock
-):
+async def test_waiter_cancellation_does_not_kill_inflight_subprocess(monkeypatch, tmp_path):
     """Cancellation of the leader-caller must not abort the shared subprocess.
 
     Caller A leads and starts the subprocess. Caller B coalesces onto the shared
@@ -222,14 +259,9 @@ async def test_waiter_cancellation_does_not_kill_inflight_subprocess(
     refresh, the subprocess ran exactly ONCE, and no duplicate ever overlapped.
     """
     storage = tmp_path / "storage_state.json"
-    storage.write_text(
-        '{"cookies": ['
-        '{"name": "SID", "value": "stale", "domain": ".google.com"},'
-        '{"name": "__Secure-1PSIDTS", "value": "stale-ts", '
-        '"domain": ".google.com"}'
-        '], "origins": []}',
-        encoding="utf-8",
-    )
+    storage.write_text('{"cookies": [], "origins": []}')
+    monkeypatch.setenv(auth_mod.NOTEBOOKLM_REFRESH_CMD_ENV, "dummy")
+
     subprocess_invocations = 0
     subprocess_completions = 0
     concurrent_invocations_observed = 0
@@ -238,25 +270,6 @@ async def test_waiter_cancellation_does_not_kill_inflight_subprocess(
     invocation_lock = threading.Lock()
     leader_entered = asyncio.Event()
     leader_can_proceed = asyncio.Event()
-    retry_routes: list[str] = []
-
-    def homepage(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "accounts.google.com":
-            return httpx.Response(200, content=b"<html>Login</html>", request=request)
-        if "SID=fresh" not in request.headers.get("cookie", ""):
-            return httpx.Response(
-                302,
-                headers={"Location": "https://accounts.google.com/signin"},
-                request=request,
-            )
-        retry_routes.append(request.url.params.get("authuser", "default"))
-        return httpx.Response(
-            200,
-            content=b'"SNlM0e":"csrf-token" "FdrFJe":"session-id"',
-            request=request,
-        )
-
-    httpx_mock.add_callback(homepage, is_reusable=True)
 
     async def fake_run_refresh_cmd(storage_path, profile):
         nonlocal subprocess_invocations, subprocess_completions
@@ -278,34 +291,35 @@ async def test_waiter_cancellation_does_not_kill_inflight_subprocess(
                 in_flight_count -= 1
         with invocation_lock:
             subprocess_completions += 1
-        storage.write_text(
-            '{"cookies": ['
-            '{"name": "SID", "value": "fresh", "domain": ".google.com"},'
-            '{"name": "__Secure-1PSIDTS", "value": "fresh-ts", '
-            '"domain": ".google.com"}'
-            '], "origins": []}',
-            encoding="utf-8",
-        )
 
-    deps = _auth_refresh.RefreshCmdDeps(
-        run_refresh_cmd=fake_run_refresh_cmd,
-        derive_refresh_lock_path=lambda _path: None,
-    )
-    monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV, "injected-refresh")
-    monkeypatch.setenv("NOTEBOOKLM_DISABLE_KEEPALIVE_POKE", "1")
+    async def fake_fetch_tokens_with_jar(cookie_jar, storage_path, **kwargs):
+        if not getattr(cookie_jar, "_first_fetch_done", False):
+            cookie_jar._first_fetch_done = True
+            raise ValueError("Authentication expired. Run 'notebooklm login'.")
+        return "csrf-token", "session-id"
 
-    async def caller(*, authuser):
-        return await _auth_refresh._fetch_tokens_with_refresh(
-            httpx.Cookies(),
-            storage,
-            authuser=authuser,
-            force_authuser_query=True,
-            deps=deps,
-        )
+    def fake_build(_p):
+        return httpx.Cookies()
 
-    task_a = asyncio.create_task(caller(authuser=1))
+    def fake_snapshot(_j):
+        return None
+
+    # The subprocess runner is INJECTED via ``RefreshCmdDeps`` rather than
+    # monkeypatched onto the module (plan §7 deps record).
+    deps = _auth_refresh.RefreshCmdDeps(run_refresh_cmd=fake_run_refresh_cmd)
+    monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+    monkeypatch.setattr(_auth_refresh, "build_httpx_cookies_from_storage", fake_build)
+    monkeypatch.setattr(_auth_refresh, "snapshot_cookie_jar", fake_snapshot)
+
+    async def caller(jar):
+        return await auth_mod._fetch_tokens_with_refresh(jar, storage_path=storage, deps=deps)
+
+    jar_a = httpx.Cookies()
+    jar_b = httpx.Cookies()
+
+    task_a = asyncio.create_task(caller(jar_a))
     await leader_entered.wait()
-    task_b = asyncio.create_task(caller(authuser=2))
+    task_b = asyncio.create_task(caller(jar_b))
     # Let B enter the refresh path and coalesce onto the in-flight flight.
     await asyncio.sleep(0.05)
 
@@ -323,12 +337,12 @@ async def test_waiter_cancellation_does_not_kill_inflight_subprocess(
     a_result = await asyncio.gather(task_a, return_exceptions=True)
     assert isinstance(a_result[0], asyncio.CancelledError)
 
-    # B observes the complete entry behavior: shared command, real storage
-    # reload, route resolution, retry fetch, and four-tuple projection.
-    csrf, session_id, refreshed, snapshot = await task_b
-    assert (csrf, session_id, refreshed) == ("csrf-token", "session-id", True)
-    assert snapshot is not None
-    assert retry_routes == ["2"]
+    # B observes a SUCCESSFUL refresh — not stale-after-skip, not a propagated
+    # cancellation.
+    csrf, sid, refreshed, _snap = await task_b
+    assert refreshed is True
+    assert csrf == "csrf-token"
+    assert sid == "session-id"
 
     assert max_in_flight == 1, (
         f"Expected at most 1 concurrent subprocess invocation, saw {max_in_flight}."
@@ -344,7 +358,7 @@ async def test_waiter_cancellation_does_not_kill_inflight_subprocess(
 
 
 @pytest.mark.asyncio
-async def test_cancel_settle_race_does_not_bump_on_failure(tmp_path):
+async def test_cancel_settle_race_does_not_bump_on_failure(monkeypatch, tmp_path):
     """Cancel/settle race: caller cancelled AS the subprocess settles with failure.
 
     The caller is cancelled in the same window the subprocess fails.
@@ -354,6 +368,8 @@ async def test_cancel_settle_race_does_not_bump_on_failure(tmp_path):
     """
     storage = tmp_path / "storage_state.json"
     storage.write_text('{"cookies": [], "origins": []}')
+    monkeypatch.setenv(auth_mod.NOTEBOOKLM_REFRESH_CMD_ENV, "dummy")
+
     cancel_now = asyncio.Event()
     settle_after_cancel = asyncio.Event()
 
@@ -362,14 +378,28 @@ async def test_cancel_settle_race_does_not_bump_on_failure(tmp_path):
         await settle_after_cancel.wait()
         raise RuntimeError("NOTEBOOKLM_REFRESH_CMD exited 2: synthetic failure")
 
-    deps = _auth_refresh.RefreshCmdDeps(
-        run_refresh_cmd=fake_run_refresh_cmd,
-        derive_refresh_lock_path=lambda _path: None,
-    )
+    async def fake_fetch_tokens_with_jar(cookie_jar, storage_path, **kwargs):
+        if not getattr(cookie_jar, "_first_fetch_done", False):
+            cookie_jar._first_fetch_done = True
+            raise ValueError("Authentication expired. Run 'notebooklm login'.")
+        return "csrf-token", "session-id"
+
+    def fake_build(_p):
+        return httpx.Cookies()
+
+    def fake_snapshot(_j):
+        return None
+
+    # The subprocess runner is INJECTED via ``RefreshCmdDeps`` rather than
+    # monkeypatched onto the module (plan §7 deps record).
+    deps = _auth_refresh.RefreshCmdDeps(run_refresh_cmd=fake_run_refresh_cmd)
+    monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+    monkeypatch.setattr(_auth_refresh, "build_httpx_cookies_from_storage", fake_build)
+    monkeypatch.setattr(_auth_refresh, "snapshot_cookie_jar", fake_snapshot)
+
+    jar = httpx.Cookies()
     task = asyncio.create_task(
-        _auth_refresh._coalesced_run_refresh_cmd(
-            str(storage.resolve()), storage.resolve(), None, deps=deps
-        )
+        auth_mod._fetch_tokens_with_refresh(jar, storage_path=storage, deps=deps)
     )
     await cancel_now.wait()
     # Cancel the caller and release the subprocess in adjacent ticks so settle
@@ -391,109 +421,106 @@ async def test_cancel_settle_race_does_not_bump_on_failure(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cancel_after_subprocess_starts_no_phantom_bump(tmp_path):
-    """Cancellation after subprocess start but before success must not phantom-bump (#816).
+async def test_cancel_before_subprocess_runs_no_phantom_bump(monkeypatch, tmp_path):
+    """Cancel-before-work must not phantom-bump the epoch (issue #816).
 
-    Let the real coalescer and leader body start, then cancel the caller while
-    its command is still unsettled. The command fails during cancellation
-    settlement, so no success epoch is attributed to the caller.
+    Modelled by patching ``_coalesced_run_refresh_cmd`` to raise
+    ``CancelledError`` before any subprocess runs (equivalent to caller
+    cancellation landing in the sync prefix). Only the leader body bumps the
+    epoch, and only after real subprocess success, so a caller cancelled before
+    any work leaves the epoch at 0.
     """
     storage = tmp_path / "storage_state.json"
     storage.write_text('{"cookies": [], "origins": []}')
-    runner_calls = 0
-    runner_started = asyncio.Event()
-    settle_runner = asyncio.Event()
+    monkeypatch.setenv(auth_mod.NOTEBOOKLM_REFRESH_CMD_ENV, "dummy")
 
-    async def counting_runner(storage_path, profile):
-        nonlocal runner_calls
-        runner_calls += 1
-        runner_started.set()
-        await settle_runner.wait()
-        raise RuntimeError("synthetic failure during cancellation settlement")
+    coalesced_calls = 0
 
-    deps = _auth_refresh.RefreshCmdDeps(
-        run_refresh_cmd=counting_runner,
-        derive_refresh_lock_path=lambda _path: None,
+    async def fake_coalesced_run_refresh_cmd(refresh_key, storage_path, profile, *, deps=None):
+        nonlocal coalesced_calls
+        coalesced_calls += 1
+        raise asyncio.CancelledError()
+
+    async def fake_fetch_tokens_with_jar(cookie_jar, storage_path, **kwargs):
+        if not getattr(cookie_jar, "_first_fetch_done", False):
+            cookie_jar._first_fetch_done = True
+            raise ValueError("Authentication expired. Run 'notebooklm login'.")
+        return "csrf-token", "session-id"
+
+    def fake_build(_p):
+        return httpx.Cookies()
+
+    def fake_snapshot(_j):
+        return None
+
+    monkeypatch.setattr(_auth_refresh, "_coalesced_run_refresh_cmd", fake_coalesced_run_refresh_cmd)
+    monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+    monkeypatch.setattr(_auth_refresh, "build_httpx_cookies_from_storage", fake_build)
+    monkeypatch.setattr(_auth_refresh, "snapshot_cookie_jar", fake_snapshot)
+
+    jar = httpx.Cookies()
+    result = await asyncio.gather(
+        auth_mod._fetch_tokens_with_refresh(jar, storage_path=storage),
+        return_exceptions=True,
     )
-    task = asyncio.create_task(
-        _auth_refresh._coalesced_run_refresh_cmd(
-            str(storage.resolve()), storage.resolve(), None, deps=deps
-        )
-    )
-    await runner_started.wait()
-    task.cancel()
-    settle_runner.set()
-    result = await asyncio.gather(task, return_exceptions=True)
 
     assert isinstance(result[0], asyncio.CancelledError), (
         f"Expected CancelledError to propagate, got {result[0]!r}"
     )
-    assert runner_calls == 1
+    assert coalesced_calls == 1, "Test scaffolding: the modelled race must fire once."
     assert _epoch(storage) == 0, (
-        f"Epoch must not advance when cancellation settles against failed work; "
-        f"saw {_epoch(storage)} — issue #816 regression."
+        f"Epoch must not advance when cancellation arrived before any subprocess "
+        f"ran; saw {_epoch(storage)} — issue #816 regression."
     )
 
 
 @pytest.mark.asyncio
-async def test_cancel_after_subprocess_starts_with_warm_epoch_no_phantom_bump(tmp_path):
+async def test_cancel_before_work_with_warm_epoch_no_phantom_bump(monkeypatch, tmp_path):
     """Warm-epoch variant of issue #816.
 
     A prior successful refresh left the success epoch at 1. A new caller is
-    cancelled after its coalescer starts but before successful work. The epoch must
+    cancelled before any subprocess runs (modelled as above). The epoch must
     stay at 1 — a stale prior success must never be re-attributed to this
-    caller's failed attempt.
+    caller's no-op attempt.
     """
     storage = tmp_path / "storage_state.json"
     storage.write_text('{"cookies": [], "origins": []}')
-    # Seed the warm state through the same production composition under test:
-    # a prior successful command bumps the epoch to 1.
-    seed_calls = 0
+    monkeypatch.setenv(auth_mod.NOTEBOOKLM_REFRESH_CMD_ENV, "dummy")
 
-    async def successful_seed_runner(storage_path, profile):
-        nonlocal seed_calls
-        seed_calls += 1
-
-    seed_deps = _auth_refresh.RefreshCmdDeps(
-        run_refresh_cmd=successful_seed_runner,
-        derive_refresh_lock_path=lambda _path: None,
-    )
-    await _auth_refresh._coalesced_run_refresh_cmd(
-        str(storage.resolve()), storage.resolve(), None, deps=seed_deps
-    )
-    assert seed_calls == 1
+    # Seed the warm state: a prior successful refresh bumped the epoch to 1.
+    _single_flight.note_success(str(storage.expanduser().resolve()))
     assert _epoch(storage) == 1
 
-    runner_calls = 0
-    runner_started = asyncio.Event()
-    settle_runner = asyncio.Event()
+    async def fake_coalesced_run_refresh_cmd(refresh_key, storage_path, profile, *, deps=None):
+        raise asyncio.CancelledError()
 
-    async def counting_runner(storage_path, profile):
-        nonlocal runner_calls
-        runner_calls += 1
-        runner_started.set()
-        await settle_runner.wait()
-        raise RuntimeError("synthetic failure during cancellation settlement")
+    async def fake_fetch_tokens_with_jar(cookie_jar, storage_path, **kwargs):
+        if not getattr(cookie_jar, "_first_fetch_done", False):
+            cookie_jar._first_fetch_done = True
+            raise ValueError("Authentication expired. Run 'notebooklm login'.")
+        return "csrf-token", "session-id"
 
-    deps = _auth_refresh.RefreshCmdDeps(
-        run_refresh_cmd=counting_runner,
-        derive_refresh_lock_path=lambda _path: None,
+    def fake_build(_p):
+        return httpx.Cookies()
+
+    def fake_snapshot(_j):
+        return None
+
+    monkeypatch.setattr(_auth_refresh, "_coalesced_run_refresh_cmd", fake_coalesced_run_refresh_cmd)
+    monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+    monkeypatch.setattr(_auth_refresh, "build_httpx_cookies_from_storage", fake_build)
+    monkeypatch.setattr(_auth_refresh, "snapshot_cookie_jar", fake_snapshot)
+
+    jar = httpx.Cookies()
+    result = await asyncio.gather(
+        auth_mod._fetch_tokens_with_refresh(jar, storage_path=storage),
+        return_exceptions=True,
     )
-    task = asyncio.create_task(
-        _auth_refresh._coalesced_run_refresh_cmd(
-            str(storage.resolve()), storage.resolve(), None, deps=deps
-        )
-    )
-    await runner_started.wait()
-    task.cancel()
-    settle_runner.set()
-    result = await asyncio.gather(task, return_exceptions=True)
 
     assert isinstance(result[0], asyncio.CancelledError), (
         f"Expected CancelledError to propagate, got {result[0]!r}"
     )
-    assert runner_calls == 1
     assert _epoch(storage) == 1, (
         f"Epoch must not advance against a prior cycle's success when cancellation "
-        f"settled against failed work; saw {_epoch(storage)} — warm #816 regression."
+        f"arrived before any subprocess ran; saw {_epoch(storage)} — warm #816 regression."
     )

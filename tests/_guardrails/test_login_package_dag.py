@@ -36,7 +36,7 @@ ALLOWED_EDGES: dict[str, set[str]] = {
     "exceptions": set(),
     "outcomes": set(),
     "cookie_domains": set(),
-    "rookie_cookies_errors": set(),
+    "rookiepy_errors": set(),
     # master_token: bootstrap/refresh service; its auth, client, and browser-capture
     # imports live outside this package, so it remains a login-package leaf.
     "master_token": set(),
@@ -44,14 +44,14 @@ ALLOWED_EDGES: dict[str, set[str]] = {
     "cookie_jar": {
         "outcomes",
         # allowed but currently unused — _enumerate_one_jar formats its own
-        # rookie-cookies error messages and does not call _handle_rookie_cookies_error.
-        "rookie_cookies_errors",
+        # rookiepy error messages and does not call _handle_rookiepy_error.
+        "rookiepy_errors",
         # io_seam: _enumerate_one_jar drives the account probe via io.run_async.
         "io_seam",
     },
     "chromium_accounts": {
         "cookie_jar",
-        "rookie_cookies_errors",
+        "rookiepy_errors",
         "cookie_domains",
         "outcomes",
         # io_seam: the chromium readers emit verbose progress via io.emit.
@@ -62,7 +62,7 @@ ALLOWED_EDGES: dict[str, set[str]] = {
         # (a BrowserCookieOutcome) on every extractor failure instead of
         # console.print + exit_with_code, so the command layer renders + exits.
         "outcomes",
-        "rookie_cookies_errors",
+        "rookiepy_errors",
         "cookie_domains",
         # allowed but currently unused — the firefox helpers hand raw cookies
         # back to the caller (browser_accounts) which then routes through
@@ -76,10 +76,10 @@ ALLOWED_EDGES: dict[str, set[str]] = {
         "firefox_accounts",
         "cookie_jar",
         "outcomes",
-        "rookie_cookies_errors",
+        "rookiepy_errors",
         # The documented leaf-ward DAG routes cookie_domains via chromium/firefox
         # subordinates, but ``_read_browser_cookies``'s "auto" + named-alias
-        # branch (the legacy ``rookie_cookies.load`` path) constructs its own domain
+        # branch (the legacy ``rookiepy.load`` path) constructs its own domain
         # list — that call site lives in browser_accounts, not in the
         # browser-family subordinates. Adding the edge here keeps the dispatch
         # logic colocated; the DAG stays acyclic (cookie_domains is a leaf).

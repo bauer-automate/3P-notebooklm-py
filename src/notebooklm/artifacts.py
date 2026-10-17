@@ -15,13 +15,6 @@ import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from ._idempotency import (
-    ReplayGrant,
-    activate_generation_retry_binding,
-    new_generation_retry_binding,
-    replay_allowed,
-    settle_generation_failure,
-)
 from .exceptions import RateLimitError
 from .types import GenerationState, GenerationStatus
 
@@ -84,11 +77,11 @@ async def with_rate_limit_retry(
     """Run an artifact-generation callable with rate-limit retry.
 
     The callable is always invoked at least once. A retry is scheduled only
-    when an attempt raises :class:`~notebooklm.exceptions.RateLimitError` with
-    positive ``rejected`` or ``not_sent`` commit evidence. A bare rate-limit
-    exception, transport-status throttle, or unknown commit outcome is never
-    replayed. A *returned* ``GenerationStatus`` — including one whose
-    ``is_rate_limited`` property is true — is returned immediately.
+    when an attempt raises :class:`~notebooklm.exceptions.RateLimitError` — the
+    ADR-0019 "async kickoff" contract where a synchronous rate-limit refusal
+    propagates as an exception (v0.8.0, #1342). A *returned* ``GenerationStatus``
+    — including one whose ``is_rate_limited`` property is true — is no longer a
+    retry signal and is returned immediately.
 
     Successful statuses, non-rate-limit failures, returned rate-limited statuses,
     and ``None`` return immediately. Non-``RateLimitError`` exceptions propagate
@@ -128,7 +121,6 @@ async def with_rate_limit_retry(
         raise ValueError("multiplier must be positive")
 
     sleep_func = asyncio.sleep if sleep is None else sleep
-    binding = new_generation_retry_binding()
 
     attempt = 0
     while True:
@@ -137,22 +129,23 @@ async def with_rate_limit_retry(
         # the callback shape is uniform — a *returned* status is never a retry
         # signal (v0.8.0, #1342).
         try:
-            with activate_generation_retry_binding(binding):
-                result = await generate_fn()
+            result = await generate_fn()
         except RateLimitError as exc:
-            settle_generation_failure(binding, exc)
-            if not replay_allowed(
-                exc,
-                grant=ReplayGrant.REFUSAL_RETRY_AUTHORIZED,
-                disabled=binding.replay_disabled,
-                remaining=float(max_retries - attempt),
-            ):
+            if attempt >= max_retries:
                 raise
+            # This branch is reached only because a ``RateLimitError`` was
+            # caught, so the synthesized status must read as rate-limited for
+            # ``on_retry`` consumers (``event.result.is_rate_limited``). Fall
+            # back to the ``USER_DISPLAYABLE_ERROR`` sentinel when the exception
+            # carries no ``rpc_code`` rather than dropping ``error_code`` to
+            # ``None`` (which would force brittle message-substring matching).
             event_result = GenerationStatus(
                 task_id="",
                 status=GenerationState.FAILED,
                 error=str(exc),
-                error_code=str(exc.rpc_code) if exc.rpc_code is not None else None,
+                error_code=(
+                    str(exc.rpc_code) if exc.rpc_code is not None else "USER_DISPLAYABLE_ERROR"
+                ),
             )
         else:
             # Any returned result (success, non-rate-limit failure, a returned

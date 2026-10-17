@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import subprocess
+from typing import Any
 
 import httpx
 import pytest
@@ -81,14 +82,15 @@ class TestRunRefreshCmdMissing:
 class TestRunRefreshCmdSubprocessFailure:
     """``subprocess.run`` raising → RuntimeError ."""
 
-    def _stub_storage(self, tmp_path):
+    def _stub_storage(self, monkeypatch, tmp_path):
         storage = tmp_path / "storage_state.json"
         storage.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(_auth_refresh, "get_storage_path", lambda profile=None: storage)
         return storage
 
     @pytest.mark.asyncio
     async def test_timeout_expired_becomes_runtime_error(self, monkeypatch, tmp_path):
-        storage = self._stub_storage(tmp_path)
+        self._stub_storage(monkeypatch, tmp_path)
         monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV, "echo hi")
 
         def _raise_timeout(*args, **kwargs):
@@ -96,11 +98,11 @@ class TestRunRefreshCmdSubprocessFailure:
 
         monkeypatch.setattr(subprocess, "run", _raise_timeout)
         with pytest.raises(RuntimeError, match="failed to execute"):
-            await _auth_refresh._run_refresh_cmd(storage)
+            await _auth_refresh._run_refresh_cmd()
 
     @pytest.mark.asyncio
     async def test_oserror_becomes_runtime_error(self, monkeypatch, tmp_path):
-        storage = self._stub_storage(tmp_path)
+        self._stub_storage(monkeypatch, tmp_path)
         monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV, "echo hi")
 
         def _raise_oserror(*args, **kwargs):
@@ -108,16 +110,16 @@ class TestRunRefreshCmdSubprocessFailure:
 
         monkeypatch.setattr(subprocess, "run", _raise_oserror)
         with pytest.raises(RuntimeError, match="failed to execute"):
-            await _auth_refresh._run_refresh_cmd(storage)
+            await _auth_refresh._run_refresh_cmd()
 
 
 class TestRunRefreshCmdNonZeroExitBasename:
     """Non-zero exit basename extraction for shell / empty targets (390-393)."""
 
-    def _stub_storage(self, tmp_path):
+    def _stub_storage(self, monkeypatch, tmp_path):
         storage = tmp_path / "storage_state.json"
         storage.write_text("{}", encoding="utf-8")
-        return storage
+        monkeypatch.setattr(_auth_refresh, "get_storage_path", lambda profile=None: storage)
 
     def _stub_nonzero_run(self, monkeypatch):
         class _Result:
@@ -131,7 +133,7 @@ class TestRunRefreshCmdNonZeroExitBasename:
     async def test_shell_mode_string_target_basename(self, monkeypatch, tmp_path):
         # Shell-mode keeps ``run_target`` as a raw string; basename comes from
         # its first whitespace-split token .
-        storage = self._stub_storage(tmp_path)
+        self._stub_storage(monkeypatch, tmp_path)
         monkeypatch.setenv(
             _auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV,
             "/opt/secrets/do-refresh.sh --token=hunter2 | tee log",
@@ -139,7 +141,7 @@ class TestRunRefreshCmdNonZeroExitBasename:
         monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_USE_SHELL_ENV, "1")
         self._stub_nonzero_run(monkeypatch)
         with pytest.raises(RuntimeError) as exc_info:
-            await _auth_refresh._run_refresh_cmd(storage)
+            await _auth_refresh._run_refresh_cmd()
         message = exc_info.value.args[0]
         assert "exited 7" in message
         assert "do-refresh.sh" in message
@@ -153,14 +155,14 @@ class TestRunRefreshCmdNonZeroExitBasename:
     ):
         # Whitespace-only command string in shell-mode → ``run_target.strip()``
         # is empty so the basename falls back to the literal ``"shell"`` (393).
-        storage = self._stub_storage(tmp_path)
+        self._stub_storage(monkeypatch, tmp_path)
         # The env-not-set guard treats "" as missing; spaces bypass it while
         # still stripping to empty in the basename branch.
         monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV, "   ")
         monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_USE_SHELL_ENV, "1")
         self._stub_nonzero_run(monkeypatch)
         with pytest.raises(RuntimeError) as exc_info:
-            await _auth_refresh._run_refresh_cmd(storage)
+            await _auth_refresh._run_refresh_cmd()
         message = exc_info.value.args[0]
         assert "exited 7" in message
         assert "executable: shell" in message
@@ -283,7 +285,7 @@ class TestSettleCallbackCancel:
 
 
 class TestFetchTokensCancelPropagation:
-    """The refresh-command owner propagates cancellation without success.
+    """``_fetch_tokens_with_refresh`` propagates caller-side cancellation.
 
     c-PR2 removed the hand-rolled cancel/settle inspection dance from
     ``_fetch_tokens_with_refresh`` (the observed_inflight / prior_inflight
@@ -293,73 +295,81 @@ class TestFetchTokensCancelPropagation:
     propagate, and no success epoch is bumped for a cancelled attempt.
     """
 
+    def _common_patches(self, monkeypatch, storage):
+        async def fake_fetch_tokens_with_jar(cookie_jar, storage_path=None, **route_kwargs):
+            raise ValueError("Authentication expired. Redirected to login.")
+
+        monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV, "echo hi")
+        monkeypatch.setattr(_auth_refresh, "get_storage_path", lambda profile=None: storage)
+        monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+
     @pytest.mark.asyncio
-    async def test_cancel_propagates_without_epoch_bump(self, tmp_path):
+    async def test_cancel_propagates_without_epoch_bump(self, monkeypatch, tmp_path):
         storage = tmp_path / "storage_state.json"
         storage.write_text("{}", encoding="utf-8")
+        self._common_patches(monkeypatch, storage)
         path_key = str(storage.expanduser().resolve())
 
-        async def cancelled_runner(resolved_storage_path, profile):
+        async def fake_coalesced(key, resolved_storage_path, profile, *, deps=None):
             raise asyncio.CancelledError()
 
-        deps = _auth_refresh.RefreshCmdDeps(
-            run_refresh_cmd=cancelled_runner,
-            derive_refresh_lock_path=lambda _path: None,
-        )
+        monkeypatch.setattr(_auth_refresh, "_coalesced_run_refresh_cmd", fake_coalesced)
         with pytest.raises(asyncio.CancelledError):
-            await _auth_refresh._coalesced_run_refresh_cmd(
-                path_key,
-                storage.resolve(),
-                None,
-                deps=deps,
-            )
+            await _auth_refresh._fetch_tokens_with_refresh(httpx.Cookies(), storage, None)
         assert _single_flight.read_success_epoch(path_key) == 0
 
 
 class TestPostRefreshRetryRouteKwargs:
-    """The refresh entry preserves explicit account selection on retry."""
+    """Post-refresh retry forwards account_email / force_authuser_query (637, 639)."""
 
     @pytest.mark.asyncio
     async def test_retry_forwards_account_email_and_force_authuser(self, monkeypatch, tmp_path):
         storage = tmp_path / "storage_state.json"
-        storage.write_text(
-            '{"cookies": ['
-            '{"name": "SID", "value": "fresh", "domain": ".google.com"},'
-            '{"name": "__Secure-1PSIDTS", "value": "fresh-ts", '
-            '"domain": ".google.com"}'
-            '], "origins": []}',
-            encoding="utf-8",
-        )
-        observed_routes: list[dict[str, object]] = []
+        storage.write_text("{}", encoding="utf-8")
+        # First fetch raises an auth-expiry ValueError to trigger refresh; the
+        # retry fetch records the route kwargs it received.
+        calls: list[dict[str, Any]] = []
+        state = {"first": True}
 
-        async def fetch(_jar, _path=None, **route_kwargs):
-            observed_routes.append(route_kwargs)
-            if len(observed_routes) == 1:
+        async def fake_fetch_tokens_with_jar(cookie_jar, storage_path=None, **route_kwargs):
+            if state["first"]:
+                state["first"] = False
                 raise ValueError("Authentication expired. Redirected to login.")
+            calls.append(route_kwargs)
             return "csrf_after", "sess_after"
 
-        async def run_refresh_cmd(_path, _profile):
+        async def fake_coalesced(refresh_key, resolved_storage_path, profile, *, deps=None):
             return None
 
-        monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV, "injected-refresh")
-        monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fetch)
-        deps = _auth_refresh.RefreshCmdDeps(
-            run_refresh_cmd=run_refresh_cmd,
-            derive_refresh_lock_path=lambda _path: None,
-        )
+        def fake_build_jar(path):
+            return httpx.Cookies()
 
-        result = await _auth_refresh._fetch_tokens_with_refresh(
+        def fake_replace(target, source):
+            return None
+
+        def fake_snapshot(jar):
+            return None
+
+        monkeypatch.setenv(_auth_refresh.NOTEBOOKLM_REFRESH_CMD_ENV, "echo hi")
+        monkeypatch.setattr(_auth_refresh, "get_storage_path", lambda profile=None: storage)
+        monkeypatch.setattr(_auth_refresh, "_fetch_tokens_with_jar", fake_fetch_tokens_with_jar)
+        monkeypatch.setattr(_auth_refresh, "_coalesced_run_refresh_cmd", fake_coalesced)
+        monkeypatch.setattr(_auth_refresh, "build_httpx_cookies_from_storage", fake_build_jar)
+        monkeypatch.setattr(_auth_refresh, "_replace_cookie_jar", fake_replace)
+        monkeypatch.setattr(_auth_refresh, "snapshot_cookie_jar", fake_snapshot)
+        csrf, session_id, refreshed, _snap = await _auth_refresh._fetch_tokens_with_refresh(
             httpx.Cookies(),
             storage,
+            None,
             authuser=0,
             account_email="bob@example.com",
             force_authuser_query=True,
-            deps=deps,
         )
-        assert result[:3] == ("csrf_after", "sess_after", True)
-        assert len(observed_routes) == 2, "the post-refresh fetch was not reached"
-        assert observed_routes[1] == {
-            "account_email": "bob@example.com",
-            "authuser": 0,
-            "force_authuser_query": True,
-        }
+        assert refreshed is True
+        assert csrf == "csrf_after"
+        assert session_id == "sess_after"
+        assert calls, "retry fetch was not invoked"
+        retry_kwargs = calls[0]
+        assert retry_kwargs["account_email"] == "bob@example.com"
+        assert retry_kwargs["force_authuser_query"] is True
+        assert retry_kwargs["authuser"] == 0

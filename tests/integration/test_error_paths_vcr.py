@@ -31,7 +31,7 @@ a real-world error shape (e.g. a quota-exhaustion 429 with a real
 Recording note (maintainers)
 ----------------------------
 As of Tier-12 PR 12.6, synthetic-error substitution lives in
-:class:`notebooklm._web.transport.middleware.error_injection.ErrorInjectionMiddleware`
+:class:`notebooklm._middleware.error_injection.ErrorInjectionMiddleware`
 at the chain layer — well above the ``httpx`` transport. VCR's record
 hook patches ``httpcore.AsyncConnectionPool.handle_async_request`` (below
 httpx), so the chain short-circuit happens before VCR ever sees the
@@ -114,7 +114,7 @@ class TestErrorPaths:
         # has ONE interaction; with the default retry budget the client would
         # ask for a second cassette response that doesn't exist and VCR would
         # raise ``CannotOverwriteExistingCassetteException``.
-        client._web_runtime.composed.chain_host._rate_limit_max_retries = 0
+        client._composed.chain_host._rate_limit_max_retries = 0
 
         with notebooklm_vcr.use_cassette("error_synthetic_429_rate_limit.yaml") as cassette:
             async with client:
@@ -154,7 +154,7 @@ class TestErrorPaths:
         # is exercised separately by the unit tests in
         # ``test_rate_limit_retry.py`` — here we focus on the terminal
         # exception-mapping branch.
-        client._web_runtime.composed.chain_host._server_error_max_retries = 0
+        client._composed.chain_host._server_error_max_retries = 0
 
         with notebooklm_vcr.use_cassette("error_synthetic_500_server.yaml") as cassette:
             async with client:
@@ -187,13 +187,13 @@ class TestErrorPaths:
         attempt. The exact post-refresh exception type is incidental
         (``ClientError`` because 400 is not 401/403, 5xx, or 429); what
         matters is that the auth-refresh hook fired, observed via a spy
-        installed on ``client._web_runtime.auth_coord._refresh_callback`` and corroborated by the
+        installed on ``client._collaborators.auth_coord._refresh_callback`` and corroborated by the
         ``play_count == 2`` assertion on the cassette.
         """
         client = NotebookLMClient(_synthetic_auth())
         # Eliminate the post-refresh retry delay so the test runs fast under
         # replay (mirrors ``test_auth_refresh_vcr.py``).
-        client._web_runtime.composed.chain_host._refresh_retry_delay = 0
+        client._composed.chain_host._refresh_retry_delay = 0
 
         # In-process refresh callback that issues NO HTTP traffic. This is
         # what lets the cassette capture only the TWO synthetic batchexecute
@@ -203,9 +203,8 @@ class TestErrorPaths:
         # ``test_auth_refresh_vcr.py`` exercises that full three-leg flow.
         refresh_calls: list[object] = []
 
-        async def stub_refresh(expected_epoch: int) -> AuthTokens:
+        async def stub_refresh() -> AuthTokens:
             refresh_calls.append(None)
-            client._web_runtime.auth_coord.assert_epoch(expected_epoch)
             # Mutate the in-memory CSRF token to simulate a successful refresh.
             # The retry loop rebuilds the request body from the refreshed
             # auth snapshot after refresh, so
@@ -218,14 +217,13 @@ class TestErrorPaths:
             # Session-level ``update_auth_headers`` forward; call the
             # canonical coordinator method directly with the explicit
             # collaborator kwargs.
-            client._web_runtime.auth_coord.update_auth_headers(
+            client._collaborators.auth_coord.update_auth_headers(
                 auth=client._auth,
-                kernel=client._web_runtime.kernel,
-                expected_epoch=expected_epoch,
+                kernel=client._collaborators.kernel,
             )
             return client._auth
 
-        client._web_runtime.auth_coord._refresh_callback = stub_refresh
+        client._collaborators.auth_coord._refresh_callback = stub_refresh
 
         with notebooklm_vcr.use_cassette("error_synthetic_stale_csrf.yaml") as cassette:
             async with client:

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -36,7 +36,6 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
     monkeypatch.delenv("NOTEBOOKLM_PROFILE", raising=False)
     monkeypatch.delenv("NOTEBOOKLM_AUTH_JSON", raising=False)
-    monkeypatch.delenv("NOTEBOOKLM_BASE_URL", raising=False)
     paths.set_active_profile(None)
     paths._reset_config_cache()
     yield tmp_path
@@ -44,10 +43,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     paths._reset_config_cache()
 
 
-def _doctor_paths(
-    *,
-    headless_reauth_check: Callable[[], dict[str, str]] | None = None,
-) -> DoctorPaths:
+def _doctor_paths() -> DoctorPaths:
     """Bundle the real path helpers, mirroring ``cli/doctor_cmd._doctor_paths``."""
     return DoctorPaths(
         get_path_info=paths.get_path_info,
@@ -55,7 +51,7 @@ def _doctor_paths(
         get_profile_dir=paths.get_profile_dir,
         get_storage_path=paths.get_storage_path,
         get_config_path=paths.get_config_path,
-        headless_reauth_check=headless_reauth_check or _headless_reauth_check,
+        headless_reauth_check=_headless_reauth_check,
     )
 
 
@@ -65,7 +61,7 @@ def _headless_reauth_check() -> dict[str, str]:
     Uses the real readiness probe pointed at the per-test browser-profile dir,
     so these app-level tests exercise the same mapping the CLI forwards.
     """
-    from notebooklm._browser.headless_reauth import headless_reauth_readiness
+    from notebooklm._auth.headless_reauth import headless_reauth_readiness
 
     readiness = headless_reauth_readiness(browser_profile=paths.get_browser_profile_dir())
     return {
@@ -74,17 +70,8 @@ def _headless_reauth_check() -> dict[str, str]:
     }
 
 
-def _run(
-    *,
-    fix: bool = False,
-    platform: str | None = None,
-    headless_reauth_check: Callable[[], dict[str, str]] | None = None,
-) -> DoctorReport:
-    return run_checks(
-        fix=fix,
-        paths=_doctor_paths(headless_reauth_check=headless_reauth_check),
-        platform=platform,
-    )
+def _run(*, fix: bool = False, platform: str | None = None) -> DoctorReport:
+    return run_checks(fix=fix, paths=_doctor_paths(), platform=platform)
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -100,14 +87,8 @@ def _make_profile(home: Path, name: str = "default") -> Path:
     return profile_dir
 
 
-def _storage(cookies: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "cookies": [{"domain": ".google.com", "path": "/", "secure": True, **c} for c in cookies]
-    }
-
-
-def _auth_summary(check: dict[str, str]) -> dict[str, str]:
-    return {key: check[key] for key in ("status", "detail")}
+def _storage(cookies: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    return {"cookies": cookies}
 
 
 def _mkdir_kwargs_for_missing_profile_dir(platform: str) -> dict[str, Any]:
@@ -158,9 +139,9 @@ def test_reports_clean_profile_layout(home: Path) -> None:
     assert report.profile == "default"
     assert report.profile_source == "config.json"
     assert report.checks["migration"] == {"status": "pass", "detail": "complete"}
-    assert _auth_summary(report.checks["auth"]) == {
+    assert report.checks["auth"] == {
         "status": "pass",
-        "detail": "local auth cookies usable (2 cookies)",
+        "detail": "local auth cookies present (2 cookies)",
     }
     assert report.checks["config"] == {
         "status": "pass",
@@ -183,15 +164,14 @@ def test_reports_legacy_layout_without_migration(home: Path) -> None:
         _storage([{"name": "SID", "value": "x"}, {"name": "__Secure-1PSIDTS", "value": "y"}]),
     )
 
-    with pytest.warns(DeprecationWarning, match="pre-profiles home-root layout"):
-        report = _run()
+    report = _run()
 
     assert report.checks["migration"] == {"status": "fail", "detail": "legacy layout detected"}
     assert report.checks["profile_dir"]["status"] == "fail"
     # Legacy storage_state.json still carries the Tier-1 cookie set -> auth passes.
-    assert _auth_summary(report.checks["auth"]) == {
+    assert report.checks["auth"] == {
         "status": "pass",
-        "detail": "local auth cookies usable (2 cookies)",
+        "detail": "local auth cookies present (2 cookies)",
     }
     assert report.has_failures
 
@@ -204,7 +184,7 @@ def test_reports_missing_profile_dir(home: Path) -> None:
         "status": "fail",
         "detail": f"{home / 'profiles' / 'default'} not found",
     }
-    assert _auth_summary(report.checks["auth"]) == {"status": "fail", "detail": "not authenticated"}
+    assert report.checks["auth"] == {"status": "fail", "detail": "not authenticated"}
     assert report.has_failures
 
 
@@ -358,8 +338,7 @@ def test_fix_no_longer_greenlights_a_wide_mode_dir_after_migration(home: Path) -
     # A legacy file alongside profiles/ puts migration into its "warn" state.
     _write_json(home / "storage_state.json", _storage([{"name": "SID", "value": "x"}]))
 
-    with pytest.warns(DeprecationWarning, match="pre-profiles home-root layout"):
-        report = _run(fix=True, platform="linux")
+    report = _run(fix=True, platform="linux")
 
     assert f"Fixed permissions on {profile_dir}" in report.fixes_applied
     assert report.checks["profile_dir"] == {"status": "pass", "detail": str(profile_dir)}
@@ -422,8 +401,7 @@ def test_warn_only_layout_has_no_failures(home: Path) -> None:
     _write_json(profile_dir / "storage_state.json", _storage([{"name": "SID", "value": "x"}]))
     _write_json(home / "context.json", {"current_notebook": "nb_123"})
 
-    with pytest.warns(DeprecationWarning, match="pre-profiles home-root layout"):
-        report = _run()
+    report = _run()
 
     assert report.checks["migration"]["status"] == "warn"
     assert not report.has_failures
@@ -450,10 +428,10 @@ def test_reports_invalid_storage_root_shape(home: Path) -> None:
 
     report = _run()
 
-    assert report.checks["auth"]["status"] == "fail"
-    assert report.checks["auth"]["detail"].startswith(
-        "invalid storage file: Storage state must contain a 'cookies' list."
-    )
+    assert report.checks["auth"] == {
+        "status": "fail",
+        "detail": "invalid storage file: storage root is not an object",
+    }
 
 
 def test_reports_invalid_storage_cookie_shape(home: Path) -> None:
@@ -462,10 +440,10 @@ def test_reports_invalid_storage_cookie_shape(home: Path) -> None:
 
     report = _run()
 
-    assert report.checks["auth"]["status"] == "fail"
-    assert report.checks["auth"]["detail"].startswith(
-        "invalid storage file: Storage state must contain a 'cookies' list."
-    )
+    assert report.checks["auth"] == {
+        "status": "fail",
+        "detail": "invalid storage file: cookies is not a list",
+    }
 
 
 def test_reports_cookies_missing_sid(home: Path) -> None:
@@ -474,10 +452,7 @@ def test_reports_cookies_missing_sid(home: Path) -> None:
 
     report = _run()
 
-    assert _auth_summary(report.checks["auth"]) == {
-        "status": "fail",
-        "detail": "SID cookie missing",
-    }
+    assert report.checks["auth"] == {"status": "fail", "detail": "SID cookie missing"}
 
 
 def test_warns_when_sid_present_but_psidts_missing(home: Path) -> None:
@@ -496,118 +471,6 @@ def test_warns_when_sid_present_but_psidts_missing(home: Path) -> None:
     assert report.checks["auth"]["status"] == "warn"
     assert "__Secure-1PSIDTS missing" in report.checks["auth"]["detail"]
     assert not report.has_failures
-
-
-@pytest.mark.parametrize(
-    "invalid",
-    [
-        {"value": ""},
-        {"expires": 1},
-        {"domain": ".google.co.uk"},
-        {"domain": "notebooklm.google.com"},
-        {"domain": ".example.com"},
-        {"path": "/private"},
-    ],
-    ids=["empty", "expired", "regional", "alias", "unrelated", "wrong-path"],
-)
-def test_fails_when_sid_cannot_route_to_app(home: Path, invalid: dict[str, Any]) -> None:
-    profile_dir = _make_profile(home)
-    _write_json(
-        profile_dir / "storage_state.json",
-        _storage(
-            [
-                {"name": "SID", "value": "x", **invalid},
-                {"name": "__Secure-1PSIDTS", "value": "y"},
-            ]
-        ),
-    )
-
-    report = _run()
-
-    assert report.checks["auth"]["status"] == "fail"
-    assert "SID cookie unusable" in report.checks["auth"]["detail"]
-    assert report.has_failures
-
-
-def test_bad_cookie_siblings_do_not_hide_valid_auth(home: Path) -> None:
-    profile_dir = _make_profile(home)
-    _write_json(
-        profile_dir / "storage_state.json",
-        _storage(
-            [
-                {"name": "SID", "value": "x"},
-                {"name": "SID", "value": "old", "domain": ".google.co.uk", "expires": 1},
-                {"name": "SID", "value": "", "domain": ".example.com"},
-                {"name": "unrelated", "value": "bad", "expires": []},
-                {"name": "__Secure-1PSIDTS", "value": "y"},
-                {"name": "__Secure-1PSIDTS", "value": "old", "expires": 1},
-            ]
-        ),
-    )
-
-    report = _run()
-
-    assert report.checks["auth"]["status"] == "pass"
-    assert not report.has_failures
-
-
-@pytest.mark.parametrize(
-    "invalid", [{"value": ""}, {"expires": 1}, {"domain": ".google.co.uk"}, {"path": "/private"}]
-)
-def test_warns_when_psidts_is_unusable(home: Path, invalid: dict[str, Any]) -> None:
-    profile_dir = _make_profile(home)
-    _write_json(
-        profile_dir / "storage_state.json",
-        _storage(
-            [
-                {"name": "SID", "value": "x"},
-                {"name": "__Secure-1PSIDTS", "value": "y", **invalid},
-            ]
-        ),
-    )
-
-    report = _run()
-
-    assert report.checks["auth"]["status"] == "warn"
-    assert "__Secure-1PSIDTS missing or unusable" in report.checks["auth"]["detail"]
-    assert not report.has_failures
-
-
-def test_auth_reports_selected_source_and_local_scope(home: Path) -> None:
-    profile_dir = _make_profile(home)
-    _write_json(
-        profile_dir / "storage_state.json",
-        _storage([{"name": "SID", "value": "opaque"}, {"name": "__Secure-1PSIDTS", "value": "y"}]),
-    )
-
-    report = _run()
-
-    assert report.checks["auth"]["status"] == "pass"
-    assert report.checks["auth"]["source"] == f"file ({profile_dir / 'storage_state.json'})"
-    assert report.checks["auth"]["scope"] == "local only; online authentication not tested"
-
-
-def test_injected_inline_reader_needs_no_storage_file(home: Path) -> None:
-    from dataclasses import replace
-
-    injected = replace(
-        _doctor_paths(),
-        read_auth_state=lambda: _storage(
-            [{"name": "SID", "value": "x"}, {"name": "__Secure-1PSIDTS", "value": "y"}]
-        ),
-        auth_source="test inline source",
-        has_inline_auth=True,
-        headless_reauth_check=lambda: {"status": "pass", "detail": "not applicable"},
-    )
-
-    report = run_checks(fix=True, paths=injected)
-
-    assert report.checks["auth"]["status"] == "pass"
-    assert report.checks["auth"]["source"] == "test inline source"
-    assert report.checks["profile_dir"]["status"] == "pass"
-    assert not report.has_failures
-    assert report.fixes_applied == []
-    assert not (home / "profiles" / "default").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -679,8 +542,7 @@ def test_fix_migrates_legacy_layout(home: Path) -> None:
     _write_json(home / "storage_state.json", storage_payload)
     _write_json(home / "context.json", context_payload)
 
-    with pytest.warns(DeprecationWarning, match="pre-profiles home-root layout"):
-        report = _run(fix=True)
+    report = _run(fix=True)
 
     profile_dir = home / "profiles" / "default"
     assert not (home / "storage_state.json").exists()
@@ -717,18 +579,21 @@ def _make_browser_profile(home: Path, name: str = "default") -> Path:
     return bp
 
 
-def test_headless_reauth_pass_when_profile_and_playwright(home: Path) -> None:
+def test_headless_reauth_pass_when_profile_and_playwright(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A populated browser profile + playwright present → pass row."""
     profile_dir = _make_profile(home)
     _make_browser_profile(home)
     _write_json(profile_dir / "storage_state.json", _storage([{"name": "SID", "value": "x"}]))
     _write_json(home / "config.json", {"default_profile": "default"})
-    report = _run(
-        headless_reauth_check=lambda: {
-            "status": "pass",
-            "detail": "ready (persistent profile + playwright present)",
-        }
-    )
+    # The ``browser`` extra is installed in CI; pin it so the test is robust
+    # regardless of the runner's extras.
+    from notebooklm._auth import headless_reauth as hr
+
+    monkeypatch.setattr(hr, "_playwright_installed", lambda: True)
+
+    report = _run()
 
     assert report.checks["headless_reauth"]["status"] == "pass"
     assert "ready" in report.checks["headless_reauth"]["detail"]
@@ -736,15 +601,16 @@ def test_headless_reauth_pass_when_profile_and_playwright(home: Path) -> None:
     assert not report.has_failures
 
 
-def test_headless_reauth_warns_without_browser_profile(home: Path) -> None:
+def test_headless_reauth_warns_without_browser_profile(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """No persistent browser profile → warn (optional fallback unavailable)."""
     _make_profile(home)
-    report = _run(
-        headless_reauth_check=lambda: {
-            "status": "warn",
-            "detail": "unavailable: no reusable browser profile",
-        }
-    )
+    from notebooklm._auth import headless_reauth as hr
+
+    monkeypatch.setattr(hr, "_playwright_installed", lambda: True)
+
+    report = _run()
 
     assert report.checks["headless_reauth"]["status"] == "warn"
     assert "no reusable browser profile" in report.checks["headless_reauth"]["detail"]
@@ -752,17 +618,18 @@ def test_headless_reauth_warns_without_browser_profile(home: Path) -> None:
     assert report.checks["headless_reauth"]["status"] != "fail"
 
 
-def test_headless_reauth_warn_does_not_force_failure(home: Path) -> None:
+def test_headless_reauth_warn_does_not_force_failure(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An unavailable L3 fallback alone must not make ``has_failures`` true."""
     profile_dir = _make_profile(home)
     _write_json(profile_dir / "storage_state.json", _storage([{"name": "SID", "value": "x"}]))
     _write_json(home / "config.json", {"default_profile": "default"})
-    report = _run(
-        headless_reauth_check=lambda: {
-            "status": "warn",
-            "detail": "unavailable: playwright not installed",
-        }
-    )
+    from notebooklm._auth import headless_reauth as hr
+
+    monkeypatch.setattr(hr, "_playwright_installed", lambda: False)
+
+    report = _run()
 
     assert report.checks["headless_reauth"]["status"] == "warn"
     assert not report.has_failures
@@ -780,13 +647,8 @@ def test_report_check_set_and_shape(home: Path) -> None:
         "config",
         "headless_reauth",
     }
-    for name, check in report.checks.items():
-        expected = (
-            {"status", "detail", "source", "scope", "guidance"}
-            if name == "auth"
-            else {"status", "detail"}
-        )
-        assert set(check) == expected
+    for check in report.checks.values():
+        assert set(check) == {"status", "detail"}
         assert check["status"] in {"pass", "warn", "fail"}
         assert isinstance(check["detail"], str)
     assert report.fixes_applied == []

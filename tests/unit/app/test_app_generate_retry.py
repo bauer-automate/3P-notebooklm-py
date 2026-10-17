@@ -9,6 +9,7 @@ boundary (independent of the Click adapter):
   ``TestGenerateWithRetry`` / ``TestExtractTaskIdDirect`` /
   ``TestGenerateWithRetryConsoleOutput`` classes (they already called the
   function directly through the ``_app.generate_retry`` core);
+* the ``_format_status_message`` spinner-line formatter;
 * net-new direct coverage for :func:`generation_outcome_from_status` outcome
   classification and :func:`handle_generation_result` (None / rate-limited /
   wait-path / task-id extraction precedence) against a ``MagicMock`` client.
@@ -27,29 +28,17 @@ import pytest
 
 from notebooklm._app.generate_retry import (
     RETRY_MAX_DELAY,
-    GenerationWaitStarted,
+    GenerationOutcome,
     _extract_generation_task_id,
     _extract_task_id,
+    _format_status_message,
     calculate_backoff_delay,
     generate_with_retry,
     generation_outcome_from_status,
     handle_generation_result,
 )
-from notebooklm._web.wire.decoder import extract_rpc_result
 from notebooklm.exceptions import RateLimitError
-from notebooklm.rpc import RPCMethod
 from notebooklm.types import GenerationStatus
-from tests._fixtures.rpc_error_frames import user_displayable_rejection_chunks
-
-
-def _refused_rate_limit() -> RateLimitError:
-    with pytest.raises(RateLimitError) as captured:
-        extract_rpc_result(
-            user_displayable_rejection_chunks(RPCMethod.CREATE_ARTIFACT.value),
-            RPCMethod.CREATE_ARTIFACT.value,
-        )
-    return captured.value
-
 
 # ---------------------------------------------------------------------------
 # calculate_backoff_delay — exponential backoff math (moved, pure).
@@ -97,7 +86,7 @@ class TestGenerateWithRetry:
         )
         generate_fn = AsyncMock(return_value=success_result)
 
-        result = await generate_with_retry(generate_fn, max_retries=3)
+        result = await generate_with_retry(generate_fn, max_retries=3, artifact_type="audio")
 
         assert result == success_result
         assert generate_fn.call_count == 1
@@ -110,13 +99,13 @@ class TestGenerateWithRetry:
         )
         generate_fn = AsyncMock(
             side_effect=[
-                _refused_rate_limit(),
+                RateLimitError("Rate limited", rpc_code="USER_DISPLAYABLE_ERROR"),
                 success_result,
             ]
         )
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await generate_with_retry(generate_fn, max_retries=3)
+            result = await generate_with_retry(generate_fn, max_retries=3, artifact_type="audio")
 
         assert result == success_result
         assert generate_fn.call_count == 2
@@ -125,14 +114,14 @@ class TestGenerateWithRetry:
     @pytest.mark.asyncio
     async def test_retry_exhausted_reraises(self):
         """v0.8.0 (#1342): exhausting the budget re-raises the RateLimitError."""
-        error = _refused_rate_limit()
+        error = RateLimitError("Rate limited", rpc_code="USER_DISPLAYABLE_ERROR")
         generate_fn = AsyncMock(side_effect=error)
 
         with (
             patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(RateLimitError) as exc_info,
         ):
-            await generate_with_retry(generate_fn, max_retries=2)
+            await generate_with_retry(generate_fn, max_retries=2, artifact_type="audio")
 
         assert exc_info.value is error
         assert generate_fn.call_count == 3  # initial + 2 retries
@@ -146,7 +135,7 @@ class TestGenerateWithRetry:
         generate_fn = AsyncMock(return_value=rate_limited)
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await generate_with_retry(generate_fn, max_retries=3)
+            result = await generate_with_retry(generate_fn, max_retries=3, artifact_type="audio")
 
         assert result == rate_limited
         assert generate_fn.call_count == 1
@@ -155,25 +144,25 @@ class TestGenerateWithRetry:
     @pytest.mark.asyncio
     async def test_no_retry_when_max_retries_zero(self):
         """Test that max_retries=0 means no retry attempts (re-raises immediately)."""
-        error = _refused_rate_limit()
+        error = RateLimitError("Rate limited", rpc_code="USER_DISPLAYABLE_ERROR")
         generate_fn = AsyncMock(side_effect=error)
 
         with pytest.raises(RateLimitError):
-            await generate_with_retry(generate_fn, max_retries=0)
+            await generate_with_retry(generate_fn, max_retries=0, artifact_type="audio")
 
         assert generate_fn.call_count == 1
 
     @pytest.mark.asyncio
     async def test_retry_delays_increase_exponentially(self):
         """Verify delays follow exponential backoff pattern (60s, 120s, 240s)."""
-        error = _refused_rate_limit()
+        error = RateLimitError("Rate limited", rpc_code="USER_DISPLAYABLE_ERROR")
         generate_fn = AsyncMock(side_effect=error)
 
         with (
             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
             pytest.raises(RateLimitError),
         ):
-            await generate_with_retry(generate_fn, max_retries=3)
+            await generate_with_retry(generate_fn, max_retries=3, artifact_type="audio")
 
         # Verify delays: 60s, 120s, 240s (3 retries = 3 sleeps)
         delays = [call[0][0] for call in mock_sleep.call_args_list]
@@ -182,14 +171,14 @@ class TestGenerateWithRetry:
     @pytest.mark.asyncio
     async def test_retry_delay_caps_at_max(self):
         """Verify delay caps at 300s even with many retries."""
-        error = _refused_rate_limit()
+        error = RateLimitError("Rate limited", rpc_code="USER_DISPLAYABLE_ERROR")
         generate_fn = AsyncMock(side_effect=error)
 
         with (
             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
             pytest.raises(RateLimitError),
         ):
-            await generate_with_retry(generate_fn, max_retries=10)
+            await generate_with_retry(generate_fn, max_retries=10, artifact_type="audio")
 
         # Verify no delay exceeds RETRY_MAX_DELAY (300s)
         delays = [call[0][0] for call in mock_sleep.call_args_list]
@@ -208,7 +197,7 @@ class TestGenerateWithRetry:
         )
         generate_fn = AsyncMock(
             side_effect=[
-                _refused_rate_limit(),
+                RateLimitError("Rate limited", rpc_code="USER_DISPLAYABLE_ERROR"),
                 success_result,
             ]
         )
@@ -218,6 +207,7 @@ class TestGenerateWithRetry:
             result = await generate_with_retry(
                 generate_fn,
                 max_retries=1,
+                artifact_type="audio",
                 on_retry=retry_sink,
             )
 
@@ -282,6 +272,28 @@ class TestExtractGenerationTaskId:
 
 
 # ---------------------------------------------------------------------------
+# _format_status_message — spinner status line (moved, pure).
+# ---------------------------------------------------------------------------
+
+
+class TestFormatStatusMessage:
+    def test_known_kind_includes_typical_hint(self):
+        msg = _format_status_message("cinematic-video")
+        assert "cinematic-video" in msg
+        assert "typically" in msg
+        assert msg.endswith("...")
+
+    def test_unknown_kind_omits_hint(self):
+        msg = _format_status_message("unknown-kind")
+        assert "unknown-kind" in msg
+        assert "(" not in msg, f"unknown kind should NOT add a hint, got: {msg!r}"
+
+    def test_with_elapsed_appends_seconds(self):
+        msg = _format_status_message("audio", elapsed=42.7)
+        assert "[42s elapsed]" in msg
+
+
+# ---------------------------------------------------------------------------
 # generation_outcome_from_status — outcome classification (net-new direct).
 # ---------------------------------------------------------------------------
 
@@ -299,18 +311,20 @@ class TestGenerationOutcomeFromStatus:
         assert outcome.status == "completed"
         assert outcome.url == "https://example.com/a.mp3"
         assert outcome.task_id == "t1"
+        assert outcome.exit_code == 0
 
     def test_failed_uses_error_message(self):
         status = GenerationStatus(task_id="t1", status="failed", error="boom", error_code="X")
         outcome = generation_outcome_from_status(status, "audio")
         assert outcome.status == "failed"
         assert outcome.error == "boom"
+        assert outcome.exit_code == 1
 
     def test_failed_without_error_message_uses_default(self):
         status = GenerationStatus(task_id="t1", status="failed", error=None, error_code="X")
         outcome = generation_outcome_from_status(status, "audio")
         assert outcome.status == "failed"
-        assert outcome.error is None
+        assert outcome.error == "Audio generation failed"
 
     def test_removed_is_classified_as_failed(self):
         """A ``removed`` artifact has no usable result → surfaced as failed.
@@ -322,13 +336,19 @@ class TestGenerationOutcomeFromStatus:
         removed = GenerationStatus(task_id="t1", status="removed", error=None, error_code=None)
         outcome = generation_outcome_from_status(removed, "video")
         assert outcome.status == "failed"
-        assert outcome.error is None
+        assert outcome.error == "Video generation failed"
 
     def test_pending_when_neither_complete_nor_failed(self):
         status = GenerationStatus(task_id="t1", status="pending", error=None, error_code=None)
         outcome = generation_outcome_from_status(status, "audio")
         assert outcome.status == "pending"
         assert outcome.task_id == "t1"
+        assert outcome.exit_code == 0
+
+
+def test_generation_outcome_exit_code_rate_limited():
+    outcome = GenerationOutcome(status="rate_limited", artifact_type="audio")
+    assert outcome.exit_code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +362,7 @@ class TestHandleGenerationResult:
         client = MagicMock()
         outcome = await handle_generation_result(client, "nb_1", None, "audio")
         assert outcome.status == "failed"
-        assert outcome.error is None
+        assert outcome.error == "Audio generation failed"
 
     @pytest.mark.asyncio
     async def test_rate_limited_status_maps_to_rate_limited_outcome(self):
@@ -355,7 +375,8 @@ class TestHandleGenerationResult:
         )
         outcome = await handle_generation_result(client, "nb_1", rate_limited, "audio")
         assert outcome.status == "rate_limited"
-        assert outcome.error == "rl"
+        assert outcome.error_code == "RATE_LIMITED"
+        assert outcome.hint is not None
 
     @pytest.mark.asyncio
     async def test_no_wait_returns_pending_outcome(self):
@@ -393,9 +414,7 @@ class TestHandleGenerationResult:
         assert outcome.status == "completed"
         assert outcome.url == "https://example.com/a.mp3"
         client.artifacts.wait_for_completion.assert_awaited_once()
-        wait_start_sink.assert_called_once_with(
-            GenerationWaitStarted(kind="audio", task_id="t1", elapsed=0.0)
-        )
+        wait_start_sink.assert_called_once_with("t1")
 
     @pytest.mark.asyncio
     async def test_wait_context_spans_the_poll(self):
@@ -406,8 +425,7 @@ class TestHandleGenerationResult:
         entered = {"flag": False}
 
         @asynccontextmanager
-        async def _ctx(event):
-            assert event.kind == "audio"
+        async def _ctx(_message, _resume_hint):
             entered["flag"] = True
             yield
 

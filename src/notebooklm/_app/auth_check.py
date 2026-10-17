@@ -34,7 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,11 @@ _PSIDTS_COOKIE = "__Secure-1PSIDTS"
 #: ``__Secure-1PSIDTS`` at rest is normal (it is minted on the first
 #: authenticated call, and at bootstrap since #1638) — the browser-extraction /
 #: App-Bound Encryption hint is wrong here.
-AuthGuidanceCode = Literal["master_token_psidts"]
-
-_MASTER_TOKEN_PSIDTS_ERROR = (
+_MASTER_TOKEN_PSIDTS_HINT = (
     f"A master_token.json is present, so a missing {_PSIDTS_COOKIE} at rest is "
     "normal for this profile — it is minted on the first authenticated call (and "
-    "at bootstrap)."
+    "at bootstrap). Run 'notebooklm auth check --test' to mint and verify, or "
+    "re-run 'notebooklm login --master-token'."
 )
 
 
@@ -73,6 +72,10 @@ class AuthCheckPlan:
             env-var name). Surfaced verbatim in ``details.auth_source``.
         test_fetch: When ``True``, also exercise the token-fetch path (network
             round-trip). Off by default.
+        json_output: When ``True``, signals the caller to render a JSON envelope
+            and propagate non-zero exit on failure. Carried on the plan so the
+            renderer (in the adapter) picks the right shape without re-resolving
+            the flag.
         passive: When ``True``, the optional ``test_fetch`` token round-trip uses
             the strictly read-only :func:`~notebooklm.auth.fetch_tokens_passive`
             path — it never runs ``NOTEBOOKLM_REFRESH_CMD``, never fires the
@@ -88,6 +91,7 @@ class AuthCheckPlan:
     has_home_env: bool
     auth_source_label: str
     test_fetch: bool
+    json_output: bool
     passive: bool = False
 
 
@@ -104,7 +108,6 @@ class AuthCheckResult:
     plan: AuthCheckPlan
     checks: dict[str, bool | None]
     details: dict[str, Any] = field(default_factory=dict)
-    guidance: tuple[AuthGuidanceCode, ...] = ()
 
     @property
     def all_passed(self) -> bool:
@@ -253,7 +256,6 @@ async def run_auth_check(
     from .. import auth
 
     checks = _make_initial_checks()
-    guidance: list[AuthGuidanceCode] = []
     details: dict[str, Any] = {
         "storage_path": str(plan.storage_path),
         "auth_source": plan.auth_source_label,
@@ -287,7 +289,6 @@ async def run_auth_check(
 
     def _check_local_state(state: dict[str, Any]) -> str | None:
         """Refresh side-effect-free cookie diagnostics from one state snapshot."""
-        guidance.clear()
         entries = auth._sanitized_auth_entries(state)
         psidts = _psidts_status(state)
         details["psidts"] = psidts
@@ -316,14 +317,13 @@ async def run_auth_check(
             checks["cookies_present"] = False
             sid_present = "SID" in {entry["name"] for entry in entries}
             if sid_present and not psidts["present"] and details["master_token"]["present"]:
-                guidance.append("master_token_psidts")
-                return _MASTER_TOKEN_PSIDTS_ERROR
+                return _MASTER_TOKEN_PSIDTS_HINT
             return str(exc)
 
     local_error = _check_local_state(storage_state)
     details["error"] = local_error
     if local_error is not None and not plan.test_fetch:
-        return AuthCheckResult(plan=plan, checks=checks, details=details, guidance=tuple(guidance))
+        return AuthCheckResult(plan=plan, checks=checks, details=details)
 
     # Check 4: optional token-fetch round-trip. ``passive`` selects the
     # strictly read-only fetch (no refresh cmd, no rotation poke, no save) so a
@@ -358,12 +358,11 @@ async def run_auth_check(
                     recomputed_error = _check_local_state(refreshed_state)
                     details["error"] = recomputed_error
 
-    return AuthCheckResult(plan=plan, checks=checks, details=details, guidance=tuple(guidance))
+    return AuthCheckResult(plan=plan, checks=checks, details=details)
 
 
 __all__ = [
     "AuthCheckPlan",
     "AuthCheckResult",
-    "AuthGuidanceCode",
     "run_auth_check",
 ]

@@ -27,15 +27,13 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from notebooklm._auth.cookie_types import CookieJar
-from notebooklm._browser.headless_reauth import HeadlessReauthResult, HeadlessReauthStatus
-from notebooklm._web.transport.auth import AuthRefreshCoordinator
-from notebooklm._web.transport.session_auth import refresh_auth_session
+from notebooklm._auth.headless_reauth import HeadlessReauthResult, HeadlessReauthStatus
+from notebooklm._auth.session import refresh_auth_session
+from notebooklm._runtime.auth import AuthRefreshCoordinator
 from notebooklm.auth import AuthTokens
 
 REFRESH_HTML = '"SNlM0e":"new_csrf_token_123" "FdrFJe":"new_session_id_456"'
 LOGIN_REDIRECT = "https://accounts.google.com/signin/v2/identifier"
-TEST_EPOCH = 1
 
 
 def _write_recovered_storage(path: Path) -> None:
@@ -65,16 +63,11 @@ def _write_recovered_storage(path: Path) -> None:
 
 
 def _auth(storage_path: Path | None = None) -> AuthTokens:
-    jar = httpx.Cookies()
-    jar.set("SID", "dead_sid", domain=".google.com", path="/")
-    jar.set("__Secure-1PSIDTS", "dead", domain=".google.com", path="/")
-    jar.set("HSID", "h", domain=".google.com", path="/")
     return AuthTokens(
         cookies={"SID": "dead_sid", "__Secure-1PSIDTS": "dead", "HSID": "h"},
         csrf_token="old_csrf",
         session_id="old_session",
         storage_path=storage_path,
-        cookie_jar=jar,
     )
 
 
@@ -82,11 +75,7 @@ class _RecordingKernel:
     def __init__(self, http_client: httpx.AsyncClient) -> None:
         self._http_client = http_client
 
-    def assert_epoch(self, expected_epoch: int) -> None:
-        assert expected_epoch == TEST_EPOCH
-
-    def get_http_client(self, *, expected_epoch: int | None = None) -> httpx.AsyncClient:
-        assert expected_epoch == TEST_EPOCH
+    def get_http_client(self) -> httpx.AsyncClient:
         return self._http_client
 
 
@@ -94,14 +83,7 @@ class _RecordingLifecycle:
     def __init__(self) -> None:
         self.saved = 0
 
-    async def save_cookies(
-        self,
-        jar: httpx.Cookies,
-        path=None,
-        *,
-        expected_epoch: int | None = None,
-    ) -> None:
-        assert expected_epoch == TEST_EPOCH
+    async def save_cookies(self, cookie_persistence: Any, jar: httpx.Cookies, path=None) -> None:
         self.saved += 1
 
 
@@ -109,62 +91,13 @@ class _RecordingAuthCoord:
     def __init__(self) -> None:
         self.ops: list[str] = []
 
-    def assert_epoch(self, expected_epoch: int) -> None:
-        assert expected_epoch == TEST_EPOCH
-
-    async def update_auth_tokens(
-        self,
-        *,
-        auth: AuthTokens,
-        csrf: str,
-        session_id: str,
-        expected_epoch: int | None = None,
-    ) -> None:
-        assert expected_epoch == TEST_EPOCH
+    async def update_auth_tokens(self, *, auth: AuthTokens, csrf: str, session_id: str) -> None:
         self.ops.append("update")
         auth.csrf_token = csrf
         auth.session_id = session_id
 
-    async def install_profile_session(
-        self,
-        *,
-        auth: AuthTokens,
-        target_cookie_jar: httpx.Cookies,
-        source_cookie_jar: httpx.Cookies,
-        expected_cookie_jar: CookieJar,
-        expected_authuser: int,
-        expected_account_email: str | None,
-        expected_generation: int,
-        authuser: int,
-        account_email: str | None,
-        expected_epoch: int | None = None,
-    ) -> bool | None:
-        assert expected_epoch == TEST_EPOCH
-        return auth._replace_profile_session(
-            target_cookie_jar=target_cookie_jar,
-            source_cookie_jar=source_cookie_jar,
-            expected_cookie_jar=expected_cookie_jar,
-            expected_authuser=expected_authuser,
-            expected_account_email=expected_account_email,
-            expected_generation=expected_generation,
-            authuser=authuser,
-            account_email=account_email,
-        )
-
-    def update_auth_headers(
-        self,
-        *,
-        auth: AuthTokens,
-        kernel: Any,
-        expected_epoch: int | None = None,
-    ) -> None:
-        assert expected_epoch == TEST_EPOCH
+    def update_auth_headers(self, *, auth: AuthTokens, kernel: Any) -> None:
         self.ops.append("headers")
-
-
-class _RecordingCookiePersistence:
-    async def _adopt_reloaded_baseline(self, path: Path, expected: Any, *, to_thread: Any) -> None:
-        del path, expected, to_thread
 
 
 def _bundle(http_client: httpx.AsyncClient, auth: AuthTokens) -> dict[str, Any]:
@@ -172,9 +105,8 @@ def _bundle(http_client: httpx.AsyncClient, auth: AuthTokens) -> dict[str, Any]:
         "auth": auth,
         "kernel": _RecordingKernel(http_client),
         "auth_coord": _RecordingAuthCoord(),
-        "web_transport": _RecordingLifecycle(),
-        "cookie_persistence": _RecordingCookiePersistence(),
-        "expected_epoch": TEST_EPOCH,
+        "lifecycle": _RecordingLifecycle(),
+        "cookie_persistence": object(),
     }
 
 
@@ -211,7 +143,7 @@ async def test_dead_cookies_no_optin_raises_and_skips_l3(monkeypatch) -> None:
 
     # storage_path=None → ``_try_headless_reauth`` declines BEFORE reaching
     # ``attempt_headless_reauth`` (env-var auth has no writeable backing store).
-    import notebooklm._browser.headless_reauth as hr
+    import notebooklm._auth.headless_reauth as hr
 
     monkeypatch.setattr(hr, "attempt_headless_reauth", _spy)
 
@@ -229,7 +161,7 @@ async def test_dead_cookies_no_optin_raises_and_skips_l3(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_dead_cookies_optin_but_unavailable_raises(monkeypatch, tmp_path: Path) -> None:
     state: dict[str, int] = {}
-    import notebooklm._browser.headless_reauth as hr
+    import notebooklm._auth.headless_reauth as hr
 
     monkeypatch.setattr(
         hr,
@@ -251,8 +183,8 @@ async def test_headless_reauth_uses_storage_specific_browser_profile(
     monkeypatch, tmp_path: Path
 ) -> None:
     """Custom storage files do not share an ambient L3 browser profile."""
-    import notebooklm._browser.headless_reauth as hr
-    import notebooklm._web.transport.session_auth as session_mod
+    import notebooklm._auth.headless_reauth as hr
+    import notebooklm._auth.session as session_mod
 
     browser_profiles: list[Path] = []
 
@@ -267,13 +199,10 @@ async def test_headless_reauth_uses_storage_specific_browser_profile(
         tmp_path / "B.json",
         tmp_path / "work" / "storage_state.json",
     ):
-        http_client = MagicMock()
-        http_client.cookies = httpx.Cookies()
         await session_mod._try_headless_reauth(
             auth=_auth(storage_path=storage_path),
-            kernel=_RecordingKernel(http_client),  # type: ignore[arg-type]
+            kernel=MagicMock(),
             allow_headless=True,
-            expected_epoch=TEST_EPOCH,
         )
 
     assert browser_profiles == [
@@ -295,7 +224,7 @@ async def test_dead_cookies_optin_success_retries_and_refreshes(
     storage = tmp_path / "storage_state.json"
     _write_recovered_storage(storage)
     state: dict[str, int] = {}
-    import notebooklm._browser.headless_reauth as hr
+    import notebooklm._auth.headless_reauth as hr
 
     def _fake_attempt(**kwargs):
         # Simulate the headless re-mint "healing" the dead-cookie homepage.
@@ -336,7 +265,7 @@ async def test_concurrent_refreshes_coalesce_to_one_browser(monkeypatch, tmp_pat
     _write_recovered_storage(storage)
     state: dict[str, int] = {}
     drives = {"count": 0}
-    import notebooklm._browser.headless_reauth as hr
+    import notebooklm._auth.headless_reauth as hr
 
     def _fake_attempt(**kwargs):
         drives["count"] += 1
@@ -352,14 +281,12 @@ async def test_concurrent_refreshes_coalesce_to_one_browser(monkeypatch, tmp_pat
         auth = _auth(storage_path=storage)
         b = _bundle(http_client, auth)
 
-        async def _do_refresh(expected_epoch: int) -> AuthTokens:
-            assert expected_epoch == TEST_EPOCH
+        async def _do_refresh() -> AuthTokens:
             return await refresh_auth_session(allow_headless=True, **b)
 
         # Route N concurrent callers through ONE coordinator single-flight.
         coord = AuthRefreshCoordinator(refresh_callback=_do_refresh)
         coord.set_bound_loop(asyncio.get_running_loop())
-        coord.activate_epoch(TEST_EPOCH)
-        await asyncio.gather(*[coord.await_refresh(TEST_EPOCH) for _ in range(8)])
+        await asyncio.gather(*[coord.await_refresh() for _ in range(8)])
 
     assert drives["count"] == 1

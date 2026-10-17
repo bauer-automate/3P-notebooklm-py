@@ -165,7 +165,7 @@ async def test_mcp_source_delete_two_step_confirm_over_vcr() -> None:
 
 @pytest.mark.asyncio
 @notebooklm_vcr.use_cassette("sources_add_url.yaml")
-async def test_mcp_source_add_url_over_vcr(legacy_vcr_add_url_baseline) -> None:
+async def test_mcp_source_add_url_over_vcr() -> None:
     """``source_add source_type=url`` replays the recorded ``ADD_SOURCE`` RPC.
 
     The url flow runs ``_app.source_add`` (``build_source_add_plan`` →
@@ -203,29 +203,11 @@ async def test_mcp_source_add_url_over_vcr(legacy_vcr_add_url_baseline) -> None:
         "_type_code",
         "created_at",
         "status",
-        # Drive file id for Drive-backed sources; ``None`` here (a URL add) but
-        # always present, since the projection emits every typed field (#2113).
-        "drive_document_id",
-        # Drive-side health; ``None`` here because a URL source is not
-        # Drive-backed and the recorded row carries no settings[3] slot (#2111).
-        "drive_status",
         "kind",
         "status_label",
-        "drive_status_label",
-        "is_drive_degraded",
-        # Play Books provenance; ``None`` here (a URL add) but always present in
-        # the full projection (#2292).
-        "expert_intelligence",
     }
-    assert source["expert_intelligence"] is None
-    assert source["drive_document_id"] is None
     assert source["status"] == 2  # SourceStatus.READY
     assert source["status_label"] == "ready"
-    # The whole point of #2111: a non-Drive source makes no Drive-health claim,
-    # and that reads as ``None`` rather than a fabricated "healthy".
-    assert source["drive_status"] is None
-    assert source["drive_status_label"] is None
-    assert source["is_drive_degraded"] is False
 
 
 @pytest.mark.asyncio
@@ -264,7 +246,7 @@ async def test_mcp_source_add_text_over_vcr() -> None:
 
 @pytest.mark.asyncio
 @notebooklm_vcr.use_cassette("sources_add_file.yaml")
-async def test_mcp_source_add_file_over_vcr(tmp_path, monkeypatch) -> None:
+async def test_mcp_source_add_file_over_vcr(tmp_path) -> None:
     """``source_add source_type=file`` replays the upload + ``ADD_SOURCE_FILE`` RPC.
 
     The file flow validates a real on-disk path (``validate_upload_path`` checks
@@ -272,11 +254,8 @@ async def test_mcp_source_add_file_over_vcr(tmp_path, monkeypatch) -> None:
     ``ADD_SOURCE_FILE`` (``o4cbdc``). A freshly-registered file source is still
     ``PROCESSING`` (status 1) and carries no decoded type/url/created_at yet.
     """
-    from notebooklm.mcp.tools._fileupload import ALLOWED_ROOTS_ENV
-
     upload = tmp_path / "vcr_test_document.txt"
     upload.write_text("This is a test document for VCR cassette replay.")
-    monkeypatch.setenv(ALLOWED_ROOTS_ENV, str(tmp_path))
 
     async with build_mcp_client() as mcp_client:
         result = await mcp_client.call_tool(

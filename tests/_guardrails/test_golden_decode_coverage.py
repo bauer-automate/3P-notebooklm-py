@@ -25,7 +25,7 @@ asserts each one is EITHER:
    ``None`` so there is no decoded payload to pin.
 
 Keying by ``RPCMethod`` (not by obfuscated string literals) keeps
-``rpc/_identifiers.py`` the single source of truth: when Google rotates an ID and the
+``rpc/types.py`` the single source of truth: when Google rotates an ID and the
 cassettes are re-recorded, this gate follows automatically. A cassette
 recording an rpcid that no current ``RPCMethod`` knows fails loudly — that is
 either a stale cassette or an un-modelled RPC, both worth a human look.
@@ -90,22 +90,10 @@ _GOLDEN_EXPANSION = "tests/integration/test_golden_decoded_vcr_expansion.py"
 _COMPREHENSIVE = "tests/integration/test_vcr_comprehensive.py"
 _GAP_BACKFILL = "tests/integration/test_rpc_gap_backfill_vcr.py"
 _SUGGEST_PROMPTS_VCR = "tests/integration/test_notebooks_suggest_prompts_vcr.py"
-_COPY_NOTEBOOK_VCR = "tests/integration/test_notebook_copy_vcr.py"
-_TRANSFER_VCR = "tests/integration/test_transfer_rpcs_vcr.py"
-_DISCOVER_VCR = "tests/integration/test_research_discover_vcr.py"
-_PLAY_BOOKS_VCR = "tests/integration/test_play_books_vcr.py"
-_CHAT_SESSION_CONTROL_VCR = "tests/integration/test_chat_session_control_vcr.py"
-_SOURCE_SEARCH_VCR = "tests/integration/test_source_search_vcr.py"
-_USAGE_VCR = "tests/integration/test_usage_vcr.py"
 
 GoldenPointer = tuple[str, str]
 
 GOLDEN_COVERAGE: dict[RPCMethod, tuple[GoldenPointer, ...]] = {
-    # Synchronous discovery (#2283): pinned where its only decoded contract
-    # already reads every expected value back out of the recorded payload.
-    RPCMethod.DISCOVER_SOURCES: (
-        (_DISCOVER_VCR, "TestResearchDiscoverVCR::test_discover_decoded_golden"),
-    ),
     # --- original high-risk four (issue #1494) ---
     RPCMethod.GET_LAST_CONVERSATION_ID: (
         (_GOLDEN_VCR, "TestChatGoldenDecoded::test_ask_decoded_golden"),
@@ -139,9 +127,6 @@ GOLDEN_COVERAGE: dict[RPCMethod, tuple[GoldenPointer, ...]] = {
     RPCMethod.CREATE_NOTEBOOK: (
         (_GOLDEN_EXPANSION, "TestNotebooksGoldenDecoded::test_create_decoded_golden"),
     ),
-    RPCMethod.COPY_NOTEBOOK: (
-        (_COPY_NOTEBOOK_VCR, "test_live_copy_notebook_returns_distinct_project_and_cleans_up"),
-    ),
     # --- sources ---
     RPCMethod.ADD_SOURCE: (
         # Text and URL adds return differently-shaped izAoDd rows.
@@ -150,9 +135,6 @@ GOLDEN_COVERAGE: dict[RPCMethod, tuple[GoldenPointer, ...]] = {
     ),
     RPCMethod.ADD_SOURCE_FILE: (
         (_GOLDEN_EXPANSION, "TestSourceMutationsGoldenDecoded::test_add_file_decoded_golden"),
-    ),
-    RPCMethod.RETRIEVE_RELEVANT_CHUNKS: (
-        (_SOURCE_SEARCH_VCR, "test_source_search_ranks_limits_and_filters"),
     ),
     RPCMethod.UPDATE_SOURCE: (
         (_GOLDEN_EXPANSION, "TestSourceMutationsGoldenDecoded::test_rename_decoded_golden"),
@@ -183,12 +165,6 @@ GOLDEN_COVERAGE: dict[RPCMethod, tuple[GoldenPointer, ...]] = {
     # --- chat ---
     RPCMethod.GET_CONVERSATION_TURNS: (
         (_GOLDEN_EXPANSION, "TestChatHistoryGoldenDecoded::test_get_history_decoded_golden"),
-    ),
-    RPCMethod.GET_CHAT_SESSION_STATUS: (
-        (
-            _CHAT_SESSION_CONTROL_VCR,
-            "TestChatSessionControlVCR::test_status_decoded_golden",
-        ),
     ),
     # --- labels ---
     RPCMethod.LIST_LABELS: (
@@ -221,17 +197,6 @@ GOLDEN_COVERAGE: dict[RPCMethod, tuple[GoldenPointer, ...]] = {
     RPCMethod.SET_USER_SETTINGS: (
         (_GOLDEN_EXPANSION, "TestSettingsGoldenDecoded::test_set_output_language_decoded_golden"),
     ),
-    # Usage is recorded separately per account tier because reset timestamps
-    # and numeric meter values are profile-specific. The replay tests pin the
-    # stable status/window/action kinds while tolerating sanitized numbers.
-    RPCMethod.GET_ACCOUNT: (
-        (_USAGE_VCR, "TestUsageVCR::test_standard_usage"),
-        (_USAGE_VCR, "TestUsageVCR::test_pro_usage"),
-    ),
-    RPCMethod.LIST_QUOTA_SUMMARY: (
-        (_USAGE_VCR, "TestUsageVCR::test_standard_usage"),
-        (_USAGE_VCR, "TestUsageVCR::test_pro_usage"),
-    ),
     # --- artifacts ---
     RPCMethod.CREATE_ARTIFACT: (
         (_GOLDEN_EXPANSION, "TestArtifactsWriteGoldenDecoded::test_generate_report_decoded_golden"),
@@ -241,27 +206,6 @@ GOLDEN_COVERAGE: dict[RPCMethod, tuple[GoldenPointer, ...]] = {
     ),
     RPCMethod.SUGGEST_PROMPTS: (
         (_SUGGEST_PROMPTS_VCR, "TestSuggestPromptsVCR::test_suggest_prompts_decoded_golden"),
-    ),
-    # --- #2283 transfer / suggestion family (live-recorded) ---
-    RPCMethod.SUGGEST_NEXT_STEPS: (
-        (_TRANSFER_VCR, "test_live_suggest_next_steps_returns_grounded_questions"),
-    ),
-    RPCMethod.GET_CUSTOMIZATION_CHOICES: (
-        (_TRANSFER_VCR, "test_live_customization_choices_decode_all_four_families"),
-    ),
-    RPCMethod.ADD_SOURCES_ASYNC: (
-        (_TRANSFER_VCR, "test_live_transfer_lifecycle_on_a_scratch_notebook"),
-    ),
-    # Play Books library list (#2292): the cassette test reads content ids and
-    # export-eligibility verdicts back out of the recorded rows.
-    RPCMethod.LIST_EXPERT_INTELLIGENCE_CONTENT: (
-        (_PLAY_BOOKS_VCR, "TestListPlayBooksCassette::test_list_play_books_decodes_library"),
-    ),
-    RPCMethod.COPY_SOURCES: (
-        (_TRANSFER_VCR, "test_live_transfer_lifecycle_on_a_scratch_notebook"),
-    ),
-    RPCMethod.COPY_ARTIFACTS: (
-        (_TRANSFER_VCR, "test_live_transfer_lifecycle_on_a_scratch_notebook"),
     ),
     RPCMethod.EXPORT_ARTIFACT: (
         (_GOLDEN_EXPANSION, "TestArtifactsWriteGoldenDecoded::test_export_report_decoded_golden"),
@@ -304,12 +248,8 @@ GOLDEN_EXEMPT: dict[RPCMethod, str] = {
     # ``research.cancel`` is fire-and-forget: the server returns [] (decodes to
     # None-equivalent) and is not branched on — there is no decoded field to pin.
     RPCMethod.CANCEL_RESEARCH: _REASON_NONE_CONTRACT,
-    # ``chat.cancel`` is also fire-and-forget and returns None on success.
-    RPCMethod.CANCEL_GENERATION: _REASON_NONE_CONTRACT,
     # ``sources.refresh`` returns None on success (v0.8.0, #1290).
     RPCMethod.REFRESH_SOURCE: _REASON_NONE_CONTRACT,
-    # ``sources.append_text`` returns None: AppendSource answers with an empty body (#2283).
-    RPCMethod.APPEND_SOURCE: _REASON_NONE_CONTRACT,
     # ``notes.update`` returns None (the UPDATE_NOTE echo is not decoded).
     RPCMethod.UPDATE_NOTE: _REASON_NONE_CONTRACT,
     # Rename/share/update writes whose returned object is re-fetched through a
@@ -432,7 +372,7 @@ def test_every_cassette_rpcid_is_classified() -> None:
     unknown = {rpcid: sorted(files) for rpcid, files in corpus.items() if rpcid not in known_values}
     assert unknown == {}, (
         "Cassette(s) record rpcid(s) that no current RPCMethod constant knows — "
-        "either Google rotated an ID (update rpc/_identifiers.py and re-record) or a "
+        "either Google rotated an ID (update rpc/types.py and re-record) or a "
         f"stale cassette slipped in: {unknown}"
     )
 

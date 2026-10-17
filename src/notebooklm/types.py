@@ -1,6 +1,6 @@
 """Data types for NotebookLM API client.
 
-This module contains all dataclasses and re-exports transport-neutral enums
+This module contains all dataclasses and re-exports enums from rpc/types.py
 for convenient access.
 
 Usage:
@@ -12,47 +12,19 @@ Usage:
 from ._types import artifacts as _artifact_types
 from ._types import common as _common_types
 from ._types import sources as _source_types
-from ._types.artifact_content import (
-    ArtifactInfographic,
-    ArtifactMedia,
-    ArtifactMediaType,
-    ArtifactSlide,
-    ArtifactUserState,
-    AudioArtifactUserState,
-    FlashcardArtifactUserState,
-    UnknownArtifactUserState,
-)
-from ._types.artifact_download import (
-    ArtifactDownloadListing,
-    ArtifactDownloadRequest,
-    ArtifactDownloadSelection,
-)
 from ._types.artifacts import (
     Artifact,
-    ArtifactCreationCapability,
-    ArtifactCustomizationChoices,
-    ArtifactListing,
-    ArtifactListingComponent,
-    ArtifactListingFailure,
-    ArtifactLookup,
-    ArtifactLookupStatus,
     ArtifactType,
-    CopiedArtifact,
-    CustomizationChoice,
     GenerationState,
     GenerationStatus,
-    ReportPreset,
     ReportSuggestion,
 )
 from ._types.chat import (
     AskResult,
     ChatMode,
     ChatReference,
-    ChatSessionStatus,
     ChatSettings,
     ConversationTurn,
-    ConversationTurnKey,
-    NextStepSuggestion,
 )
 from ._types.collections import Collection
 from ._types.common import (
@@ -64,70 +36,12 @@ from ._types.common import (
     UnknownTypeWarning,
     UserSettings,
 )
-from ._types.documents import (
-    BlockKind,
-    BlockStyle,
-    DocumentAnnotation,
-    DocumentBlock,
-    ListInfo,
-    ListStyle,
-    StructuredDocument,
-    TableCell,
-    TextSpan,
-    utf16_len,
-)
-from ._types.enums import (
-    SOURCE_STATUS_LABELS,
-    ArtifactStatus,
-    AudioFormat,
-    AudioLength,
-    ChatGoal,
-    ChatResponseLength,
-    DiscoveryMode,
-    DriveMimeType,
-    DriveSourceStatus,
-    ExportType,
-    InfographicDetail,
-    InfographicOrientation,
-    InfographicStyle,
-    MagicArtifactType,
-    QuizDifficulty,
-    QuizQuantity,
-    ReportFormat,
-    ShareAccess,
-    SharePermission,
-    ShareViewLevel,
-    SlideDeckFormat,
-    SlideDeckLength,
-    SourceStatus,
-    VideoFormat,
-    VideoStyle,
-    artifact_status_to_str,
-    discovery_mode_to_str,
-    drive_source_status_to_str,
-    share_permission_to_str,
-    source_status_to_str,
-)
-from ._types.enums import (
-    ArtifactTypeCode as _ArtifactTypeCode,
-)
-from ._types.enums import (
-    GrpcStatusCode as _GrpcStatusCode,
-)
-from ._types.enums import (
-    normalize_grpc_status as _normalize_grpc_status,
-)
-from ._types.enums import (
-    normalize_rpc_code as _normalize_rpc_code,
-)
 from ._types.labels import Label
 from ._types.mind_maps import MindMap, MindMapKind
 from ._types.notebooks import (
-    ChatSession,
     Notebook,
     NotebookDescription,
     NotebookMetadata,
-    PremiumFeatureInfo,
     PromptSuggestion,
     SourceSummary,
     SuggestedTopic,
@@ -144,25 +58,10 @@ from ._types.research import (
     SourceGuide,
 )
 from ._types.sharing import SharedUser, ShareStatus
-from ._types.source_delete import SourceDeleteOutcome
 from ._types.sources import (
-    CopiedSource,
-    ExpertIntelligenceSourceMetadata,
-    PlayBook,
-    PlayBookExportReason,
-    RelevantChunk,
     Source,
     SourceFulltext,
     SourceType,
-)
-from ._types.usage import (
-    UsageAction,
-    UsageActionCostTier,
-    UsageActionKind,
-    UsageSummary,
-    UsageSummaryStatus,
-    UsageWindow,
-    UsageWindowKind,
 )
 
 # Import exceptions from centralized module (re-export for backward compatibility)
@@ -187,6 +86,36 @@ from .exceptions import (
     SourceTimeoutError,
 )
 
+# Re-export enums from rpc/types.py for convenience
+from .rpc.types import (
+    ArtifactStatus,
+    AudioFormat,
+    AudioLength,
+    ChatGoal,
+    ChatResponseLength,
+    DriveMimeType,
+    ExportType,
+    InfographicDetail,
+    InfographicOrientation,
+    InfographicStyle,
+    QuizDifficulty,
+    QuizQuantity,
+    ReportFormat,
+    ShareAccess,
+    SharePermission,
+    ShareViewLevel,
+    SlideDeckFormat,
+    SlideDeckLength,
+    SourceStatus,
+    VideoFormat,
+    VideoStyle,
+    artifact_status_to_str,
+    source_status_to_str,
+)
+from .rpc.types import (
+    ArtifactTypeCode as _ArtifactTypeCode,
+)
+
 # Keep private facade names that first-party tests and external callers have
 # historically imported while the implementation moves into _types modules.
 _SOURCE_TYPE_COMPAT_MAP = _source_types._SOURCE_TYPE_COMPAT_MAP
@@ -206,23 +135,6 @@ _warned_source_types = _source_types._warned_source_types
 # but intentionally absent from ``__all__``.
 ArtifactTypeCode = _ArtifactTypeCode
 
-# The canonical gRPC status table and its two coercion helpers, routed through
-# this facade for the ``_app`` layer: the boundary lint
-# (``tests/_guardrails/test_app_boundary.py``) forbids ``_app`` from importing
-# ``notebooklm.rpc.*`` directly, and the neutral error classifier needs both.
-# Internal plumbing, so intentionally absent from ``__all__``.
-GrpcStatusCode = _GrpcStatusCode
-normalize_grpc_status = _normalize_grpc_status
-normalize_rpc_code = _normalize_rpc_code
-
-# The local-file extension policy, routed through this facade for the ``_app``
-# layer for the same reason as the gRPC table above: the boundary lint
-# (``tests/_guardrails/test_app_boundary.py``) forbids ``_app`` from importing
-# private siblings such as ``notebooklm._types``, and the transport-neutral
-# ``source add`` path heuristic needs the derived set. Internal plumbing, so
-# intentionally absent from ``__all__``.
-_PATH_SHAPED_FILE_EXTENSIONS = _source_types._PATH_SHAPED_FILE_EXTENSIONS
-
 # Guards the ``ResearchSourceInput`` import from being removed as unused:
 # ``typing.get_type_hints(CitedSourceSelection)`` needs it in this facade's
 # globals after ``CitedSourceSelection.__module__`` is rewritten below.
@@ -231,74 +143,29 @@ _CITED_SOURCE_SELECTION_TYPE_HINT_GLOBALS = (ResearchSourceInput,)
 
 
 __all__ = [
-    "ArtifactDownloadListing",
-    "ArtifactDownloadRequest",
-    "ArtifactDownloadSelection",
-    "SourceDeleteOutcome",
     # Dataclasses
     "AccountLimits",
     "UserSettings",
-    "UsageSummary",
-    "UsageWindow",
-    "UsageAction",
     "CitedSourceSelection",
     "ConnectionLimits",
     "ClientMetricsSnapshot",
     "RpcTelemetryEvent",
     "Notebook",
-    "PremiumFeatureInfo",
-    "ChatSession",
     "NotebookDescription",
     "NotebookMetadata",
     "SuggestedTopic",
     "Source",
     "SourceFulltext",
-    "RelevantChunk",
-    "CopiedSource",
-    "PlayBook",
-    "PlayBookExportReason",
-    "ExpertIntelligenceSourceMetadata",
     "SourceSummary",
     "Artifact",
-    "ArtifactListing",
-    "ArtifactListingComponent",
-    "ArtifactListingFailure",
-    "ArtifactLookup",
-    "ArtifactLookupStatus",
-    "ArtifactInfographic",
-    "ArtifactMedia",
-    "ArtifactMediaType",
-    "ArtifactSlide",
-    "ArtifactUserState",
-    "AudioArtifactUserState",
-    "FlashcardArtifactUserState",
-    "UnknownArtifactUserState",
     "GenerationState",
     "GenerationStatus",
     "ReportSuggestion",
-    "CopiedArtifact",
-    "CustomizationChoice",
-    "ReportPreset",
-    "ArtifactCustomizationChoices",
-    "ArtifactCreationCapability",
     "Note",
     "Label",
     "Collection",
     "ConversationTurn",
-    "ConversationTurnKey",
-    "NextStepSuggestion",
     "ChatReference",
-    "ChatSessionStatus",
-    "BlockKind",
-    "BlockStyle",
-    "DocumentAnnotation",
-    "DocumentBlock",
-    "ListInfo",
-    "ListStyle",
-    "StructuredDocument",
-    "TableCell",
-    "TextSpan",
-    "utf16_len",
     "AskResult",
     "ChatMode",
     "ChatSettings",
@@ -356,25 +223,14 @@ __all__ = [
     "ReportFormat",
     "ChatGoal",
     "ChatResponseLength",
-    "MagicArtifactType",
     "DriveMimeType",
     "ExportType",
     "SourceStatus",
-    "DriveSourceStatus",
-    "DiscoveryMode",
     "ShareAccess",
     "ShareViewLevel",
     "SharePermission",
-    "UsageSummaryStatus",
-    "UsageWindowKind",
-    "UsageActionKind",
-    "UsageActionCostTier",
     # Helper functions
     "artifact_status_to_str",
-    "discovery_mode_to_str",
-    "drive_source_status_to_str",
-    "share_permission_to_str",
-    "SOURCE_STATUS_LABELS",
     "source_status_to_str",
 ]
 
@@ -387,47 +243,20 @@ for _public_common_type in (
     RpcTelemetryEvent,
     UnknownTypeWarning,
     UserSettings,
-    UsageAction,
-    UsageSummary,
-    UsageWindow,
 ):
     _public_common_type.__module__ = __name__
 del _public_common_type
 
 
 for _public_moved_type in (
-    ArtifactDownloadListing,
-    ArtifactDownloadRequest,
-    ArtifactDownloadSelection,
     Artifact,
-    ArtifactCreationCapability,
-    ArtifactCustomizationChoices,
-    ArtifactListing,
-    ArtifactListingComponent,
-    ArtifactListingFailure,
-    ArtifactLookup,
-    ArtifactLookupStatus,
-    ArtifactInfographic,
-    ArtifactMedia,
-    ArtifactMediaType,
-    ArtifactSlide,
-    AudioArtifactUserState,
-    FlashcardArtifactUserState,
-    UnknownArtifactUserState,
     ArtifactType,
     AskResult,
     ChatMode,
     ChatReference,
-    ChatSessionStatus,
     ChatSettings,
-    ChatSession,
     Collection,
     ConversationTurn,
-    ConversationTurnKey,
-    CopiedArtifact,
-    CopiedSource,
-    CustomizationChoice,
-    NextStepSuggestion,
     GenerationState,
     GenerationStatus,
     Label,
@@ -438,9 +267,7 @@ for _public_moved_type in (
     Notebook,
     NotebookDescription,
     NotebookMetadata,
-    PremiumFeatureInfo,
     PromptSuggestion,
-    ReportPreset,
     ReportSuggestion,
     ResearchSource,
     ResearchStart,
@@ -449,10 +276,6 @@ for _public_moved_type in (
     ResearchTerminationReason,
     SharedUser,
     ShareStatus,
-    ExpertIntelligenceSourceMetadata,
-    PlayBook,
-    PlayBookExportReason,
-    RelevantChunk,
     Source,
     SourceFulltext,
     SourceGuide,

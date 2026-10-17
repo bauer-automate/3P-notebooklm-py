@@ -20,22 +20,14 @@ import notebooklm.paths as _notebooklm_paths
 from ..exceptions import LockUnavailableError
 from . import cookie_merge as _cookie_merge
 from . import cookie_policy as _cookie_policy
-from . import mint_service as _mint_service
 from .cookie_filter import filter_storage_state_cookies_by_domain_policy
 from .cookie_merge import RecoveryObservation
-from .cookie_types import (
-    CookieIdentity,
-    CookieJar,
-    StorageStateValidationError,
-    _build_cookie_pair_from_storage_state,
-    _LoadedCookiePair,
-)
+from .cookie_types import CookieIdentity, CookieJar
 from .credential_io import _commit_profile_json
 from .master_token_file import MasterTokenFile
 from .master_token_types import MasterToken
 from .paths import _storage_state_lock_path, canonical_storage_key
 from .profile_account import (
-    ACCOUNT_ROUTE_CLEARED_KEY,
     AccountDirective,
     AccountView,
     ClearAccount,
@@ -56,23 +48,6 @@ from .storage_lock import (
 logger = logging.getLogger("notebooklm.auth")
 
 T = TypeVar("T")
-
-
-def _is_cookie_pair_read_error(error: BaseException) -> bool:
-    """Classify the unchanged error taxonomy of ``read_cookie_pair``."""
-    return isinstance(
-        error,
-        (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            StorageStateValidationError,
-            _cookie_policy.RequiredCookieValidationError,
-            TypeError,
-            ValueError,
-            OverflowError,
-        ),
-    )
 
 
 class CookieMergeDisposition(Enum):
@@ -200,18 +175,6 @@ class ReplaceResult:
     missing_required: tuple[str, ...] = ()
     present_names: tuple[str, ...] = ()
     backup_path: Path | None = None
-
-    @property
-    def ok(self) -> bool:
-        return self.status is ReplaceStatus.APPLIED
-
-    @property
-    def lock_unavailable(self) -> bool:
-        return self.status is ReplaceStatus.LOCK_UNAVAILABLE
-
-    @property
-    def required_cookies_dropped(self) -> bool:
-        return self.status is ReplaceStatus.REQUIRED_COOKIES_DROPPED
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, ReplaceStatus):
@@ -344,27 +307,6 @@ class ProfileStore:
             ),
         )
 
-    def read_cookie_pair(self, *, require_routable: bool = False) -> _LoadedCookiePair:
-        """Read one raw sample into paired live and persistence projections."""
-        if not self._path.exists():
-            raise FileNotFoundError(
-                f"Storage file not found: {self._path}\n"
-                "Run 'notebooklm login' to authenticate first."
-            )
-        storage_state = json.loads(self._path.read_text(encoding="utf-8"))
-        if not isinstance(storage_state, dict) or not isinstance(
-            storage_state.get("cookies"), list
-        ):
-            raise StorageStateValidationError(
-                "Storage state must contain a 'cookies' list.\n"
-                'Expected format: {"cookies": [{"name": "SID", "value": "...", ...}]}'
-            )
-        return _build_cookie_pair_from_storage_state(
-            storage_state,
-            require_routable=require_routable,
-            rotate_url=_mint_service.KEEPALIVE_ROTATE_URL,
-        )
-
     def replace_from_remint(self, request: RemintWriteRequest) -> ReplaceResult:
         """Replace cookies from a browser re-mint under the bounded profile lock."""
 
@@ -395,11 +337,6 @@ class ProfileStore:
             )
             if carried_namespace is not None:
                 filtered["notebooklm"] = carried_namespace
-            elif not request.carry_account:
-                filtered["notebooklm"] = {
-                    "version": 1,
-                    ACCOUNT_ROUTE_CLEARED_KEY: True,
-                }
             _commit_profile_json(self.path, filtered)
             return ReplaceResult(ReplaceStatus.APPLIED)
 
@@ -448,7 +385,7 @@ class ProfileStore:
                     account["email"] = email
                 namespace = {"account": account}
             else:
-                namespace = {ACCOUNT_ROUTE_CLEARED_KEY: True}
+                namespace = {}
 
             if selection.include_domains:
                 namespace["include_domains"] = sorted(selection.include_domains)
@@ -526,7 +463,6 @@ class ProfileStore:
             namespace = data.get("notebooklm")
             namespace = namespace if isinstance(namespace, dict) else {}
             namespace["version"] = 1
-            namespace.pop(ACCOUNT_ROUTE_CLEARED_KEY, None)
             namespace["account"] = {
                 "authuser": 0,
                 **({"email": request.email} if request.email else {}),
@@ -605,12 +541,9 @@ class ProfileStore:
                 namespace = {}
             elif only_if_absent:
                 current = namespace.get("account")
-                if (isinstance(current, dict) and current) or namespace.get(
-                    ACCOUNT_ROUTE_CLEARED_KEY
-                ) is True:
+                if isinstance(current, dict) and current:
                     return False
             namespace["version"] = 1
-            namespace.pop(ACCOUNT_ROUTE_CLEARED_KEY, None)
             namespace["account"] = account_payload
             updated = document.with_namespace(namespace)
             _commit_profile_json(self._path, updated.to_json())
@@ -622,70 +555,30 @@ class ProfileStore:
             on_unavailable=raise_on_lock_unavailable("write_account_metadata"),
         )
 
-    def _update_account_if_document_unchanged(
-        self,
-        record: ProfileAccount,
-        *,
-        expected: ProfileDocument,
-    ) -> bool:
-        """Persist account metadata only against the exact sampled profile document."""
-        expected_payload = expected.to_json()
-        account_payload: dict[str, object] = {"authuser": record.authuser}
-        if record.email:
-            account_payload["email"] = record.email
-
-        def _write() -> bool:
-            if not self._path.exists():
-                return False
-            try:
-                current = self.read_document()
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"storage state at {self._path} is corrupted: {exc}") from exc
-            if current.to_json() != expected_payload:
-                return False
-            payload = current.to_json()
-            namespace = payload.get("notebooklm")
-            if not isinstance(namespace, dict):
-                namespace = {}
-            namespace["version"] = 1
-            namespace.pop(ACCOUNT_ROUTE_CLEARED_KEY, None)
-            namespace["account"] = account_payload
-            _commit_profile_json(self._path, current.with_namespace(namespace).to_json())
-            return True
-
-        return self._under_bounded_lock(
-            operation="write_account_metadata",
-            body=_write,
-            on_unavailable=raise_on_lock_unavailable("write_account_metadata"),
-        )
-
     def clear_account(self) -> None:
         """Remove the in-band account using the best-effort clear policy."""
+        if not self._path.exists():
+            return
 
         def _clear() -> None:
-            if self._path.exists():
-                try:
-                    document = self.read_document()
-                except UnicodeDecodeError:
-                    raise
-                except (OSError, json.JSONDecodeError) as exc:
-                    logger.debug("in-band account clear skipped at %s: %s", self._path, exc)
+            try:
+                document = self.read_document()
+            except UnicodeDecodeError:
+                raise
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.debug("in-band account clear skipped at %s: %s", self._path, exc)
+                return
+            except _ProfileDocumentStructureError as exc:
+                if exc.field == "root" and exc.reason == "not_object":
                     return
-                except _ProfileDocumentStructureError as exc:
-                    if exc.field == "root" and exc.reason == "not_object":
-                        return
-                    raise
-            else:
-                document = ProfileDocument.empty()
+                raise
 
             payload = document.to_json()
             namespace = payload.get("notebooklm")
-            if not isinstance(namespace, dict):
-                namespace = {}
-            namespace.pop("account", None)
-            namespace["version"] = 1
-            namespace[ACCOUNT_ROUTE_CLEARED_KEY] = True
-            updated = document.with_namespace(namespace)
+            if not isinstance(namespace, dict) or "account" not in namespace:
+                return
+            del namespace["account"]
+            updated = document.with_namespace(None if set(namespace) <= {"version"} else namespace)
             _commit_profile_json(self._path, updated.to_json())
 
         self._under_bounded_lock(

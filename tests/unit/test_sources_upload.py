@@ -1,20 +1,18 @@
-"""Unit tests for WebSourcesAPI file upload pipeline and YouTube detection."""
+"""Unit tests for SourcesAPI file upload pipeline and YouTube detection."""
 
 import ast
-import asyncio
 import inspect
 import textwrap
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from notebooklm._web.sources import WebSourcesAPI
-from notebooklm._web.sources.upload import SourceUploadPipeline
+from notebooklm._source.upload import SourceUploadPipeline
+from notebooklm._sources import SourcesAPI
 from notebooklm.exceptions import NetworkError, RPCError, ValidationError
 from notebooklm.rpc import RPCMethod
 from notebooklm.rpc.types import SourceStatus
@@ -23,7 +21,7 @@ from notebooklm.types import Source
 
 @pytest.fixture
 def mock_core():
-    """Create a mocked Session for WebSourcesAPI."""
+    """Create a mocked Session for SourcesAPI."""
     from tests._fixtures.fake_core import make_fake_core
 
     core = make_fake_core(rpc_call=AsyncMock())
@@ -57,12 +55,15 @@ def mock_core():
     core.authuser_header = MagicMock(
         side_effect=lambda: _authuser_header(core.auth.authuser, core.auth.account_email)
     )
+    core._drain_tracker = MagicMock()
+    core._drain_tracker.begin_transport_post = AsyncMock(return_value=object())
+    core._drain_tracker.finish_transport_post = AsyncMock()
     core.operation_scope = MagicMock()
 
     def operation_scope(_label):
         @asynccontextmanager
-        async def scope() -> AsyncIterator[SimpleNamespace]:
-            yield SimpleNamespace(epoch=1)
+        async def scope() -> AsyncIterator[None]:
+            yield None
 
         return scope()
 
@@ -74,36 +75,29 @@ def mock_core():
     # misuse. MagicMock blocks ``assert``-prefixed attribute access as a
     # foot-gun guard, so the no-op stub must be installed explicitly.
     core.assert_bound_loop = MagicMock()
-
-    async def spawn_child(label, factory):
-        return asyncio.create_task(factory(), name=label)
-
-    core.spawn_child = spawn_child
     return core
 
 
 @pytest.fixture
 def sources_api(mock_core):
-    """Create WebSourcesAPI with mocked core.
+    """Create SourcesAPI with mocked core.
 
     The uploader is constructed explicitly from the same mocked core so the
     upload-path tests still exercise the real :class:`SourceUploadPipeline`
     while honoring the now-required ``uploader=`` kwarg on
-    :class:`WebSourcesAPI`. ``mock_core`` bundles ``rpc_call`` /
+    :class:`SourcesAPI`. ``mock_core`` bundles ``rpc_call`` /
     ``operation_scope`` / ``assert_bound_loop`` so it structurally
     satisfies all three of the pipeline's narrow collaborator slots.
     """
     uploader = SourceUploadPipeline(
         rpc=mock_core,
-        supervisor=mock_core,
+        drain=mock_core,
+        lifecycle=mock_core,
         kernel=mock_core.kernel,
         auth=mock_core.auth,
         record_upload_queue_wait=mock_core.record_upload_queue_wait,
     )
-    uploader._active_epoch = 1
-    uploader._closing = False
-    uploader._registry_lock = asyncio.Lock()
-    return WebSourcesAPI(mock_core, supervisor=mock_core, uploader=uploader)
+    return SourcesAPI(mock_core, uploader=uploader)
 
 
 @pytest.mark.asyncio
@@ -122,12 +116,12 @@ async def test_add_drive_file_asserts_bound_loop_before_fetch(sources_api, mock_
 
 
 def test_sources_api_makes_uploader_share_lifecycle_collaborators(sources_api):
-    """WebSourcesAPI is the single owner of the source-lifecycle verbs.
+    """SourcesAPI is the single owner of the source-lifecycle verbs.
 
     The upload pipeline's ``list_sources`` / ``get_source`` / ``wait_*``
     helpers must delegate to the SAME ``SourceLister`` / ``SourcePoller``
     instances the public API uses, rather than parallel copies built in the
-    pipeline constructor (issue #1205). ``WebSourcesAPI.__init__`` injects its
+    pipeline constructor (issue #1205). ``SourcesAPI.__init__`` injects its
     own collaborators via ``configure_source_lifecycle``.
     """
     assert sources_api._uploader._lister is sources_api._lister
@@ -164,9 +158,9 @@ def _self_core_http_client_cookies_read(node: ast.AST) -> bool:
 @pytest.mark.parametrize(
     "helper",
     [
-        WebSourcesAPI._start_resumable_upload,
-        WebSourcesAPI._upload_file_streaming,
-        WebSourcesAPI._cancel_upload_session,
+        SourcesAPI._start_resumable_upload,
+        SourcesAPI._upload_file_streaming,
+        SourcesAPI._cancel_upload_session,
         SourceUploadPipeline.start_resumable_upload,
         SourceUploadPipeline.upload_file_streaming,
         SourceUploadPipeline.cancel_upload_session,
@@ -327,37 +321,6 @@ class TestExtractYoutubeVideoId:
 # =============================================================================
 
 
-# A decoded GET_NOTEBOOK payload for a notebook with no sources, in the shape
-# the server actually sends: the title in slot 0, and slot 1 **elided to None**
-# rather than an empty list. Verified against the recorded zero-source frame in
-# ``tests/cassettes/web/notebook_zero_sources.yaml``. ``SourceLister._extract_sources_list``
-# has a dedicated branch for that ``None`` (its comment names this very cassette),
-# so a ``[]`` here would decode to the same ``[]`` while exercising the *other*
-# branch — the one a notebook that once had sources returns.
-_EMPTY_NOTEBOOK: list = [["Test Notebook", None]]
-
-
-def _register_response_only(mock_core, response) -> None:
-    """Drive the register RPC with ``response``, leaving the list RPCs healthy.
-
-    ``mock_core.rpc_executor.rpc_call`` answers *every* method from one mock, so
-    a bare ``return_value = <register payload>`` also hands that payload to the
-    two ``GET_NOTEBOOK`` reads the register path makes — the idempotency
-    baseline before the create, and the probe after it when the register
-    response carries no trustworthy SOURCE_ID. The notebook decoder rejects a
-    register payload, so both reads were failing in every test that used
-    ``return_value``.
-
-    That was invisible while both failures were swallowed. Since #2220 the probe
-    propagates, so an incidentally-broken list now aborts the call before the
-    assertion under test is reached. Answering the list RPCs properly is not a
-    workaround for that change: these tests are about how a malformed *register*
-    response is decoded, and a probe failing for unrelated reasons was never
-    what they meant to exercise.
-    """
-    mock_core.rpc_executor.rpc_call.side_effect = [response, _EMPTY_NOTEBOOK]
-
-
 class TestRegisterFileSource:
     """Tests for file source registration."""
 
@@ -376,7 +339,8 @@ class TestRegisterFileSource:
         result = await sources_api._register_file_source("nb_123", "test.pdf")
 
         assert result == "source_id_abc"
-        assert mock_core.rpc_executor.rpc_call.call_count == 1
+        # 2 calls: baseline GET_NOTEBOOK + ADD_SOURCE_FILE register.
+        assert mock_core.rpc_executor.rpc_call.call_count == 2
         methods_called = [call.args[0] for call in mock_core.rpc_executor.rpc_call.await_args_list]
         assert RPCMethod.ADD_SOURCE_FILE in methods_called
 
@@ -394,7 +358,7 @@ class TestRegisterFileSource:
         """Test that null response raises SourceAddError."""
         from notebooklm.exceptions import SourceAddError
 
-        _register_response_only(mock_core, None)
+        mock_core.rpc_executor.rpc_call.return_value = None
 
         with pytest.raises(SourceAddError, match="Failed to get SOURCE_ID"):
             await sources_api._register_file_source("nb_123", "test.pdf")
@@ -404,7 +368,7 @@ class TestRegisterFileSource:
         """Test that empty response raises SourceAddError."""
         from notebooklm.exceptions import SourceAddError
 
-        _register_response_only(mock_core, [])
+        mock_core.rpc_executor.rpc_call.return_value = []
 
         with pytest.raises(SourceAddError, match="Failed to get SOURCE_ID"):
             await sources_api._register_file_source("nb_123", "test.pdf")
@@ -422,7 +386,7 @@ class TestRegisterFileSource:
         """Test that non-string source ID raises SourceAddError."""
         from notebooklm.exceptions import SourceAddError
 
-        _register_response_only(mock_core, [[[[[[12345]]]]]])
+        mock_core.rpc_executor.rpc_call.return_value = [[[[[[12345]]]]]]
 
         with pytest.raises(SourceAddError, match="Failed to get SOURCE_ID"):
             await sources_api._register_file_source("nb_123", "test.pdf")
@@ -465,7 +429,10 @@ class TestRegisterFileSource:
 
         The filename provides context for the SOURCE_ID (#474).
         """
-        mock_core.rpc_executor.rpc_call.side_effect = [response]
+        mock_core.rpc_executor.rpc_call.side_effect = [
+            [["", []]],
+            response,
+        ]
 
         result = await sources_api._register_file_source("nb_123", filename)
         assert result == expected
@@ -489,7 +456,7 @@ class TestRegisterFileSource:
         from notebooklm.exceptions import SourceAddError
 
         # Pure-numeric response — no string leaves → no candidates → raises.
-        _register_response_only(mock_core, [[[1, 2, 3]]])
+        mock_core.rpc_executor.rpc_call.return_value = [[[1, 2, 3]]]
 
         with pytest.raises(
             SourceAddError,
@@ -509,7 +476,7 @@ class TestRegisterFileSource:
         """
         from notebooklm.exceptions import SourceAddError
 
-        _register_response_only(mock_core, [[[status_token]]])
+        mock_core.rpc_executor.rpc_call.return_value = [[[status_token]]]
 
         with pytest.raises(SourceAddError, match="Failed to get SOURCE_ID"):
             await sources_api._register_file_source("nb_123", "test.pdf")
@@ -605,7 +572,7 @@ class TestRegisterFileSource:
         deep: list = ["dc84ca28-2629-49ac-aec3-de45f0ec93e4"]
         for _ in range(200):
             deep = [deep]
-        _register_response_only(mock_core, deep)
+        mock_core.rpc_executor.rpc_call.return_value = deep
 
         with pytest.raises(SourceAddError, match="Failed to get SOURCE_ID"):
             await sources_api._register_file_source("nb_123", "test.pdf")
@@ -997,7 +964,8 @@ class TestAddFile:
         assert result.id == "src_new_123"
         assert result.title == "test.pdf"
         assert result.kind == "unknown"
-        assert mock_core.rpc_executor.rpc_call.call_count == 1
+        # 2 RPCs: GET_NOTEBOOK baseline + ADD_SOURCE_FILE register.
+        assert mock_core.rpc_executor.rpc_call.call_count == 2
         mock_core.operation_scope.assert_called_once_with("upload:0")
 
     @pytest.mark.asyncio
@@ -1154,6 +1122,7 @@ class TestAddFile:
         #   [1] ADD_SOURCE_FILE register
         #   [2] UPDATE_SOURCE rename
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,  # baseline returns no useful list — empty notebook
             [[[["src_md"]]]],
             [[[["src_md"], "Real Intended Title", [None, None, None, None, 8]]]],
         ]
@@ -1184,8 +1153,9 @@ class TestAddFile:
 
         assert result.id == "src_md"
         assert result.title == "Real Intended Title"
-        assert mock_core.rpc_executor.rpc_call.call_count == 2
-        rename_params = mock_core.rpc_executor.rpc_call.call_args_list[1].args[1]
+        # 1 baseline GET_NOTEBOOK + 1 register + 1 rename
+        assert mock_core.rpc_executor.rpc_call.call_count == 3
+        rename_params = mock_core.rpc_executor.rpc_call.call_args_list[2].args[1]
         assert rename_params == [None, ["src_md"], [[["Real Intended Title"]]]]
         # Narrow wait uses the caller's wait_timeout (default 120s) — not the
         # full wait_until_ready. wait_until_registered returns on first
@@ -1206,8 +1176,10 @@ class TestAddFile:
         test_file = tmp_path / "boring-filename.md"
         test_file.write_bytes(b"# content\n")
 
-        # Two rpc_call invocations: registration, then rename.
+        # 3 rpc_call invocations: baseline + register + rename (see the
+        # earlier test for the same pattern).
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,
             [[[["src_md"]]]],
             [[[["src_md"], "Real Intended Title"]]],
         ]
@@ -1221,7 +1193,7 @@ class TestAddFile:
             # baseline GET_NOTEBOOK + ADD_SOURCE_FILE register RPCs have
             # fired (2 total — see register_file_source's probe-then-create
             # design for why the baseline call is required).
-            assert mock_core.rpc_executor.rpc_call.call_count == 1
+            assert mock_core.rpc_executor.rpc_call.call_count == 2
             return Source(id=source_id, title="boring-filename.md", _type_code=8)
 
         sources_api._uploader.wait_until_ready = AsyncMock(side_effect=wait_side_effect)
@@ -1250,7 +1222,8 @@ class TestAddFile:
         sources_api._uploader.wait_until_ready.assert_awaited_once_with(
             "nb_123", "src_md", timeout=120.0, transient_error_types=()
         )
-        assert mock_core.rpc_executor.rpc_call.call_count == 2
+        # 3 RPCs in total: baseline + register + rename.
+        assert mock_core.rpc_executor.rpc_call.call_count == 3
 
     @pytest.mark.asyncio
     async def test_add_file_with_title_forces_wait_when_wait_false(
@@ -1262,8 +1235,9 @@ class TestAddFile:
         test_file = tmp_path / "boring-filename.md"
         test_file.write_bytes(b"# content\n")
 
-        # Two RPCs: registration, then rename.
+        # 3 RPCs: baseline + register + rename.
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,
             [[[["src_md"]]]],
             [[[["src_md"], "Real Intended Title", [None, None, None, None, 8]]]],
         ]
@@ -1277,7 +1251,7 @@ class TestAddFile:
             # Wait runs BEFORE the rename: at this point only the baseline
             # GET_NOTEBOOK + ADD_SOURCE_FILE register RPCs have fired (2
             # total).
-            assert mock_core.rpc_executor.rpc_call.call_count == 1
+            assert mock_core.rpc_executor.rpc_call.call_count == 2
             return Source(id=source_id, title="boring-filename.md", _type_code=8)
 
         sources_api._uploader.wait_until_registered = AsyncMock(side_effect=wait_side_effect)
@@ -1321,8 +1295,9 @@ class TestAddFile:
         test_file = tmp_path / "podcast.mp3"
         test_file.write_bytes(b"fake audio")
 
-        # Two RPCs: registration, then rename.
+        # 3 RPCs: baseline + register + rename.
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,
             [[[["src_audio"]]]],
             [[[["src_audio"], "Episode 1", [None, None, None, None, 10]]]],
         ]
@@ -1466,7 +1441,9 @@ class TestAddFile:
 
         assert result.id == "src_pdf"
         assert result.title == "report.pdf"
-        assert mock_core.rpc_executor.rpc_call.call_count == 1
+        # No rename happened (title matches filename) — but registration is
+        # still 2 RPCs: baseline GET_NOTEBOOK + ADD_SOURCE_FILE.
+        assert mock_core.rpc_executor.rpc_call.call_count == 2
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1491,8 +1468,9 @@ class TestAddFile:
         # Registration succeeds; rename raises a library-level expected error
         # (representative of what `self.rename` actually raises in the wild).
         # The forced wait between register and rename is mocked separately.
-        # Two RPCs: registration, then rename (which raises).
+        # 3 RPCs: baseline + register + rename (the rename raises).
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,
             [[[["src_doc"]]]],
             rename_error,
         ]
@@ -1520,12 +1498,10 @@ class TestAddFile:
         assert result.id == "src_doc"
         assert result.title == "doc.txt"
         warning_records = [
-            rec for rec in caplog.records if "title finalization failed" in rec.message
+            rec for rec in caplog.records if "rename to 'Custom' failed" in rec.message
         ]
-        assert len(warning_records) == 1
-        assert "Custom" not in caplog.text
-        assert str(rename_error) not in caplog.text
-        assert warning_records[0].exc_info is None
+        assert warning_records
+        assert warning_records[0].exc_info is not None
 
     @pytest.mark.asyncio
     async def test_add_file_with_title_preserves_waited_metadata(
@@ -1549,8 +1525,10 @@ class TestAddFile:
         # First rpc_call serves file registration. Second serves rename() —
         # which returns a sparse Source (only id + new title) so we can verify
         # the merge preserves type_code/url/created_at from the waited source.
-        # Two RPCs: registration, then rename (returns None for fallback).
+        # 3 RPCs: baseline + register + rename (rename returns None to
+        # trigger the fallback).
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,
             [[[["src_audio"]]]],
             None,  # Triggers rename()'s Source(id=source_id, title=new_title) fallback
         ]
@@ -1599,8 +1577,9 @@ class TestAddFile:
         test_file = tmp_path / "long-audio.mp3"
         test_file.write_bytes(b"fake audio")
 
-        # Two RPCs: registration, then rename.
+        # 3 RPCs: baseline + register + rename.
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,
             [[[["src_audio"]]]],
             [[[["src_audio"], "My Title", [None, None, None, None, 10]]]],
         ]
@@ -1644,8 +1623,9 @@ class TestAddFile:
         test_file = tmp_path / "doc.txt"
         test_file.write_bytes(b"content")
 
-        # Two RPCs: registration, then rename (which raises).
+        # 3 RPCs: baseline + register + rename (rename raises).
         mock_core.rpc_executor.rpc_call.side_effect = [
+            None,
             [[[["src_doc"]]]],
             RPCError("rename rpc blew up"),
         ]
@@ -1657,7 +1637,7 @@ class TestAddFile:
             assert transient_error_types == ()
             # Wait runs BEFORE rename — baseline GET_NOTEBOOK + register
             # RPCs have fired (2 total), no rename yet.
-            assert mock_core.rpc_executor.rpc_call.call_count == 1
+            assert mock_core.rpc_executor.rpc_call.call_count == 2
             return Source(id=source_id, title="doc.txt", _type_code=4)
 
         sources_api._uploader.wait_until_ready = AsyncMock(side_effect=wait_side_effect)

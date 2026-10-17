@@ -49,15 +49,12 @@ import pytest
 from notebooklm._artifacts import ArtifactsAPI
 from notebooklm._collections import CollectionsAPI
 from notebooklm._labels import LabelsAPI
+from notebooklm._mind_map import NoteBackedMindMapService
 from notebooklm._mind_maps_api import MindMapsAPI
+from notebooklm._note_service import NoteService
+from notebooklm._notebooks import NotebooksAPI
+from notebooklm._notes import NotesAPI
 from notebooklm._sources import SourcesAPI
-from notebooklm._web.artifacts import WebArtifactsAPI
-from notebooklm._web.collections import WebCollectionsAPI
-from notebooklm._web.labels import WebLabelsAPI
-from notebooklm._web.mind_maps import NoteBackedMindMapService, WebMindMapsAPI
-from notebooklm._web.notebooks import WebNotebooksAPI
-from notebooklm._web.notes import NoteService, WebNotesAPI
-from notebooklm._web.sources import WebSourcesAPI
 from notebooklm.exceptions import (
     ArtifactNotFoundError,
     CollectionNotFoundError,
@@ -67,8 +64,6 @@ from notebooklm.exceptions import (
     NoteNotFoundError,
     SourceNotFoundError,
 )
-from notebooklm.types import ArtifactListing
-from tests._fixtures.fake_core import make_fake_core
 
 # This behavioural table is the executable companion of the static
 # ``LOOKUP_NAMESPACES`` set in ``test_public_api_contract.py``: the same six
@@ -92,7 +87,7 @@ def _make_sources_api() -> SourcesAPI:
     # No ``make_fake_core`` here: ``_arrange_list_miss`` overrides ``api.list``
     # before any RPC path is reached, so the first positional collaborator is
     # never called (matches how ``test_get_or_none.py`` builds its sources API).
-    return WebSourcesAPI(MagicMock(), supervisor=MagicMock(), uploader=MagicMock())
+    return SourcesAPI(MagicMock(), uploader=MagicMock())
 
 
 def _make_artifacts_api() -> ArtifactsAPI:
@@ -103,16 +98,17 @@ def _make_artifacts_api() -> ArtifactsAPI:
     mind_maps.list_mind_maps = AsyncMock(return_value=[])
     notebooks = MagicMock()
     notebooks.get_source_ids = AsyncMock(return_value=[])
-    return WebArtifactsAPI(
+    return ArtifactsAPI(
         rpc=core,
-        supervisor=core,
+        drain=core,
+        lifecycle=core,
         notebooks=notebooks,
         mind_maps=mind_maps,
         note_service=MagicMock(spec=NoteService),
     )
 
 
-def _make_notes_api() -> WebNotesAPI:
+def _make_notes_api() -> NotesAPI:
     from tests._fixtures.fake_core import make_fake_core
 
     # ``None`` is the empty-notebook payload (a notebook with no notes); it is
@@ -120,9 +116,9 @@ def _make_notes_api() -> WebNotesAPI:
     # truthy non-list payload would now raise ``DecodingError`` as drift (#1344),
     # so it can no longer stand in for "empty".
     core = make_fake_core(rpc_call=AsyncMock(return_value=None))
-    note_service = NoteService(core, supervisor=core)
+    note_service = NoteService(core)
     mind_maps = NoteBackedMindMapService(note_service)
-    return WebNotesAPI(supervisor=core, notes=note_service, mind_maps=mind_maps)
+    return NotesAPI(notes=note_service, mind_maps=mind_maps)
 
 
 def _make_mind_maps_api() -> MindMapsAPI:
@@ -131,13 +127,11 @@ def _make_mind_maps_api() -> MindMapsAPI:
     artifacts = MagicMock()
     artifacts.list = AsyncMock(return_value=[])
     notebooks = MagicMock()
-    return WebMindMapsAPI(
+    return MindMapsAPI(
         rpc=MagicMock(),
-        supervisor=make_fake_core(),
         mind_maps=mind_maps,
         artifacts=artifacts,
         notebooks=notebooks,
-        notes=MagicMock(),
     )
 
 
@@ -145,11 +139,7 @@ def _make_labels_api() -> LabelsAPI:
     # ``_arrange_list_miss`` overrides ``api.list`` before any RPC path is reached
     # (``labels.get`` scans ``self.list``), so the rpc collaborator and
     # ``list_sources`` are never called on the miss path.
-    return WebLabelsAPI(
-        MagicMock(),
-        supervisor=make_fake_core(),
-        list_sources=AsyncMock(return_value=[]),
-    )
+    return LabelsAPI(MagicMock(), list_sources=AsyncMock(return_value=[]))
 
 
 def _make_collections_api() -> CollectionsAPI:
@@ -157,19 +147,17 @@ def _make_collections_api() -> CollectionsAPI:
     # (no notebook scope), so ``_arrange_list_miss`` stubbing ``list`` to ``[]`` is
     # the same backend-agnostic miss lever; the rpc collaborator and
     # ``list_notebooks`` are never reached on the miss path.
-    return WebCollectionsAPI(
-        MagicMock(),
-        supervisor=make_fake_core(),
-        list_notebooks=AsyncMock(return_value=[]),
-    )
+    return CollectionsAPI(MagicMock(), list_notebooks=AsyncMock(return_value=[]))
 
 
-def _make_notebooks_api() -> WebNotebooksAPI:
+def _make_notebooks_api() -> NotebooksAPI:
+    from tests._fixtures.fake_core import make_fake_core
+
     # An empty/degenerate GET_NOTEBOOK payload is the unknown-id shape that
     # ``notebooks.get`` post-validates into ``NotebookNotFoundError`` — so this
     # factory is already arranged for a miss (see ``_arrange_notebooks_miss``).
     core = make_fake_core(rpc_call=AsyncMock(return_value=[[]]))
-    return WebNotebooksAPI(core.rpc_executor, supervisor=core, sources_api=MagicMock())
+    return NotebooksAPI(core.rpc_executor, sources_api=MagicMock())
 
 
 def _arrange_list_miss(api: object) -> None:
@@ -190,10 +178,6 @@ def _arrange_list_miss(api: object) -> None:
     internal path.
     """
     api.list = AsyncMock(return_value=[])  # type: ignore[attr-defined]
-    if isinstance(api, ArtifactsAPI):
-        api.list_with_status = AsyncMock(  # type: ignore[method-assign]
-            return_value=ArtifactListing((), is_complete=True)
-        )
 
 
 def _arrange_notebooks_miss(api: object) -> None:

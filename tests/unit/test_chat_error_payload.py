@@ -3,8 +3,7 @@
 import logging
 from unittest.mock import MagicMock
 
-from notebooklm._web.chat import WebChatAPI
-from tests._fixtures.fake_core import make_fake_core
+from notebooklm._chat import ChatAPI
 
 
 class MalformedErrorPayload(list):
@@ -16,14 +15,12 @@ def test_rate_limit_payload_parse_failure_logs_debug(caplog):
     # Wave 8 of session-decoupling (ADR-0014 Rule 2 Corollary): ``ChatAPI``
     # takes direct collaborators by keyword arg. ``_raise_if_rate_limited``
     # is a pure-payload-parsing helper that does not touch any collaborator,
-    # so all five are plain ``MagicMock()`` placeholders.
-    api = WebChatAPI(
+    # so all four are plain ``MagicMock()`` placeholders.
+    api = ChatAPI(
         rpc=MagicMock(),
-        supervisor=make_fake_core(),
         transport=MagicMock(),
         reqid=MagicMock(),
         loop_guard=MagicMock(),
-        notebooks=MagicMock(),
     )
 
     with caplog.at_level(logging.DEBUG, logger="notebooklm._chat"):

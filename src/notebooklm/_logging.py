@@ -165,9 +165,8 @@ _SECURE_HOST_UMBRELLAS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p) for p in SECURE_HOST_UMBRELLA_PATTERNS
 )
 
-# Carrier-AGNOSTIC Google credential shapes (``aas_et/`` / ``g.a000-`` /
-# ``sidts-`` / ``ya29.`` tokens + ``AIza…`` / ``AQ.…`` API keys), compiled from
-# the same registry.
+# Carrier-AGNOSTIC Google credential shapes (``g.a000-`` / ``sidts-`` /
+# ``ya29.`` tokens + the ``AIza…`` API key), compiled from the same registry.
 # Defense in depth: even when a secret rides under an UNKNOWN carrier name (a
 # cookie or field not on the alternation above), the raw credential shape is
 # redacted wherever it appears, so disclosure fails closed. The distinctive
@@ -229,10 +228,10 @@ _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # closed without enumeration. ``\1`` is the full cookie name; the value
     # (quoted or not) collapses to ``***`` via the shared replacement.
     *((umbrella, COOKIE_VALUE_REPLACEMENT) for umbrella in _SECURE_HOST_UMBRELLAS),
-    # Carrier-agnostic Google credential shapes (``aas_et/`` / ``g.a000-`` /
-    # ``sidts-`` / ``ya29.`` tokens + ``AIza…`` / ``AQ.…`` API keys) as defense
-    # in depth. These run AFTER the name-anchored patterns so a recognized pair
-    # is already redacted, but a secret under an unknown carrier still fails closed.
+    # Carrier-agnostic Google credential shapes (``g.a000-`` / ``sidts-`` /
+    # ``ya29.`` tokens + the ``AIza…`` API key) as defense in depth. These run
+    # AFTER the name-anchored patterns so a recognized pair is already redacted,
+    # but a secret riding under an unknown carrier name still fails closed here.
     *((shape, "***") for shape in _AUTH_TOKEN_SHAPES),
     # Authorization: Bearer <token> (case-insensitive header name). Optional
     # surrounding quotes so a logged ``Bearer "token"`` (JSON/prose shape) is
@@ -325,11 +324,10 @@ _THIRD_PARTY_LOGGERS: tuple[str, ...] = ("httpx", "urllib3")
 #     (``_secrets.SECURE_HOST_UMBRELLA_PATTERNS``) so ANY secure/host cookie —
 #     including a future name carrying an opaque (non-token-shaped) value —
 #     triggers the regex sweep (codex review of #1517).
-#   - "aas_et/", "g.a000-", "sidts-", "ya29.", "aiza", and "aq." cover the
-#     carrier-agnostic credential shapes (``_secrets.AUTH_TOKEN_SHAPE_PATTERNS``)
-#     so a secret under an UNKNOWN carrier name still triggers the regex sweep.
-#     "sidts-" is subsumed by "sid" but kept as documentation of the
-#     token-shape coverage.
+#   - "g.a000-", "sidts-", "ya29.", "aiza" cover the carrier-agnostic credential
+#     shapes (``_secrets.AUTH_TOKEN_SHAPE_PATTERNS``) so a secret under an
+#     UNKNOWN carrier name still triggers the regex sweep. "sidts-" is subsumed
+#     by "sid" but kept as documentation of the token-shape coverage.
 SECRET_FAST_PATH_TOKENS: tuple[str, ...] = (
     "sid",
     "sapisid",
@@ -341,12 +339,10 @@ SECRET_FAST_PATH_TOKENS: tuple[str, ...] = (
     "snlm0e",
     "fdrfje",
     "af1_qpn-",
-    "aas_et/",
     "g.a000-",
     "sidts-",
     "ya29.",
     "aiza",
-    "aq.",
     "f.sid",
     "continue=",
     "authuser=",
@@ -396,42 +392,6 @@ def scrub_secrets(text: object) -> str:
     for pattern, replacement in _REDACT_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
-
-
-_PREVIEW_LIMIT = 80
-# Pre-slice cap for the truncated path: scrub at most this many chars before
-# cutting to ``_PREVIEW_LIMIT``. The 10x window gives a boundary-straddling
-# secret ample room to be neutralized before the 80-char cut, while bounding
-# the regex sweep at O(800 chars) instead of O(len(raw)) for multi-MB bodies.
-_PREVIEW_SCRUB_CAP = _PREVIEW_LIMIT * 10
-
-
-def _truncate_response_preview(raw: str | None) -> str | None:
-    """Truncate a raw RPC response preview for safe display in error contexts.
-
-    Default behavior keeps the preview compact (80 chars + ``"..."`` suffix) so
-    error logs and CLI output stay readable. Set ``NOTEBOOKLM_DEBUG=1`` to opt
-    into the full untruncated body for deep debugging.
-
-    Credential-shaped substrings (CSRF tokens, session cookies, etc.) are
-    scrubbed *before* truncation in both modes. ``raw_response`` is a public
-    attribute spliced into ``str()``/``repr()`` of RPC errors, so it escapes the
-    logging pipeline's ``RedactingFilter`` and must be sanitized at the source.
-
-    In the default (truncated) path the input is pre-sliced to
-    ``_PREVIEW_SCRUB_CAP`` before scrubbing so a multi-MB error body does not
-    pay for a full regex sweep just to discard all but the first 80 chars. The
-    ``NOTEBOOKLM_DEBUG=1`` path keeps the whole body, so it scrubs the full
-    string.
-    """
-    if raw is None:
-        return None
-    if os.environ.get("NOTEBOOKLM_DEBUG") == "1":
-        return scrub_secrets(raw)
-    scrubbed = scrub_secrets(raw[:_PREVIEW_SCRUB_CAP])
-    if len(scrubbed) > _PREVIEW_LIMIT:
-        return scrubbed[:_PREVIEW_LIMIT] + "..."
-    return scrubbed
 
 
 # Backwards-compat alias for any in-package code that imported the historical

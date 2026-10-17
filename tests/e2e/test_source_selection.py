@@ -16,47 +16,16 @@ Notebook lifecycle:
 """
 
 import random
-from copy import deepcopy
 
 import pytest
 
-from .conftest import (
-    assert_generation_started,
-    requires_auth,
-    reset_current_chat_conversation,
-)
-
-
-@pytest.fixture(scope="module")
-def _source_inventories():
-    return {}
-
-
-@pytest.fixture
-async def multi_source_sources(client, multi_source_notebook_id, _source_inventories, request):
-    """Read the immutable source inventory once per notebook/backend/attempt.
-
-    This module changes chat and artifacts, never sources. Keep the cache local
-    so source CRUD tests and other modules continue to make fresh reads.
-    """
-    key = (
-        client.backends["sources"],
-        multi_source_notebook_id,
-        getattr(request.node, "execution_count", 1),
-    )
-    if key not in _source_inventories:
-        _source_inventories[key] = await client.sources.list(multi_source_notebook_id)
-    return deepcopy(_source_inventories[key])
+from .conftest import assert_generation_started, requires_auth
 
 
 @requires_auth
 @pytest.mark.live_chat_ask
 class TestChatWithSourceSelection:
     """Tests for chat.ask() with explicit source selection."""
-
-    @pytest.fixture(autouse=True)
-    async def _start_with_fresh_conversation(self, client, multi_source_notebook_id):
-        await reset_current_chat_conversation(client, multi_source_notebook_id)
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
@@ -73,12 +42,10 @@ class TestChatWithSourceSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_ask_with_single_source(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_ask_with_single_source(self, client, multi_source_notebook_id):
         """Test asking a question using only one source."""
         # Get sources and pick just one
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 1, "Expected at least 1 source in test notebook"
 
         single_source = [sources[0].id]
@@ -94,12 +61,10 @@ class TestChatWithSourceSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_ask_with_random_subset_of_sources(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_ask_with_random_subset_of_sources(self, client, multi_source_notebook_id):
         """Test asking a question using a random subset of sources."""
         # Get all sources
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 2, "Expected at least 2 sources in test notebook"
 
         # Randomly pick 2 sources (if 3 available, this tests partial selection)
@@ -118,11 +83,9 @@ class TestChatWithSourceSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_ask_follow_up_with_different_sources(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_ask_follow_up_with_different_sources(self, client, multi_source_notebook_id):
         """Test follow-up question can use different source selection."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 2, "Expected at least 2 sources"
 
         # First question with first source
@@ -142,7 +105,7 @@ class TestChatWithSourceSelection:
         )
         assert result2.answer is not None
         assert result2.is_follow_up is True
-        assert result2.turn_number > result1.turn_number
+        assert result2.turn_number == 2
 
 
 @requires_auth
@@ -169,11 +132,9 @@ class TestArtifactGenerationWithSourceSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_generate_report_with_single_source(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_generate_report_with_single_source(self, client, multi_source_notebook_id):
         """Test report generation using only one source."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 1
 
         result = await client.artifacts.generate_report(
@@ -184,11 +145,9 @@ class TestArtifactGenerationWithSourceSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_generate_report_with_subset_of_sources(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_generate_report_with_subset_of_sources(self, client, multi_source_notebook_id):
         """Test report generation using a random subset of sources."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 2
 
         # Pick 2 random sources
@@ -204,11 +163,9 @@ class TestArtifactGenerationWithSourceSelection:
     @pytest.mark.asyncio
     @pytest.mark.e2e
     @pytest.mark.variants
-    async def test_generate_quiz_with_single_source(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_generate_quiz_with_single_source(self, client, multi_source_notebook_id):
         """Test quiz generation using only one source."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 1
 
         result = await client.artifacts.generate_quiz(
@@ -220,11 +177,9 @@ class TestArtifactGenerationWithSourceSelection:
     @pytest.mark.asyncio
     @pytest.mark.e2e
     @pytest.mark.variants
-    async def test_generate_flashcards_with_subset(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_generate_flashcards_with_subset(self, client, multi_source_notebook_id):
         """Test flashcard generation using a subset of sources."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 2
 
         selected = random.sample(sources, 2)
@@ -239,11 +194,9 @@ class TestArtifactGenerationWithSourceSelection:
     @pytest.mark.asyncio
     @pytest.mark.e2e
     @pytest.mark.variants
-    async def test_generate_audio_with_single_source(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_generate_audio_with_single_source(self, client, multi_source_notebook_id):
         """Test audio generation using only one source."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 1
 
         result = await client.artifacts.generate_audio(
@@ -259,11 +212,9 @@ class TestSourceListingAndSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_notebook_has_multiple_sources(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_notebook_has_multiple_sources(self, client, multi_source_notebook_id):
         """Verify the test notebook has at least 3 sources."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
 
         assert len(sources) >= 3, (
             f"Expected at least 3 sources for multi-source tests, got {len(sources)}"
@@ -276,11 +227,9 @@ class TestSourceListingAndSelection:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_source_ids_are_unique(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_source_ids_are_unique(self, client, multi_source_notebook_id):
         """Verify all source IDs are unique."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
 
         source_ids = [s.id for s in sources]
         unique_ids = set(source_ids)
@@ -293,17 +242,11 @@ class TestSourceListingAndSelection:
 class TestEdgeCases:
     """Edge case tests for source selection."""
 
-    @pytest.fixture(autouse=True)
-    async def _start_with_fresh_conversation(self, client, multi_source_notebook_id):
-        await reset_current_chat_conversation(client, multi_source_notebook_id)
-
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_ask_with_explicit_all_sources(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_ask_with_explicit_all_sources(self, client, multi_source_notebook_id):
         """Test asking with explicitly listing all source IDs (same as None)."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         all_source_ids = [s.id for s in sources]
 
         result = await client.chat.ask(
@@ -316,11 +259,9 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    async def test_sources_appear_in_different_order(
-        self, client, multi_source_notebook_id, multi_source_sources
-    ):
+    async def test_sources_appear_in_different_order(self, client, multi_source_notebook_id):
         """Test that source order doesn't affect results."""
-        sources = multi_source_sources
+        sources = await client.sources.list(multi_source_notebook_id)
         assert len(sources) >= 2
 
         source_ids = [s.id for s in sources[:2]]
@@ -332,9 +273,7 @@ class TestEdgeCases:
             source_ids=source_ids,
         )
 
-        await reset_current_chat_conversation(client, multi_source_notebook_id)
-
-        # Ask with reversed order in an independently fresh conversation.
+        # Ask with reversed order (new conversation)
         result2 = await client.chat.ask(
             multi_source_notebook_id,
             "List the main topics.",

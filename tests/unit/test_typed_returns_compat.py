@@ -25,7 +25,6 @@ from notebooklm import (
     ResearchTask,
     SourceGuide,
 )
-from tests._fixtures.fake_core import make_fake_core
 
 
 class TestResearchStatusEnum:
@@ -188,14 +187,14 @@ class TestNoInternalSelfWarn:
 
     @pytest.mark.asyncio
     async def test_poll_does_not_self_warn(self):
-        from notebooklm._web.research import WebResearchAPI
+        from notebooklm._research import ResearchAPI
 
         class _Rpc:
             async def rpc_call(self, *a, **k):
                 # Empty POLL_RESEARCH envelope -> ResearchTask.empty().
                 return []
 
-        api = WebResearchAPI(_Rpc(), supervisor=make_fake_core())
+        api = ResearchAPI(_Rpc())
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             result = await api.poll("nb_1")
@@ -203,7 +202,7 @@ class TestNoInternalSelfWarn:
 
     @pytest.mark.asyncio
     async def test_get_guide_service_does_not_self_warn(self):
-        from notebooklm._web.sources.content import SourceContentRenderer
+        from notebooklm._source.content import SourceContentRenderer
 
         class _Rpc:
             async def rpc_call(self, *a, **k):

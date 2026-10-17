@@ -71,17 +71,16 @@ class TestEnumerateAccountsPokeHook:
     """``enumerate_accounts`` runs the optional poke hook before probing (line 184)."""
 
     @pytest.mark.asyncio
-    async def test_poke_session_hook_invoked(self, httpx_mock):
+    async def test_poke_session_hook_invoked(self, monkeypatch):
         poked: list[object] = []
 
         async def fake_poke(client, storage_path):
             poked.append((client, storage_path))
 
-        for n in (0, 1):
-            httpx_mock.add_response(
-                url=f"https://notebook.google.com/?authuser={n}",
-                text='"alice@example.com"',
-            )
+        async def fake_probe(client, n):
+            return "alice@example.com" if n == 0 else "alice@example.com"
+
+        monkeypatch.setattr(_auth_account, "_probe_authuser", fake_probe)
 
         jar = httpx.Cookies()
         jar.set("SID", "x", domain=".google.com")
@@ -91,14 +90,13 @@ class TestEnumerateAccountsPokeHook:
         assert accounts == [Account(authuser=0, email="alice@example.com", is_default=True)]
 
     @pytest.mark.asyncio
-    async def test_poke_session_none_skips_hook(self, httpx_mock):
+    async def test_poke_session_none_skips_hook(self, monkeypatch):
         # poke_session defaults to None on the bare ``_auth.account`` entry
         # point → the hook is skipped (183->185 false arc).
-        for n in (0, 1):
-            httpx_mock.add_response(
-                url=f"https://notebook.google.com/?authuser={n}",
-                text='"alice@example.com"',
-            )
+        async def fake_probe(client, n):
+            return "alice@example.com"
+
+        monkeypatch.setattr(_auth_account, "_probe_authuser", fake_probe)
 
         jar = httpx.Cookies()
         jar.set("SID", "x", domain=".google.com")
@@ -126,25 +124,14 @@ class TestRepairAccountMetadataPokeSession:
             calls.append(kwargs)
             return [Account(authuser=0, email="alice@example.com", is_default=True)]
 
+        from notebooklm._auth import cookies as _auth_cookies
+
         monkeypatch.setattr(_auth_account, "enumerate_accounts", fake_enumerate)
-        storage_path = tmp_path / "storage_state.json"
-        storage_path.write_text(
-            json.dumps(
-                {
-                    "cookies": [
-                        {"name": "SID", "value": "sid", "domain": ".google.com", "path": "/"},
-                        {
-                            "name": "__Secure-1PSIDTS",
-                            "value": "ts",
-                            "domain": ".google.com",
-                            "path": "/",
-                        },
-                    ]
-                }
-            ),
-            encoding="utf-8",
+        monkeypatch.setattr(
+            _auth_cookies, "build_httpx_cookies_from_storage", lambda path: httpx.Cookies()
         )
 
+        storage_path = tmp_path / "storage_state.json"
         result = await repair_account_metadata_from_playwright_storage(storage_path)
 
         assert result.written is True
@@ -570,27 +557,24 @@ class TestClearInBandAccount:
         _clear_in_band_account(storage)
         assert json.loads(storage.read_text(encoding="utf-8")) == ["x"]
 
-    def test_namespace_missing_account_key_records_clear(self, tmp_path):
+    def test_namespace_missing_account_key_returns(self, tmp_path):
+        # namespace present but no account key → return (line 483-484).
         storage = tmp_path / "storage_state.json"
         storage.write_text(
             json.dumps({"cookies": [], "notebooklm": {"version": 1}}), encoding="utf-8"
         )
         _clear_in_band_account(storage)
-        assert json.loads(storage.read_text(encoding="utf-8"))["notebooklm"] == {
-            "version": 1,
-            "account_route_cleared": True,
-        }
+        # Untouched.
+        assert json.loads(storage.read_text(encoding="utf-8"))["notebooklm"] == {"version": 1}
 
-    def test_account_clear_records_authoritative_absence(self, tmp_path):
+    def test_account_cleared_drops_version_only_namespace(self, tmp_path):
+        # account removed; remaining namespace is {version} → namespace dropped.
         storage = tmp_path / "storage_state.json"
         write_account_metadata(storage, authuser=2, email="bob@example.com")
         assert "notebooklm" in json.loads(storage.read_text(encoding="utf-8"))
         _clear_in_band_account(storage)
         data = json.loads(storage.read_text(encoding="utf-8"))
-        assert data["notebooklm"] == {
-            "version": 1,
-            "account_route_cleared": True,
-        }
+        assert "notebooklm" not in data
 
     def test_account_cleared_keeps_namespace_with_extra_keys(self, tmp_path):
         # namespace carries an extra (non-version) key → namespace retained.
@@ -630,10 +614,7 @@ class TestClearAccountMetadataFacade:
 
         clear_account_metadata(storage)
 
-        assert json.loads(storage.read_text(encoding="utf-8"))["notebooklm"] == {
-            "version": 1,
-            "account_route_cleared": True,
-        }
+        assert "notebooklm" not in json.loads(storage.read_text(encoding="utf-8"))
         assert json.loads((tmp_path / "context.json").read_text(encoding="utf-8")) == {
             "notebook_id": "nb"
         }
@@ -742,28 +723,30 @@ class TestLegacyScrubTocTouRecheck:
 
 
 class TestClearInBandLockFailure:
-    """Best-effort lock-unavailable handling in the ``ProfileStore`` owner.
+    """Best-effort lock-unavailable handling in ``_clear_in_band_account``.
 
-    ``ProfileStore.clear_account`` serializes on its injected storage lock
-    manager. When the lock is unavailable, the clear stays best-effort
-    (swallows, never raises) and leaves the file untouched.
+    The in-band clear now delegates to ``storage.clear_in_band_account``,
+    which serializes on the unified storage lock manager. When the
+    lock is unavailable the clear stays best-effort (swallows, never raises) and
+    leaves the file untouched — the legacy reader still resolves the record.
     """
 
-    def test_lock_unavailable_is_swallowed(self, tmp_path):
+    def test_lock_unavailable_is_swallowed(self, tmp_path, monkeypatch):
         import contextlib
 
-        from notebooklm._auth.profile_store import ProfileStore
-        from notebooklm._auth.storage_lock import LockState, StorageLockManager
+        from notebooklm._auth import profile_store as _profile_store
+        from notebooklm._auth.storage_lock import LockState
 
         storage = tmp_path / "storage_state.json"
         write_account_metadata(storage, authuser=1)
 
-        class UnavailableLocks(StorageLockManager):
+        class UnavailableLocks:
             @contextlib.contextmanager
             def acquire(self, request):
                 yield LockState.UNAVAILABLE
 
+        monkeypatch.setattr(_profile_store, "_STORAGE_LOCKS", UnavailableLocks())
         # Should swallow the lock-unavailable outcome and not raise.
-        ProfileStore(storage, locks=UnavailableLocks()).clear_account()
+        _clear_in_band_account(storage)
         # File untouched because the lock was unavailable before any write.
         assert "notebooklm" in json.loads(storage.read_text(encoding="utf-8"))

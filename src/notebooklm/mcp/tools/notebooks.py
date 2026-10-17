@@ -23,14 +23,7 @@ from fastmcp import Context
 
 from ..._app import notebooks as core
 from ..._app.serialize import to_jsonable
-from ..._app.views import notebook_view as _notebook_view
-from .._confirm import (
-    DESTRUCTIVE,
-    READ_ONLY,
-    confirmed_name_deprecation,
-    needs_confirmation,
-    with_confirmation_deprecation,
-)
+from .._confirm import DESTRUCTIVE, READ_ONLY, needs_confirmation
 from .._context import get_client
 from .._errors import mcp_errors
 from .._paginate import DEFAULT_LIMIT, paginate
@@ -52,31 +45,29 @@ def register(mcp: Any) -> None:
         0), plus ``total`` / ``offset`` / ``has_more``. Page forward by re-calling
         with ``offset += limit`` while ``has_more`` is true.
         """
+        client = get_client(ctx)
         with mcp_errors():
-            client = await get_client(ctx)
             notebooks = await client.notebooks.list()
-            page, meta = paginate([_notebook_view(nb) for nb in notebooks], limit, offset)
+            page, meta = paginate(to_jsonable(notebooks), limit, offset)
             return {"notebooks": page, **meta}
 
     @mcp.tool
     async def notebook_create(ctx: Context, title: str) -> dict[str, Any]:
         """Create a new notebook with the given title."""
+        client = get_client(ctx)
         with mcp_errors():
-            client = await get_client(ctx)
             result = await core.execute_notebook_create(client, title)
             # Flatten the created notebook to a top-level shape consistent with
             # the sibling create tool (``note_create``) and ``notebook_delete``,
             # which key the notebook by ``notebook_id`` rather than nesting the
             # record under a ``notebook`` key (#1540). The remaining Notebook
-            # fields (title, created_at, sources_count, is_owner, role,
-            # last_viewed_at and its deprecated ``modified_at`` alias) —
-            # plus the ``role_label`` projection — stay at the top level so
-            # no metadata is dropped. The created_at/last_viewed_at backfill
-            # (#1699) now lives in the
+            # fields (title, created_at, sources_count, is_owner, modified_at)
+            # stay at the top level so no metadata is dropped. The
+            # created_at/modified_at backfill (#1699) now lives in the
             # transport-neutral core (``execute_notebook_create``), so CLI / REST
             # / MCP all get populated timestamps from one place (#1705) — no
             # adapter-level re-read here.
-            record = _notebook_view(result.notebook)
+            record = to_jsonable(result.notebook)
             notebook_id = record.pop("id")
             return {"status": "created", "notebook_id": notebook_id, **record}
 
@@ -91,8 +82,8 @@ def register(mcp: Any) -> None:
         (details + source list) and surface it under a ``metadata`` key; the
         default output (``include_metadata`` omitted) is unchanged.
         """
+        client = get_client(ctx)
         with mcp_errors():
-            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
             if include_metadata:
                 # Two independent reads (description + metadata) → run concurrently
@@ -132,7 +123,6 @@ def register(mcp: Any) -> None:
                 # untouched elsewhere (e.g. ``notebook_list`` list rows).
                 # ``NotebookMetadata.notebook`` is a non-optional ``Notebook``
                 # dataclass, so ``to_jsonable`` always emits it as a dict here.
-                metadata_block["notebook"] = _notebook_view(meta_result.metadata.notebook)
                 metadata_block["notebook"]["sources_count"] = len(meta_result.metadata.sources)
                 output["metadata"] = metadata_block
                 return output
@@ -144,8 +134,8 @@ def register(mcp: Any) -> None:
     @mcp.tool
     async def notebook_rename(ctx: Context, notebook: str, new_title: str) -> dict[str, Any]:
         """Rename a notebook. Accepts a notebook name or ID."""
+        client = get_client(ctx)
         with mcp_errors():
-            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
             result = await core.execute_notebook_rename(
                 client, nb_id, new_title, resolve_notebook_id=passthrough_notebook_id
@@ -158,10 +148,10 @@ def register(mcp: Any) -> None:
 
         Two-step confirmation: called with ``confirm=False`` (the default) it does
         NOT delete — it returns a ``needs_confirmation`` preview of the resolved
-        notebook. Re-submit its canonical ``notebook_id`` with ``confirm=True``.
+        notebook. Call again with ``confirm=True`` to perform the delete.
         """
+        client = get_client(ctx)
         with mcp_errors():
-            client = await get_client(ctx)
             nb_id = await resolve_notebook(client, notebook)
             if not confirm:
                 title = title_for_id(await client.notebooks.list(), nb_id)
@@ -169,7 +159,4 @@ def register(mcp: Any) -> None:
                     {"action": "delete_notebook", "notebook_id": nb_id, "title": title}
                 )
             await core.execute_notebook_delete(client, nb_id)
-            return with_confirmation_deprecation(
-                {"status": "deleted", "notebook_id": nb_id},
-                confirmed_name_deprecation(notebook),
-            )
+            return {"status": "deleted", "notebook_id": nb_id}

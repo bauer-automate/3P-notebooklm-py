@@ -18,9 +18,7 @@ from .._app.source_add import SourceAddExecutionPlan, execute_source_add
 from .._app.source_clean import (
     SourceCleanResult,
     candidates_payload,
-    execute_source_clean,
-    prepare_source_clean,
-    skip_source_clean,
+    run_source_clean,
 )
 from .._app.source_content import (
     SourceFulltextPlan,
@@ -32,17 +30,12 @@ from .._app.source_content import (
     execute_source_guide,
     execute_source_stale,
 )
-from .._app.source_play_books import (
-    SourceAddPlayBookPlan,
-    execute_source_add_play_book,
-    fetch_play_books,
-)
 from .._app.source_wait import (
     SourceWaitPlan,
     execute_source_wait,
 )
 from ..exceptions import ValidationError
-from ..types import SOURCE_STATUS_LABELS, Source
+from ..types import Source
 
 # Render/validation helpers live in ``_source_render``; re-exported here so the
 # historical ``source_cmd.<helper>`` import/patch surface keeps resolving them
@@ -59,21 +52,17 @@ from ._source_render import (  # noqa: F401
     _print_add_research_task_ids,
     _print_clean_candidates,
     _render_add_research_result,
-    _render_play_books_result,
     _render_source_add_drive_file_result,
     _render_source_add_drive_result,
-    _render_source_add_play_book_result,
     _render_source_delete_result,
     _render_source_fulltext_result,
     _render_source_get_result,
     _render_source_guide_result,
     _render_source_refresh_result,
     _render_source_rename_result,
-    _render_source_search_result,
     _render_source_stale_result,
     _render_source_wait_outcome,
     _resolve_source_fulltext_output_path,
-    _source_add_validation_message,
     _validate_upload_path,
     source_add_payload,
 )
@@ -81,10 +70,8 @@ from .auth_runtime import resolve_client_factory, with_client
 from .error_handler import _output_error, exit_with_code, output_error
 from .input import read_stdin_text, resolve_prompt
 from .options import (
-    _complete_sources,
     json_option,
     list_options,
-    multi_source_option,
     notebook_option,
     prompt_file_option,
     wait_polling_options,
@@ -98,36 +85,31 @@ from .rendering import (
     json_output_response,
     render_list,
 )
-from .resolve import (
-    require_notebook,
-    resolve_notebook_id,
-    resolve_source_id,
-    resolve_source_ids,
-)
+from .resolve import require_notebook, resolve_notebook_id, resolve_source_id
 from .runtime import is_quiet
-from .services.label_listing import LabelResolutionError, label_resolution_projection
-from .services.research import ResearchValidationError, research_validation_message
+from .services.label_listing import LabelResolutionError
 from .services.source_listing import SourceListPlan, execute_source_list
 from .services.source_mutations import (
-    CliSourceMutationError,
     SourceAddDriveFilePlan,
     SourceAddDrivePlan,
+    SourceDeleteByTitlePlan,
+    SourceDeletePlan,
     SourceMutationError,
     SourceRefreshPlan,
     SourceRenamePlan,
     execute_source_add_drive,
     execute_source_add_drive_file,
+    execute_source_delete,
+    execute_source_delete_by_title,
     execute_source_refresh,
     execute_source_rename,
-    run_source_delete,
-    run_source_delete_by_title,
+    require_yes_in_json,
 )
 from .services.source_research import (
     SourceAddResearchPlan,
     execute_source_add_research,
     validate_add_research_flags,
 )
-from .services.source_serializers import source_row_payload
 
 
 @click.group()
@@ -137,12 +119,9 @@ def source():
     \b
     Commands:
       list             List sources in a notebook
-      search           Search ranked passages across notebook sources
       add              Add a source (url, text, file, youtube)
       add-drive        Add a Google Drive document (native Docs/Slides/Sheets + PDF)
       add-drive-file   Add an upload-only Drive file (epub/docx/txt/...) via download
-      books            List Google Play Books eligible to add as sources
-      add-book         Add a Google Play Book by its content id
       add-research     Search web/drive and add sources from results
       get              Get source details
       fulltext         Get full indexed text content
@@ -154,9 +133,6 @@ def source():
       delete-by-title  Delete a source by exact title
       rename           Rename a source
       refresh          Refresh a URL/Drive source
-      add-async        Queue URL sources without waiting for ingest (AddSourcesAsync)
-      append           Append a text block to an existing source in place
-      copy             Copy sources into another notebook
 
     Partial ID Support: SOURCE_ID arguments support partial-prefix matching
     (e.g. 'abc' matches 'abc123def456...').
@@ -172,18 +148,9 @@ def source():
     default=None,
     help="Only list sources in this label (label id, partial prefix, or exact name).",
 )
-@click.option(
-    "--status",
-    "status_filter",
-    type=click.Choice(SOURCE_STATUS_LABELS),
-    default=None,
-    help="Only list sources with this status. Use 'preparing' to find rows a failed add left behind.",
-)
 @list_options
 @with_client
-def source_list(
-    ctx, notebook_id, json_output, label_filter, status_filter, limit, no_truncate, client_auth
-):
+def source_list(ctx, notebook_id, json_output, label_filter, limit, no_truncate, client_auth):
     """List all sources in a notebook.
 
     \b
@@ -191,19 +158,6 @@ def source_list(
       --limit N         Show at most N sources (default: unlimited).
       --no-truncate     Do not truncate the Title column in the table view.
       --label <id|name> Restrict the listing to a label's sources (read-only).
-      --status <state>  Restrict to one status: ready, processing, error,
-                        preparing, or unknown.
-
-    \b
-    Finding orphaned sources:
-      A file add that fails after its source row is registered leaves that row
-      in place on purpose — it is the evidence, and it still counts against the
-      notebook's source quota. The row sits at 'preparing', not 'error', so:
-
-        notebooklm source list --status preparing
-
-      is the query that surfaces it. Rows genuinely mid-upload also appear, so
-      re-run it before deleting anything.
     """
     nb_id = require_notebook(notebook_id)
 
@@ -217,75 +171,19 @@ def source_list(
                 no_truncate=no_truncate,
                 source_type_display=get_source_type_display,
                 label_filter=label_filter,
-                status_filter=status_filter,
             )
             try:
                 render = await execute_source_list(client, plan)
             except LabelResolutionError as exc:
-                message, code, extra = label_resolution_projection(exc)
                 output_error(
-                    message,
-                    code=code,
+                    exc.message,
+                    code=exc.code,
                     json_output=json_output,
                     exit_code=1,
-                    extra=extra,
+                    extra=dict(exc.extra) if exc.extra else None,
                 )
                 raise AssertionError("unreachable") from None  # pragma: no cover
             render_list(render)
-
-    return _run()
-
-
-@source.command("search")
-@click.argument("query")
-@notebook_option
-@multi_source_option
-@click.option(
-    "--limit",
-    type=click.IntRange(min=1),
-    default=None,
-    help="Maximum number of globally ranked passages to return.",
-)
-@json_option
-@with_client
-def source_search(ctx, query, notebook_id, source_ids, limit, json_output, client_auth):
-    """Search indexed passages across notebook sources.
-
-    Results are globally ordered by relevance rank. Repeat ``--source`` to
-    restrict the search to selected source IDs or unique ID prefixes.
-
-    \b
-    Examples:
-      notebooklm source search "revenue growth" --limit 5
-      notebooklm source search "revenue growth" -s src1 -s src2 --json
-    """
-    nb_id = require_notebook(notebook_id)
-
-    async def _run():
-        async with resolve_client_factory(ctx)(client_auth) as client:
-            nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
-            resolved_source_ids = await resolve_source_ids(
-                client,
-                nb_id_resolved,
-                tuple(source_ids),
-                json_output=json_output,
-            )
-            if json_output:
-                chunks = await client.sources.search(
-                    nb_id_resolved,
-                    query,
-                    source_ids=resolved_source_ids,
-                    limit=limit,
-                )
-            else:
-                with cli_status("Searching source passages...", ctx=ctx):
-                    chunks = await client.sources.search(
-                        nb_id_resolved,
-                        query,
-                        source_ids=resolved_source_ids,
-                        limit=limit,
-                    )
-            _render_source_search_result(chunks, json_output=json_output, ctx=ctx)
 
     return _run()
 
@@ -341,10 +239,6 @@ def source_search(ctx, query, notebook_id, source_ids, limit, json_output, clien
         "are rejected even with this flag."
     ),
 )
-@click.option("--fallback-fetch", is_flag=True, help="Recover failed web URLs as static text.")
-@click.option(
-    "--cleanup-on-failure", is_flag=True, help="Remove attributable ghosts after recovery."
-)
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @with_client
 def source_add(
@@ -357,8 +251,6 @@ def source_add(
     timeout,
     follow_symlinks,
     allow_internal,
-    fallback_fetch,
-    cleanup_on_failure,
     json_output,
     client_auth,
 ):
@@ -400,34 +292,18 @@ def source_add(
             allow_internal=allow_internal,
         )
     except source_add_service.SourceAddValidationError as exc:
-        _output_error(
-            f"Error: {_source_add_validation_message(exc)}",
-            "VALIDATION_ERROR",
-            json_output,
-            1,
-        )
+        _output_error(f"Error: {exc}", "VALIDATION_ERROR", json_output, 1)
         raise AssertionError("unreachable") from None  # pragma: no cover
 
     for warning in plan.warnings:
-        if warning.code == "PATH_NOT_FOUND":
-            click.echo(
-                f"warning: '{warning.content}' looks like a path but does not "
-                "exist; ingesting as inline text. Pass --type text to "
-                "suppress this warning, or check the path for typos.",
-                err=True,
-            )
+        click.echo(warning, err=True)
 
     client_kwargs: dict = {"timeout": timeout} if timeout is not None else {}
 
     async def _run():
         async with resolve_client_factory(ctx)(client_auth, **client_kwargs) as client:
             nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
-            execution_plan = SourceAddExecutionPlan(
-                notebook_id=nb_id_resolved,
-                plan=plan,
-                fallback_fetch=fallback_fetch,
-                cleanup_on_failure=cleanup_on_failure,
-            )
+            execution_plan = SourceAddExecutionPlan(notebook_id=nb_id_resolved, plan=plan)
             if json_output:
                 result = await execute_source_add(client, execution_plan)
                 json_output_response(source_add_payload(result))
@@ -436,9 +312,6 @@ def source_add(
             with cli_status(f"Adding {plan.detected_type} source...", ctx=ctx):
                 result = await execute_source_add(client, execution_plan)
             cli_print(f"[green]Added source:[/green] {result.source.id}", ctx=ctx)
-            fallback = getattr(result, "fallback", None)
-            if fallback is not None:
-                click.echo(fallback.warning, err=True)
 
     return _run()
 
@@ -484,15 +357,17 @@ def source_delete(ctx, source_id, notebook_id, yes, json_output, client_auth):
         async with resolve_client_factory(ctx)(client_auth) as client:
             nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
             try:
-                result = await run_source_delete(
+                result = await execute_source_delete(
                     client,
-                    notebook_id=nb_id_resolved,
-                    source_id=source_id,
-                    approved=yes,
-                    noninteractive=json_output,
-                    confirm=click.confirm,
+                    SourceDeletePlan(
+                        notebook_id=nb_id_resolved,
+                        source_id=source_id,
+                        yes=yes,
+                        json_output=json_output,
+                    ),
+                    confirmer=click.confirm,
                 )
-            except (SourceMutationError, CliSourceMutationError) as exc:
+            except SourceMutationError as exc:
                 _handle_source_mutation_error(exc, json_output=json_output)
             _render_source_delete_result(result, json_output=json_output, ctx=ctx)
 
@@ -513,15 +388,17 @@ def source_delete_by_title(ctx, title, notebook_id, yes, json_output, client_aut
         async with resolve_client_factory(ctx)(client_auth) as client:
             nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
             try:
-                result = await run_source_delete_by_title(
+                result = await execute_source_delete_by_title(
                     client,
-                    notebook_id=nb_id_resolved,
-                    title=title,
-                    approved=yes,
-                    noninteractive=json_output,
-                    confirm=click.confirm,
+                    SourceDeleteByTitlePlan(
+                        notebook_id=nb_id_resolved,
+                        title=title,
+                        yes=yes,
+                        json_output=json_output,
+                    ),
+                    confirmer=click.confirm,
                 )
-            except (SourceMutationError, CliSourceMutationError) as exc:
+            except SourceMutationError as exc:
                 _handle_source_mutation_error(exc, json_output=json_output)
             _render_source_delete_result(result, json_output=json_output, ctx=ctx)
 
@@ -547,8 +424,8 @@ def source_rename(ctx, source_id, new_title, notebook_id, json_output, client_au
                     notebook_id=nb_id_resolved,
                     source_id=source_id,
                     new_title=new_title,
+                    json_output=json_output,
                 ),
-                json_output=json_output,
             )
             _render_source_rename_result(result, json_output=json_output, ctx=ctx)
 
@@ -570,9 +447,10 @@ def source_refresh(ctx, source_id, notebook_id, json_output, client_auth):
             plan = SourceRefreshPlan(
                 notebook_id=nb_id_resolved,
                 source_id=source_id,
+                json_output=json_output,
             )
             if json_output:
-                result = await execute_source_refresh(client, plan, json_output=True)
+                result = await execute_source_refresh(client, plan)
             else:
                 with cli_status("Refreshing source...", ctx=ctx):
                     result = await execute_source_refresh(client, plan)
@@ -646,11 +524,9 @@ def source_add_drive(ctx, file_id, title, notebook_id, mime_type, json_output, c
 @json_option
 @with_client
 def source_add_drive_file(ctx, document_id, notebook_id, title, wait, json_output, client_auth):
-    """Add an upload-only Google Drive file (epub/docx/pptx/txt/md/csv/pdf/...).
+    """Add an upload-only Google Drive file (epub/docx/txt/md/rtf/odt/csv/tsv/pdf).
 
     Downloads the file from Drive (server-side, using your session) and uploads it.
-    A rejected type names the full accepted set in its error (that list is derived
-    from the upload-support declaration, so this summary can't be the stale one).
     A Drive PDF can also go by reference via `source add-drive` (which takes native
     Docs/Slides/Sheets + PDF). DOCUMENT_ID is a raw file id or share URL.
     """
@@ -668,58 +544,6 @@ def source_add_drive_file(ctx, document_id, notebook_id, title, wait, json_outpu
                 with cli_status("Downloading + adding Drive file...", ctx=ctx):
                     result = await execute_source_add_drive_file(client, plan)
             _render_source_add_drive_file_result(result, json_output=json_output, ctx=ctx)
-
-    return _run()
-
-
-@source.command("books")
-@json_option
-@with_client
-def source_books(ctx, json_output, client_auth):
-    """List Google Play Books eligible to be added as sources (#2292).
-
-    Shows the account's "Expert Intelligence" library — purchased ebooks
-    NotebookLM can ingest (US only, 18+). Titles marked no cannot be added.
-    Add one with `source add-book <content-id>`. Web backend only.
-    """
-
-    async def _run():
-        async with resolve_client_factory(ctx)(client_auth) as client:
-            books = await fetch_play_books(client)
-            _render_play_books_result(books, json_output=json_output, ctx=ctx)
-
-    return _run()
-
-
-@source.command("add-book")
-@click.argument("content_id")
-@notebook_option
-@click.option("--wait", is_flag=True, default=False, help="Wait for processing to finish")
-@json_option
-@with_client
-def source_add_book(ctx, content_id, notebook_id, wait, json_output, client_auth):
-    """Add a Google Play Book as a source by its content id (#2292).
-
-    CONTENT_ID is a Play Books volume id from `source books`. The title must be
-    exportable (publisher-permitting); a blocked one is refused up front. Web
-    backend only. Reads back as an `expert_intelligence` source.
-    """
-    nb_id = require_notebook(notebook_id)
-
-    async def _run():
-        async with resolve_client_factory(ctx)(client_auth) as client:
-            nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
-            plan = SourceAddPlayBookPlan(
-                notebook_id=nb_id_resolved,
-                content_id=content_id,
-                wait=wait,
-            )
-            if json_output:
-                result = await execute_source_add_play_book(client, plan)
-            else:
-                with cli_status("Adding Play Book source...", ctx=ctx):
-                    result = await execute_source_add_play_book(client, plan)
-            _render_source_add_play_book_result(result, json_output=json_output, ctx=ctx)
 
     return _run()
 
@@ -754,8 +578,7 @@ def source_add_book(ctx, content_id, notebook_id, wait, json_output, client_auth
     type=int,
     help=(
         "Per-phase seconds budget for (a) the research-completion poll "
-        "loop and (b) read-only candidate inspection after an unknown "
-        "--import-all outcome (default: 1800). The import mutation is sent once. Each "
+        "loop and (b) the --import-all retry loop (default: 1800). Each "
         "phase gets the full budget independently, so worst-case total "
         "wall time is up to 2× this value. Matches 'research wait "
         "--timeout' semantics. Bumping this is required for deep "
@@ -792,8 +615,8 @@ def source_add_research(
     # contract (ADR-0015 §2): --json → typed envelope, else Click ``UsageError``.
     try:
         validate_add_research_flags(import_all=import_all, cited_only=cited_only, no_wait=no_wait)
-    except ResearchValidationError as exc:
-        _emit_add_research_flag_conflict(research_validation_message(exc), json_output=json_output)
+    except ValidationError as exc:
+        _emit_add_research_flag_conflict(str(exc), json_output=json_output)
 
     nb_id = require_notebook(notebook_id)
 
@@ -813,8 +636,8 @@ def source_add_research(
                     cited_only=cited_only,
                     no_wait=no_wait,
                     timeout=timeout,
+                    json_output=json_output,
                 ),
-                json_output=json_output,
             )
             _render_add_research_result(result, json_output=json_output)
 
@@ -1047,34 +870,37 @@ def source_clean(ctx, notebook_id, dry_run, yes, json_output, client_auth):
                 with cli_status("Fetching sources for cleanup...", ctx=ctx):
                     return await client.sources.list(notebook_id_inner)
 
-            suppress_status = json_output or quiet_mode
-            preview = await prepare_source_clean(
-                notebook_id=nb_id_resolved,
-                dry_run=dry_run,
-                list_sources=_list_sources,
-                classify_sources=_classify_junk_sources,
+            # In --json mode, never prompt: pass a ``confirm_delete`` that always
+            # declines, then synthesize a ``CONFIRM_REQUIRED`` error from the
+            # resulting ``cancelled`` status below.
+            confirm_delete = (
+                (lambda count: False)
+                if json_output
+                else (lambda count: click.confirm(f"Delete {count} source(s)?"))
             )
 
-            if preview.candidates and not suppress_status:
-                _print_clean_candidates(list(preview.candidates))
-
-            if not preview.candidates or preview.dry_run:
-                result = skip_source_clean(preview)
-            elif not yes and (
-                json_output or not click.confirm(f"Delete {len(preview.candidates)} source(s)?")
-            ):
-                result = skip_source_clean(preview, cancelled=True)
-            else:
-                if not suppress_status:
-                    cli_print(
-                        f"[dim]Cleaning {len(preview.candidates)} source(s) "
-                        "(in chunks of 10)...[/dim]",
-                        ctx=ctx,
-                    )
-                result = await execute_source_clean(
-                    preview,
-                    client=client,
+            suppress_status = json_output or quiet_mode
+            cb_candidates = None if suppress_status else _print_clean_candidates
+            cb_delete_start = (
+                None
+                if suppress_status
+                else lambda count: cli_print(
+                    f"[dim]Cleaning {count} source(s) (in chunks of 10)...[/dim]",
+                    ctx=ctx,
                 )
+            )
+
+            result: SourceCleanResult = await run_source_clean(
+                notebook_id=nb_id_resolved,
+                dry_run=dry_run,
+                yes=yes,
+                list_sources=_list_sources,
+                delete_source=client.sources.delete,
+                confirm_delete=confirm_delete,
+                on_candidates=cb_candidates,
+                on_delete_start=cb_delete_start,
+                classify_sources=_classify_junk_sources,
+            )
 
             _dispatch_source_clean_result(result, json_output=json_output, yes=yes, ctx=ctx)
 
@@ -1098,21 +924,20 @@ def _dispatch_source_clean_result(
     candidate_payload = candidates_payload(result.candidates)
 
     if json_output:
-        # Synthesize the CLI-owned confirmation error when automation omitted
-        # its explicit destructive-operation approval.
+        # Synthesize structured error when --json + no --yes
+        # left candidates uncleaned. ``require_yes_in_json`` raises a typed
+        # source-mutation error for the command layer — it never returns.
         if result.status == "cancelled" and not yes:
             try:
-                raise CliSourceMutationError(
-                    "Pass --yes to confirm destructive operation in --json mode",
-                    "CONFIRM_REQUIRED",
-                    {
-                        "action": "clean",
+                require_yes_in_json(
+                    action="clean",
+                    extra={
                         "notebook_id": result.notebook_id,
                         "candidate_count": result.candidate_count,
                         "candidates": candidate_payload,
                     },
                 )
-            except (SourceMutationError, CliSourceMutationError) as exc:
+            except SourceMutationError as exc:
                 _handle_source_mutation_error(exc, json_output=json_output)
 
         payload: dict[str, Any] = {
@@ -1173,194 +998,3 @@ def _dispatch_source_clean_result(
         f"[green]Successfully cleaned {result.deleted_count} source(s).[/green]",
         ctx=ctx,
     )
-
-
-# ---------------------------------------------------------------------------
-# #2283 transfer family: AddSourcesAsync / AppendSource / CopySourcesAsync
-# ---------------------------------------------------------------------------
-
-
-@source.command("add-async")
-@click.argument("urls", nargs=-1, required=True)
-@click.option(
-    "--allow-internal",
-    is_flag=True,
-    help="Allow private/loopback/link-local hosts (same gate as `source add`).",
-)
-@notebook_option
-@json_option
-@with_client
-def source_add_async(ctx, urls, allow_internal, notebook_id, json_output, client_auth):
-    """Queue one or more URL sources without waiting for ingest.
-
-    Sends a single non-blocking ``AddSourcesAsync`` call and prints the queued
-    source ids immediately (status is still processing). Use ``source wait``
-    or ``source list`` to see them become ready. YouTube URLs are detected
-    automatically. Unlike ``source add`` this never retries a lost response —
-    reconcile against ``source list`` if the command reports an unconfirmed
-    write.
-
-    \b
-    Example:
-      notebooklm source add-async https://example.com https://youtu.be/abc
-      notebooklm source add-async https://example.com --json
-    """
-    nb_id = require_notebook(notebook_id)
-    # Same scheme / SSRF gate as ``source add`` — the async route must not be a
-    # way around it. Raises SourceAddValidationError before any RPC.
-    try:
-        for url in urls:
-            source_add_service.validate_url(url, allow_internal=allow_internal)
-    except source_add_service.SourceAddValidationError as exc:
-        _output_error(
-            f"Error: {_source_add_validation_message(exc)}",
-            "VALIDATION_ERROR",
-            json_output,
-            1,
-        )
-
-    async def _run():
-        async with resolve_client_factory(ctx)(client_auth) as client:
-            nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
-            sources = await client.sources.add_urls_async(nb_id_resolved, list(urls))
-            if json_output:
-                json_output_response(
-                    {
-                        "notebook_id": nb_id_resolved,
-                        "sources": [source_row_payload(s) for s in sources],
-                        "count": len(sources),
-                        "requested": len(urls),
-                    }
-                )
-                return
-            cli_print(f"[green]Queued {len(sources)} of {len(urls)} source(s):[/green]", ctx=ctx)
-            for src in sources:
-                cli_print(f"  {src.id}  {src.title}", ctx=ctx)
-
-    return _run()
-
-
-@source.command("append")
-@click.argument("source_id", shell_complete=_complete_sources)
-@click.argument("text")
-@click.option(
-    "--header",
-    default="",
-    help="Optional block header (accepted by the backend; not shown in fulltext)",
-)
-@notebook_option
-@json_option
-@with_client
-def source_append(ctx, source_id, text, header, notebook_id, json_output, client_auth):
-    """Append a plain-text block to an existing source in place.
-
-    TEXT is appended at the very end of the source's fulltext (``AppendSource``).
-    Pass ``-`` as TEXT to read it from stdin. SOURCE_ID can be a full id or a
-    unique prefix.
-
-    \b
-    Example:
-      notebooklm source append src123 "Addendum: see section 4."
-      cat notes.txt | notebooklm source append src123 -
-    """
-    nb_id = require_notebook(notebook_id)
-    body = read_stdin_text(source_label="text") if text == "-" else text
-    if not body:
-        raise ValidationError("text must not be empty")
-
-    async def _run():
-        async with resolve_client_factory(ctx)(client_auth) as client:
-            nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
-            resolved_id = await resolve_source_id(
-                client, nb_id_resolved, source_id, json_output=json_output
-            )
-            await client.sources.append_text(nb_id_resolved, resolved_id, body, header=header)
-            if json_output:
-                json_output_response(
-                    {
-                        "notebook_id": nb_id_resolved,
-                        "source_id": resolved_id,
-                        "appended": True,
-                        "characters": len(body),
-                    }
-                )
-                return
-            cli_print(
-                f"[green]Appended {len(body)} characters to source:[/green] {resolved_id}", ctx=ctx
-            )
-
-    return _run()
-
-
-@source.command("copy")
-@click.argument("source_ids", nargs=-1, required=True, shell_complete=_complete_sources)
-@click.option("--to", "target", required=True, help="Target notebook id (or unique prefix)")
-@notebook_option
-@json_option
-@with_client
-def source_copy(ctx, source_ids, target, notebook_id, json_output, client_auth):
-    """Copy sources into another notebook (``CopySourcesAsync``).
-
-    Prints each original id alongside its new copy in the target notebook.
-    SOURCE_IDS may be full ids or unique prefixes within the current notebook.
-
-    \b
-    Example:
-      notebooklm source copy src1 src2 --to 1a2b3c4d
-      notebooklm source copy src1 --to 1a2b3c4d --json
-    """
-    nb_id = require_notebook(notebook_id)
-
-    async def _run():
-        async with resolve_client_factory(ctx)(client_auth) as client:
-            nb_id_resolved = await resolve_notebook_id(client, nb_id, json_output=json_output)
-            target_resolved = await resolve_notebook_id(client, target, json_output=json_output)
-            # One listing for every prefix (resolve_source_ids), not one per id.
-            resolved_ids = (
-                await resolve_source_ids(
-                    client, nb_id_resolved, tuple(source_ids), json_output=json_output
-                )
-                or []
-            )
-            copied = await client.sources.copy(nb_id_resolved, resolved_ids, target_resolved)
-            not_copied = [sid for sid in resolved_ids if sid not in {c.original_id for c in copied}]
-            if json_output:
-                json_output_response(
-                    {
-                        "notebook_id": nb_id_resolved,
-                        "target_notebook_id": target_resolved,
-                        "copied": [
-                            {
-                                "original_id": item.original_id,
-                                "source": source_row_payload(item.source),
-                            }
-                            for item in copied
-                        ],
-                        "not_copied": not_copied,
-                        "count": len(copied),
-                        "requested": len(resolved_ids),
-                    }
-                )
-            else:
-                cli_print(
-                    f"[green]Copied {len(copied)} of {len(resolved_ids)} source(s) to[/green] "
-                    f"{target_resolved}",
-                    ctx=ctx,
-                )
-                for item in copied:
-                    cli_print(
-                        f"  {item.original_id} -> {item.source.id}  {item.source.title}", ctx=ctx
-                    )
-            if not_copied:
-                # A partial copy is a partial failure: the JSON payload already
-                # names the ids that stayed behind (``not_copied``); text mode says
-                # so explicitly. Either way exit non-zero so scripts cannot mistake
-                # a partial copy for success.
-                if not json_output:
-                    cli_print(
-                        f"[yellow]Not copied ({len(not_copied)}):[/yellow] {', '.join(not_copied)}",
-                        ctx=ctx,
-                    )
-                exit_with_code(1)
-
-    return _run()

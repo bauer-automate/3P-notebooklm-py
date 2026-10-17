@@ -1,12 +1,12 @@
 """Shared cookie-jar enumeration helper.
 
-Contains :func:`_enumerate_one_jar` — probes one rookie-cookies cookie set
+Contains :func:`_enumerate_one_jar` — probes one rookiepy cookie set
 against ``?authuser=N`` to return tagged :class:`Account` records. Both
 the legacy single-jar path (``_read_browser_cookies``) and the Chromium
 multi-profile fan-out path call this helper.
 
-Also owns :data:`_ROOKIE_COOKIES_BROWSER_ALIASES` — the user-facing browser
-name → rookie-cookies function-name map (referenced by
+Also owns :data:`_ROOKIEPY_BROWSER_ALIASES` — the user-facing browser
+name → rookiepy function-name map (referenced by
 :mod:`.browser_accounts._read_browser_cookies` for the named-browser
 dispatch path).
 
@@ -36,7 +36,12 @@ from ...._app.login_cookie import (
     _browser_cookie_validation_failure,
     probe_browser_cookie_jar,
 )
-from ....auth import app_host_scope_note, validate_with_recovery
+
+# ``browser_capture`` is the one ``_auth`` module the CLI-boundary guardrail
+# sanctions (ADR-0021); it re-exports ``app_host_scope_note`` so this advice and
+# the library-side hints share a single copy of the cookie-scope caveat.
+from ...._auth.browser_capture import app_host_scope_note
+from ....auth import validate_with_recovery
 from ....config import get_base_host
 from .io_seam import resolve_login_io
 from .outcomes import (
@@ -49,17 +54,17 @@ from .outcomes import (
 if TYPE_CHECKING:
     from .io_seam import LoginIO
 
-# Maps user-facing browser names to rookie-cookies function names.
-_ROOKIE_COOKIES_BROWSER_ALIASES: dict[str, str] = {
+# Maps user-facing browser names to rookiepy function names.
+_ROOKIEPY_BROWSER_ALIASES: dict[str, str] = {
     "arc": "arc",
     "brave": "brave",
     "chrome": "chrome",
     "chromium": "chromium",
     "edge": "edge",
     "firefox": "firefox",
-    "ie": "internet_explorer",
+    "ie": "ie",
     "librewolf": "librewolf",
-    "octo": "octo_browser",
+    "octo": "octo",
     "opera": "opera",
     "opera-gx": "opera_gx",
     "opera_gx": "opera_gx",
@@ -85,7 +90,7 @@ def _enumerate_one_jar(
     fan-out caller can route writes back to the right source.
 
     Args:
-        raw_cookies: rookie-cookies cookie dicts for one source.
+        raw_cookies: rookiepy cookie dicts for one source.
         browser_name: The browser the cookies came from (for error messages).
         browser_profile: Tag attached to each Account (``"Default"``,
             ``"Profile 1"``, ...) or ``None`` for the legacy single-jar path.
@@ -132,7 +137,7 @@ def _enumerate_one_jar(
             raw_cookies=raw_cookies,
             browser_name=browser_name,
             browser_profile=browser_profile,
-            abort_on_network_error=quiet,
+            quiet=quiet,
             validate_before_probe=validate_before_probe,
         )
         probe_runner = cast(ProbeRunner, resolved_io.run_async)

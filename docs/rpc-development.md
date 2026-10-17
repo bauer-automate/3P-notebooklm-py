@@ -1,14 +1,9 @@
 # RPC Development Guide
 
 **Status:** Active
-**Last Updated:** 2026-09-02
+**Last Updated:** 2026-08-05
 
-This guide covers the Web backend's batchexecute protocol: capturing calls,
-debugging issues, and implementing Web methods. For Android gRPC/protobuf work,
-start with the [Android evidence index](android/README.md), then use
-[`android/capture.md`](android/capture.md) and the checked-in proto/evidence ledger.
-Typed public namespaces may implement both backends, but the wire-development
-workflows are intentionally separate.
+This guide covers everything about NotebookLM's RPC protocol: capturing calls, debugging issues, and implementing new methods.
 
 See also: [Python API Reference](python-api.md)
 
@@ -16,10 +11,7 @@ See also: [Python API Reference](python-api.md)
 
 ## Protocol Overview
 
-NotebookLM's Web frontend uses Google's `batchexecute` RPC protocol. The
-explicit Android backend uses bearer-authenticated gRPC instead; `RPCMethod`
-and `client.rpc_call(...)` remain Web-specific even when the typed namespace
-graph is Android-selected.
+NotebookLM uses Google's `batchexecute` RPC protocol.
 
 ### Key Concepts
 
@@ -43,18 +35,15 @@ graph is Android-selected.
 
 ### Source of Truth
 
-- **RPC method IDs:** `src/notebooklm/rpc/_identifiers.py`
+- **RPC method IDs:** `src/notebooklm/rpc/types.py`
 - **Payload builders:** the owning implementation modules, for example
-  `_web/params/notebooks.py::build_create_notebook_params`,
-  `_web/params/artifacts.py`, `_web/params/sources.py`, `_web/sources/add.py`,
-  `_web/params/labels.py`, and `_web/params/collections.py`
+  `_notebooks.py::build_create_notebook_params`,
+  `_source/upload_payloads.py`, `_source/add.py`, `_label/params.py`, and
+  `_artifact/payloads.py`
 - **Golden payload tests:** `tests/unit/test_rpc_golden_payloads.py` and
   feature-specific unit tests such as `tests/unit/test_label_params.py`
 - **Human reference:** `docs/rpc-reference.md`, updated after the builder and
   tests land
-- **Android contracts:** `docs/android/endpoints.md` and
-  `docs/android/proto-evidence-ledger.md`, with adapter paths pinned by Android
-  manifest/descriptor tests
 
 ---
 
@@ -64,7 +53,7 @@ graph is Android-selected.
 
 Best for quick investigation and bug reports.
 
-1. Open Chrome → Navigate to `https://notebook.google.com/`
+1. Open Chrome → Navigate to `https://notebooklm.google.com/`
 2. Open DevTools (`F12` or `Cmd+Option+I`)
 3. Go to **Network** tab
 4. Configure:
@@ -95,7 +84,6 @@ console.log("Params:", JSON.parse(outer[0][0][1]));
 import json
 from urllib.parse import unquote
 
-
 def decode_f_req(encoded: str) -> dict:
     decoded = unquote(encoded)
     outer = json.loads(decoded)
@@ -114,7 +102,6 @@ Best for systematic capture and CI integration.
 from playwright.async_api import async_playwright
 import json
 from urllib.parse import unquote, parse_qs
-
 
 async def setup_capture_session():
     playwright = await async_playwright().start()
@@ -183,7 +170,7 @@ await client.refresh_auth()
 ```python
 # decode_response is an internal RPC helper (notebooklm.rpc.* is internal per
 # docs/stability.md); import it from its defining module for contributor debugging.
-from notebooklm._web.wire.decoder import decode_response
+from notebooklm.rpc.decoder import decode_response
 
 raw_response = await http_client.post(...)
 print("Raw:", raw_response.text[:500])
@@ -232,7 +219,6 @@ Source IDs have different nesting requirements:
 import json
 import re
 
-
 def parse_response(text: str, rpc_id: str):
     """Parse batchexecute response."""
     # Strip anti-XSSI prefix
@@ -254,11 +240,6 @@ def parse_response(text: str, rpc_id: str):
 ---
 
 ## Adding New RPC Methods
-
-The workflow below is for a Web batchexecute method. If the public feature must
-also work under explicit Android selection, add or extend the corresponding
-`Android*API`, protobuf overlay/evidence entry, and Android unit/cassette tests;
-do not inject a Web operation collaborator into the Android namespace graph.
 
 ### Workflow
 
@@ -295,7 +276,7 @@ Key patterns:
 
 ### Step 3: Implement
 
-**Add RPC method ID** (`src/notebooklm/rpc/_identifiers.py`):
+**Add RPC method ID** (`src/notebooklm/rpc/types.py`):
 ```python
 class RPCMethod(str, Enum):
     NEW_METHOD = "AbCdEf"  # 6-char ID from capture
@@ -314,9 +295,9 @@ async def new_method(self, notebook_id: str, param: str) -> SomeResult:
         Description of return value.
     """
     params = [
-        param,  # Position 0
-        notebook_id,  # Position 1
-        [2],  # Position 2: Fixed flag
+        param,           # Position 0
+        notebook_id,     # Position 1
+        [2],             # Position 2: Fixed flag
     ]
 
     result = await self._rpc.rpc_call(
@@ -355,15 +336,12 @@ def test_encode_new_method():
 **Unit test with a fake RPC executor** (`tests/unit/`):
 ```python
 @pytest.mark.asyncio
-async def test_new_method():
+async def test_new_method(mock_client):
     mock_response = ["result_id", "Result Title"]
-    fake = make_fake_core(rpc_call=AsyncMock(return_value=mock_response))
-    api = SomeAPI(fake.rpc_executor)
-
-    result = await api.new_method("nb_id", "param")
-
-    assert result.id == "result_id"
-    fake.rpc_executor.rpc_call.assert_awaited_once()
+    with patch('notebooklm._rpc_executor.RpcExecutor.rpc_call', new_callable=AsyncMock) as mock:
+        mock.return_value = mock_response
+        result = await mock_client.some_api.new_method("nb_id", "param")
+        assert result.id == "result_id"
 ```
 
 **VCR-backed integration test** (`tests/integration/`) or authenticated E2E
@@ -449,7 +427,7 @@ print(f"DEBUG: {result}")  # See actual structure
 ## Checklist
 
 - [ ] Captured RPC ID and params structure
-- [ ] Added to `RPCMethod` enum in `rpc/_identifiers.py`
+- [ ] Added to `RPCMethod` enum in `rpc/types.py`
 - [ ] Implemented method in appropriate `_*.py` file
 - [ ] Added dataclass if needed in `types.py`
 - [ ] Added CLI command if needed
@@ -457,8 +435,6 @@ print(f"DEBUG: {result}")  # See actual structure
 - [ ] Integration test with mock
 - [ ] E2E test (manual verification OK for rare operations)
 - [ ] Updated `rpc-reference.md`
-- [ ] If the typed public method is backend-neutral, implemented and tested the
-  Android adapter or explicitly documented why the method is Web-only
 
 ---
 
@@ -477,7 +453,7 @@ NotebookLM Protocol Facts:
 - Parameters are position-sensitive arrays
 
 Source of Truth:
-- Canonical RPC IDs: src/notebooklm/rpc/_identifiers.py
+- Canonical RPC IDs: src/notebooklm/rpc/types.py
 - Payload structures: docs/rpc-reference.md
 ```
 
@@ -518,23 +494,14 @@ async def validate_root_rpc_call(method_name: str, params: list):
 
 ## RPC Health Check Triage Policy
 
-The `rpc-health.yml` workflow runs daily for `main` (07:00 UTC) and accepts
-manual dispatches only on `refs/heads/main`. The workflow opens
+The `rpc-health.yml` workflow runs daily for `main` (07:00 UTC). Release branch
+health checks are manual via `custom_branch=release/vX.Y.Z`. The workflow opens
 an issue on any detected RPC ID mismatch, auth failure, or non-transient RPC
 error:
 
 - **RPC ID mismatch** issues (exit code 1): labeled `bug, rpc-breakage, automated`.
 - **Auth failure** issues (exit code 2): labeled `bug, automated` (no `rpc-breakage`
   label — auth is an operational concern, not a protocol break).
-- **Frontend bundle drift** is a separate live monitor. Its exit code 1 is
-  reserved for confirmed ABSENT RPC IDs or CHANGED/STALE studio enums. If its
-  authenticated homepage request instead lands on login, CookieMismatch, or the
-  region/anti-abuse gate—or the app/CDN cannot be read—it exits 2, says that no
-  drift conclusion was possible, and joins the authentication/infrastructure
-  issue lane. The script also writes a classified outcome file; the workflow
-  opens `Studio enum / RPC drift detected` only for the explicit `drift`
-  outcome. A Python, dependency, or runner failure that exits 1 before writing
-  that outcome is therefore treated as infrastructure, never as protocol drift.
 - **Non-transient ERROR detected** issues (exit code 3): labeled `rpc-error, bug,
   automated`. Opened when `check_rpc_health.py` surfaces failures that survive
   the rate-limit / `RESOURCE_EXHAUSTED` filter (timeouts, parse failures,
@@ -571,7 +538,7 @@ serves, and scores the pin against it:
 - **The verdict compares label dates, never the wall clock**, so it depends only
   on what was served — a delayed or replayed run cannot age into an alarm.
 - **Exit 5 sits below every live-breakage code** (mismatch, auth, non-transient
-  error, customization-table drift). A stale pin is maintenance, and it must never mask an
+  error, cohort flip). A stale pin is maintenance, and it must never mask an
   outage.
 - **Redirects are followed by hand**, at most two hops, and only to an `https`
   personal app host at the site root — the lane never carries the session jar
@@ -593,7 +560,6 @@ import asyncio, httpx
 from notebooklm._auth.cookies import _build_httpx_cookies_from_storage_strict
 from notebooklm._env import DEFAULT_BL, extract_build_label, get_base_url
 
-
 async def main():
     # The strict loader is deliberate: build_httpx_cookies_from_storage triggers a
     # PSIDTS RotateCookies round-trip and a disk write, so it is not safe here.
@@ -602,7 +568,6 @@ async def main():
         r = await c.get(f"{get_base_url()}/")
     print("pinned:", DEFAULT_BL)
     print("served:", extract_build_label(r.text))
-
 
 asyncio.run(main())
 ```
@@ -631,11 +596,8 @@ The same nightly run also probes the post-rebrand host — batchexecute and
   nothing.
 - On a change it opens its own issue, **"Rebrand host RPC availability
   changed"** (label `automated`), with its own dedup search.
-- `UNKNOWN` (transport failure, 429, 5xx, or a redirect to the known marketing/
-  access-gate hosts `notebook.google` and `notebooklm.google`) is never recorded:
-  an inconclusive response carries the previous state forward instead of
-  manufacturing a transition. Sign-in redirects are similarly preserved as
-  `UNAUTHENTICATED`; neither kind of redirect proves the endpoint is absent.
+- `UNKNOWN` (transport failure, 429, 5xx) is never recorded: a flake carries the
+  previous state forward instead of manufacturing a transition.
 - It runs **last** in the check and is paced like the method loop, so its two
   extra requests cannot push the account into a rate limit that would then be
   attributed to a main-lane probe.

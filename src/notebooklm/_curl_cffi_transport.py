@@ -9,7 +9,7 @@ Scope: implements the slice of ``httpx.AsyncClient`` the authenticated surface u
 — ``.cookies``, ``.get()``, ``.post()``, ``.stream()``, ``.aclose()`` — plus
 ``.stream_upload()`` (low-level libcurl streaming upload, no full-file buffer).
 Selected at runtime via ``NOTEBOOKLM_TRANSPORT=curl_cffi`` (see
-``_web/transport/init._resolve_async_client_factory`` / ``resolve_transport_factory``).
+``_runtime/init._resolve_async_client_factory`` / ``resolve_transport_factory``).
 
 ponytail: PoC, deliberately minimal. Known gaps: httpx ``limits`` ignored
 (curl_cffi pools internally); the 4-slot
@@ -22,20 +22,15 @@ auto-decompress — verify against real gzip'd RPC before production).
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import io
 import os
-import threading
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from ._hop_credentials import CredentialPolicy
-from ._request_context import has_bound_policy, policy_env
-
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
     from http.cookiejar import CookieJar
     from typing import IO
 
@@ -79,13 +74,6 @@ def _strip(headers: Mapping[str, str]) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _STRIP_HEADERS}
 
 
-def _strip_preserving_duplicates(headers: Mapping[str, str]) -> list[tuple[str, str]]:
-    """Strip rebuffer-invalid headers without collapsing repeated fields."""
-    multi_items = getattr(headers, "multi_items", None)
-    items = multi_items() if callable(multi_items) else headers.items()
-    return [(key, value) for key, value in items if key.lower() not in _STRIP_HEADERS]
-
-
 async def _materialize(content: Any) -> bytes | None:
     """Collapse an httpx-style request body (bytes / sync- or async-iterable) to bytes.
 
@@ -118,10 +106,8 @@ async def _materialize(content: Any) -> bytes | None:
 class _StreamedResponse:
     """Wraps a live curl_cffi streamed response in the shape ``stream_post_with_size_cap`` needs."""
 
-    def __init__(self, curl_resp: Any, url: str, abort_callback: Callable[[], None]) -> None:
+    def __init__(self, curl_resp: Any, url: str) -> None:
         self._r = curl_resp
-        self._abort_callback = abort_callback
-        self._aborted = False
         self.status_code: int = curl_resp.status_code
         self.headers = curl_resp.headers
         # Downstream rebuilds httpx.Response(request=...); give it a real one.
@@ -144,25 +130,6 @@ class _StreamedResponse:
         async for chunk in self._r.aiter_content():
             yield chunk
 
-    def abort(self) -> None:
-        """Interrupt the live curl handle before response-context teardown."""
-
-        if self._aborted:
-            return
-        self._aborted = True
-        self._abort_callback()
-
-    async def aclose(self) -> None:
-        """Abort a partial body, then settle curl_cffi's stream task."""
-
-        self.abort()
-        stream_task = self._r.astream_task
-        try:
-            await self._r.aclose()
-        except asyncio.CancelledError:
-            if stream_task is None or not stream_task.cancelled():
-                raise
-
 
 class _StreamCtx:
     """Async context manager mirroring ``httpx.AsyncClient.stream(...)``."""
@@ -173,28 +140,6 @@ class _StreamCtx:
         self._url = url
         self._kwargs = kwargs
         self._cm: Any = None
-        self._response: Any = None
-        self._aborted = False
-
-    def _abort_response(self) -> None:
-        """Remove an active response from curl's multi handle without waiting for I/O."""
-
-        response = self._response
-        if response is None:
-            return
-        self._aborted = True
-        quit_now = response.quit_now
-        if quit_now is not None:
-            quit_now.set()
-        stream_task = response.astream_task
-        if stream_task is None or stream_task.done():
-            return
-        curl = response.curl
-        if curl is not None:
-            # ``remove_handle`` synchronously detaches the socket and cancels
-            # the future awaited by ``astream_task``.  Merely setting
-            # ``quit_now`` is insufficient while a peer sends no more bytes.
-            self._client._curl.acurl.remove_handle(curl)
 
     async def __aenter__(self) -> _StreamedResponse:
         from curl_cffi.requests import RequestsError
@@ -212,18 +157,12 @@ class _StreamCtx:
             raise httpx.RequestError(
                 str(exc), request=httpx.Request(self._method, self._url)
             ) from exc
-        self._response = curl_resp
-        return _StreamedResponse(curl_resp, self._url, self._abort_response)
+        return _StreamedResponse(curl_resp, self._url)
 
     async def __aexit__(self, *exc: object) -> None:
         try:
             if self._cm is not None:
-                try:
-                    await self._cm.__aexit__(*exc)
-                except asyncio.CancelledError:
-                    stream_task = getattr(self._response, "astream_task", None)
-                    if not (self._aborted and stream_task is not None and stream_task.cancelled()):
-                        raise
+                await self._cm.__aexit__(*exc)
         finally:
             self._client._sync_cookies_back()
 
@@ -240,8 +179,6 @@ class CurlCffiAsyncClient:
         follow_redirects: bool = True,
         limits: Any = None,  # noqa: ARG002 — accepted for httpx parity; curl_cffi pools internally
         impersonate: str | None = None,
-        session_factory: Callable[..., Any] | None = None,
-        curl_factory: Callable[[], Any] | None = None,
     ) -> None:
         from curl_cffi.requests import AsyncSession
 
@@ -256,12 +193,11 @@ class CurlCffiAsyncClient:
         # ``Any`` so it satisfies curl_cffi's ``impersonate: Literal[...]`` param
         # whether or not curl_cffi's stubs are installed — avoids a `type: ignore`
         # that mypy flags as unused in the (no-impersonate-extra) CI type-check.
-        impersonate_value: Any = impersonate or policy_env(
+        impersonate_value: Any = impersonate or os.environ.get(
             "NOTEBOOKLM_IMPERSONATE", DEFAULT_IMPERSONATE
         )
         self._impersonate = impersonate_value  # reused by the low-level streaming upload
-        self._curl_factory = curl_factory
-        self._curl: Any = (session_factory or AsyncSession)(
+        self._curl: Any = AsyncSession(
             headers=dict(headers) if headers else None,
             cookies=self.cookies.jar,
             impersonate=impersonate_value,
@@ -314,7 +250,6 @@ class CurlCffiAsyncClient:
         url: str,
         *,
         is_trusted_host: Callable[[str | None], bool],
-        credential_for: CredentialPolicy | None = None,
         max_redirects: int = 20,  # match httpx.AsyncClient's default for cross-transport parity
         **kwargs: Any,
     ) -> httpx.Response:
@@ -348,7 +283,6 @@ class CurlCffiAsyncClient:
         # caller-supplied follow_redirects so it can't collide with that.
         kwargs.pop("follow_redirects", None)
         current = url
-        managed_header_names = {"authorization", "proxy-authorization"}
         for _ in range(max_redirects + 1):
             parsed = urlparse(current)
             if parsed.scheme != "https" or not is_trusted_host(parsed.hostname):
@@ -357,63 +291,15 @@ class CurlCffiAsyncClient:
                     request=httpx.Request("GET", current),
                 )
             try:
-                hop_kwargs = dict(kwargs)
-                credentials = None
-                if credential_for is not None:
-                    credentials = await credential_for(current)
-                    if credentials is not None:
-                        managed_header_names.update(name.lower() for name in credentials.headers)
-
-                    # A policy-managed request uses the callback as the sole
-                    # credential source, including on hop 1. curl_cffi otherwise
-                    # merges constructor/session cookies and headers into every
-                    # request before applying the per-call values.
-                    self._curl.cookies.clear()
-                    for name in managed_header_names:
-                        self._curl.headers.pop(name, None)
-
-                    hop_kwargs["cookies"] = (
-                        credentials.cookies.jar
-                        if credentials is not None and credentials.cookies is not None
-                        else {}
-                    )
-                    hop_headers = httpx.Headers(hop_kwargs.get("headers") or {})
-                    for name in managed_header_names:
-                        hop_headers.pop(name, None)
-                    if credentials is not None:
-                        hop_headers.update(credentials.headers)
-                    if hop_headers or "headers" in hop_kwargs:
-                        hop_kwargs["headers"] = dict(hop_headers)
-                    # curl_cffi promotes per-call request cookies into its
-                    # AsyncSession cookie store unless response parsing is told
-                    # not to. A policy-managed session must remain credential-free
-                    # so a later None result cannot inherit an earlier hop's jar.
-                    hop_kwargs["discard_cookies"] = True
                 r = await self._curl.get(
                     current,
                     allow_redirects=False,
                     quote=False,
                     timeout=timeout,
-                    **hop_kwargs,
+                    **kwargs,
                 )
             except RequestsError as exc:
                 raise httpx.RequestError(str(exc), request=httpx.Request("GET", current)) from exc
-            if (
-                credential_for is not None
-                and credentials is not None
-                and credentials.cookies is not None
-            ):
-                # ``discard_cookies=True`` prevents curl_cffi from promoting
-                # request cookies into session state. Preserve normal redirect
-                # cookie rotation explicitly in the policy-selected jar, using
-                # the current request URL for correct host-only cookie scoping.
-                credentials.cookies.extract_cookies(
-                    httpx.Response(
-                        status_code=r.status_code,
-                        headers=_strip_preserving_duplicates(r.headers),
-                        request=httpx.Request("GET", current),
-                    )
-                )
             self._sync_cookies_back()
             if r.status_code in _REDIRECT_STATUSES:
                 location = r.headers.get("location")
@@ -471,41 +357,6 @@ class CurlCffiAsyncClient:
             request=httpx.Request("POST", r.url),
         )
 
-    async def delete(
-        self,
-        url: str,
-        *,
-        headers: Mapping[str, str] | None = None,
-        **kwargs: Any,
-    ) -> httpx.Response:
-        """DELETE, for the Drive staging cleanup in ``_android.drive_staging``.
-
-        Without it that cleanup raises ``AttributeError`` under
-        ``NOTEBOOKLM_TRANSPORT=curl_cffi`` and, because cleanup failures are
-        best-effort, silently leaves the staged file in the user's Drive.
-        """
-        from curl_cffi.requests import RequestsError
-
-        allow_redirects = self._redirects(kwargs)
-        timeout = self._timeout_for(kwargs)
-        try:
-            r = await self._curl.delete(
-                url,
-                headers=dict(headers) if headers else None,
-                allow_redirects=allow_redirects,
-                timeout=timeout,
-                **kwargs,
-            )
-        except RequestsError as exc:
-            raise httpx.RequestError(str(exc), request=httpx.Request("DELETE", url)) from exc
-        self._sync_cookies_back()
-        return httpx.Response(
-            status_code=r.status_code,
-            headers=_strip(r.headers),
-            content=r.content,
-            request=httpx.Request("DELETE", r.url),
-        )
-
     def stream(self, method: str, url: str, **kwargs: Any) -> _StreamCtx:
         stream_kwargs: dict[str, Any] = {
             "allow_redirects": self._redirects(kwargs),
@@ -555,9 +406,6 @@ class CurlCffiAsyncClient:
         total_bytes: int,
         headers: Mapping[str, str],
         method: str = "POST",
-        on_chunk: Callable[[int], Awaitable[None]] | None = None,
-        overall_timeout: float | None = None,
-        stop_on_cancel: bool = False,
     ) -> httpx.Response:
         """Stream a request body from disk via libcurl — no full-body buffering.
 
@@ -575,10 +423,7 @@ class CurlCffiAsyncClient:
         owns_handle = isinstance(source, (str, os.PathLike))  # a path we open
         connect_timeout, stall_timeout = self._connect_and_stall_timeouts()
 
-        event_loop = asyncio.get_running_loop()
-        cancel_requested = threading.Event()
-
-        def _run() -> tuple[int, bytes, bytes]:
+        def _run() -> tuple[int, bytes]:
             # ``fh`` is Any: a path we open, or the caller's already-open binary file.
             # Independent cleanup: the file (if we opened it) must close even if
             # Curl() construction or curl.close() raises — hence nested try/finally,
@@ -589,49 +434,26 @@ class CurlCffiAsyncClient:
                 fh = source
             try:
                 body = io.BytesIO()
-                response_headers = io.BytesIO()
-                curl = self._curl_factory() if self._curl_factory is not None else Curl()
+                curl = Curl()
                 try:
                     curl.impersonate(self._impersonate)
                     curl.setopt(CurlOpt.URL, url.encode())
                     curl.setopt(CurlOpt.UPLOAD, 1)
                     curl.setopt(CurlOpt.CUSTOMREQUEST, method.encode())  # UPLOAD defaults to PUT
                     curl.setopt(CurlOpt.INFILESIZE_LARGE, total_bytes)
-
-                    def _read(size: int) -> bytes:
-                        if cancel_requested.is_set():
-                            return b""
-                        chunk = fh.read(size)
-                        if chunk and on_chunk is not None:
-
-                            async def _invoke_callback() -> None:
-                                await on_chunk(len(chunk))
-
-                            callback: concurrent.futures.Future[None] = (
-                                asyncio.run_coroutine_threadsafe(_invoke_callback(), event_loop)
-                            )
-                            callback.result()
-                        return chunk
-
-                    curl.setopt(CurlOpt.READFUNCTION, _read)  # libcurl pulls chunks from disk
+                    curl.setopt(CurlOpt.READFUNCTION, fh.read)  # libcurl pulls chunks from disk
                     curl.setopt(CurlOpt.HTTPHEADER, header_list)
                     if cookie_header:
                         curl.setopt(CurlOpt.COOKIE, cookie_header.encode())
                     curl.setopt(CurlOpt.WRITEDATA, body)
-                    curl.setopt(CurlOpt.HEADERFUNCTION, response_headers.write)
                     curl.setopt(CurlOpt.CONNECTTIMEOUT, connect_timeout)
                     # No overall cap (large uploads keep progressing), but bound a hung
                     # connection: abort if throughput stays < 1 byte/s for the stall window.
                     curl.setopt(CurlOpt.LOW_SPEED_LIMIT, 1)
                     curl.setopt(CurlOpt.LOW_SPEED_TIME, stall_timeout)
-                    if overall_timeout is not None:
-                        curl.setopt(
-                            CurlOpt.TIMEOUT_MS,
-                            max(1, int(float(overall_timeout) * 1000)),
-                        )
                     curl.perform()
                     status_raw: Any = curl.getinfo(CurlInfo.RESPONSE_CODE)
-                    return int(status_raw), body.getvalue(), response_headers.getvalue()
+                    return int(status_raw), body.getvalue()
                 finally:
                     curl.close()
             finally:
@@ -643,10 +465,8 @@ class CurlCffiAsyncClient:
         # rather than orphan a live authenticated upload, then propagate the cancel.
         task = asyncio.ensure_future(asyncio.to_thread(_run))
         try:
-            status, content, raw_headers = await asyncio.shield(task)
+            status, content = await asyncio.shield(task)
         except asyncio.CancelledError:
-            if stop_on_cancel:
-                cancel_requested.set()
             while not task.done():
                 try:
                     await asyncio.shield(task)
@@ -659,20 +479,8 @@ class CurlCffiAsyncClient:
             raise httpx.RequestError(str(exc), request=httpx.Request(method, url)) from exc
         # No cookie sync-back: the resumable upload leg doesn't rotate auth cookies,
         # and this used a standalone Curl (not the session jar).
-        blocks = [block for block in raw_headers.split(b"\r\n\r\n") if block.strip()]
-        header_items: list[tuple[str, str]] = []
-        if blocks:
-            final_header_block = next(reversed(blocks))
-            for line in final_header_block.split(b"\r\n")[1:]:
-                if b":" not in line:
-                    continue
-                name, value = line.split(b":", 1)
-                header_items.append((name.decode("latin-1"), value.strip().decode("latin-1")))
         return httpx.Response(
-            status_code=status,
-            headers=header_items,
-            content=content,
-            request=httpx.Request(method, url),
+            status_code=status, content=content, request=httpx.Request(method, url)
         )
 
     async def aclose(self) -> None:
@@ -719,10 +527,8 @@ def resolve_transport_factory() -> Any:
     typo (e.g. ``curlcffi``) fails loudly instead of silently using httpx while the
     operator believes impersonation is on.
     """
-    transport = (policy_env("NOTEBOOKLM_TRANSPORT", "") or "").strip()
+    transport = os.environ.get("NOTEBOOKLM_TRANSPORT", "").strip()
     if transport == "curl_cffi":
-        if has_bound_policy():
-            return make_curl_cffi_factory(policy_env("NOTEBOOKLM_IMPERSONATE"))
         return make_curl_cffi_factory()
     if transport and transport not in _KNOWN_TRANSPORTS:
         raise ValueError(

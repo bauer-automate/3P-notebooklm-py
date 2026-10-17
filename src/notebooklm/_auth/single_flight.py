@@ -158,14 +158,7 @@ class SingleFlight:
             if existing is not None and not existing.bridge.done():
                 return False, existing
             flight = Flight[T]()
-
-            async def _run_detached() -> T:
-                from .._runtime.operation_context import detached_operation_context
-
-                with detached_operation_context():
-                    return await factory()
-
-            task = loop.create_task(_run_detached())
+            task = loop.create_task(factory())
             flight.task = task
             self._flights[flight_key] = flight
             self._leader_tasks.add(task)
@@ -205,24 +198,6 @@ class SingleFlight:
         try:
             return await asyncio.shield(wrapped)
         except asyncio.CancelledError:
-            # An operation deadline owns only this caller's wait. The producer
-            # remains strongly retained and mirrors its result into ``bridge``;
-            # attach an observer and detach immediately so another waiter can
-            # still consume the shared refresh/recovery result.
-            from .._runtime.operation_context import operation_deadline_expired
-
-            if operation_deadline_expired():
-
-                def _observe(fut: asyncio.Future[Any]) -> None:
-                    if not fut.cancelled():
-                        with contextlib.suppress(BaseException):
-                            fut.result()
-
-                if wrapped.done():
-                    _observe(wrapped)
-                else:
-                    wrapped.add_done_callback(_observe)
-                raise
             while not flight.bridge.done():
                 try:
                     await asyncio.shield(wrapped)

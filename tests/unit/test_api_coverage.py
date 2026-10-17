@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from notebooklm._artifacts import ArtifactsAPI
+from notebooklm._chat import ChatAPI
+from notebooklm._mind_map import NoteBackedMindMapService
+from notebooklm._note_service import NoteService
+from notebooklm._notebooks import NotebooksAPI
 from notebooklm._runtime.contracts import LoopGuard
-from notebooklm._web.artifacts import WebArtifactsAPI
-from notebooklm._web.chat import WebChatAPI
-from notebooklm._web.mind_maps import NoteBackedMindMapService
-from notebooklm._web.notebooks import WebNotebooksAPI
-from notebooklm._web.notes import NoteService
-from notebooklm._web.sources import WebSourcesAPI
+from notebooklm._sources import SourcesAPI
 from notebooklm.rpc.types import (
     ChatGoal,
     ChatResponseLength,
@@ -66,13 +66,11 @@ class TestConfigureChat:
         constructor collaborators are inert ``MagicMock`` stand-ins.
         """
         core = make_fake_core(rpc_call=rpc_call)
-        return WebChatAPI(
+        return ChatAPI(
             rpc=core.rpc_executor,
-            supervisor=core,
             transport=MagicMock(),
             reqid=MagicMock(),
             loop_guard=MagicMock(spec=LoopGuard),
-            notebooks=MagicMock(),
         )
 
     @pytest.mark.asyncio
@@ -142,7 +140,7 @@ class TestGetSourceGuide:
         """
         rpc_call = AsyncMock(return_value=return_value)
         core = make_fake_core(rpc_call=rpc_call)
-        sources = WebSourcesAPI(core.rpc_executor, supervisor=core, uploader=MagicMock())
+        sources = SourcesAPI(core.rpc_executor, uploader=MagicMock())
         return sources, rpc_call
 
     @pytest.mark.asyncio
@@ -194,9 +192,10 @@ class TestGetSuggestedReportFormats:
         ]
         rpc_call = AsyncMock(return_value=mock_response)
         core = make_fake_core(rpc_call=rpc_call)
-        artifacts = WebArtifactsAPI(
+        artifacts = ArtifactsAPI(
             rpc=core.rpc_executor,
-            supervisor=core,
+            drain=core,
+            lifecycle=core,
             notebooks=MagicMock(),
             mind_maps=MagicMock(spec=NoteBackedMindMapService),
             note_service=MagicMock(spec=NoteService),
@@ -219,15 +218,11 @@ class TestAddSourceDrive:
         """Test add_drive creates the expected payload."""
         # Echo the requested title so the #1960 honor-title path is a no-op (the
         # add already returned "My Document") and only the ADD_SOURCE call fires.
-        # First response is the pre-create baseline GET_NOTEBOOK (an empty
-        # notebook), second is the ADD_SOURCE echo.
         rpc_call = AsyncMock(
-            side_effect=[
-                [[[["source_id_123"], "My Document", [None, 0], [None, 2]]]],
-            ]
+            return_value=[[[["source_id_123"], "My Document", [None, 0], [None, 2]]]]
         )
         core = make_fake_core(rpc_call=rpc_call)
-        sources = WebSourcesAPI(core.rpc_executor, supervisor=core, uploader=MagicMock())
+        sources = SourcesAPI(core.rpc_executor, uploader=MagicMock())
 
         await sources.add_drive(
             "notebook_123",
@@ -236,12 +231,9 @@ class TestAddSourceDrive:
             mime_type=DriveMimeType.GOOGLE_DOC.value,
         )
 
-        # Two calls: add_drive first snapshots the notebook's source ids so its
-        # idempotency probe can tell a fresh add from a pre-existing copy of the
-        # same Drive file (#2113), then issues the ADD_SOURCE.
-        methods = [call.args[0] for call in rpc_call.call_args_list]
-        assert methods == [RPCMethod.ADD_SOURCE]
-        params = rpc_call.call_args_list[-1].args[1]
+        rpc_call.assert_called_once()
+        call_args = rpc_call.call_args
+        params = call_args[0][1]
 
         # Verify source data structure - params[0] is [source_data] (single wrap)
         source_data = params[0][0]
@@ -273,11 +265,7 @@ class TestGetNotebookDescription:
         ]
         rpc_call = AsyncMock(return_value=mock_response)
         core = make_fake_core(rpc_call=rpc_call)
-        notebooks = WebNotebooksAPI(
-            core.rpc_executor,
-            supervisor=core,
-            sources_api=MagicMock(),
-        )
+        notebooks = NotebooksAPI(core.rpc_executor, sources_api=MagicMock())
 
         result = await notebooks.get_description("notebook_123")
 
@@ -300,7 +288,7 @@ class TestPayloadFixes:
         """
         rpc_call = AsyncMock(return_value=True)
         core = make_fake_core(rpc_call=rpc_call)
-        sources = WebSourcesAPI(core.rpc_executor, supervisor=core, uploader=MagicMock())
+        sources = SourcesAPI(core.rpc_executor, uploader=MagicMock())
         return sources, rpc_call
 
     @pytest.mark.asyncio

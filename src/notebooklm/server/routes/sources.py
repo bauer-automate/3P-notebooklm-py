@@ -36,12 +36,7 @@ from ..._app import source_add as add_core
 from ..._app import source_content as content_core
 from ..._app import source_mutations as mut_core
 from ..._app import source_wait as wait_core
-from ..._app.source_batch import (
-    MAX_BATCH_URLS,
-    remap_source_batch_item,
-    unattempted_source_batch_item,
-    unknown_source_batch_item,
-)
+from ..._app.source_batch import MAX_BATCH_URLS, batch_item_is_fatal
 from ..._app.source_wait import (
     MAX_WAIT_SOURCE_IDS,
     MAX_WAIT_TIMEOUT,
@@ -49,10 +44,8 @@ from ..._app.source_wait import (
     wait_all_sources,
 )
 from ..._app.views import source_view
-from ..._source.batch import preserve_batch_call_failure, preserve_batch_projection_failure
 from ...client import NotebookLMClient
 from ...exceptions import ValidationError
-from ...outcomes import SourceBatchItemOutcome, redact_operation_text
 from .._context import get_client, get_pending, limit_source_mutation, limit_source_wait
 from .._errors import error_item, safe_detail
 from .._pagination import MAX_LIMIT, paginate_envelope
@@ -73,32 +66,6 @@ ClientDep = Annotated[NotebookLMClient, Depends(get_client)]
 PendingDep = Annotated[PendingRegistry, Depends(get_pending)]
 _field_validator = getattr(pydantic, "field_validator", pydantic.validator)
 
-
-def _project_batch_item(item: SourceBatchItemOutcome) -> dict[str, Any]:
-    """Project one public batch result without inventing continuation policy."""
-
-    assert item.outcome is not None
-    if item.error is not None:
-        return {
-            "input": item.outcome.input,
-            "status": "error",
-            "commit_state": item.outcome.commit_state.value,
-            "error": error_item(item.error),
-        }
-    source = item.source
-    if source is None:  # pragma: no cover - public outcome invariant
-        raise AssertionError("confirmed source batch outcome has no source")
-    view = source_view(source)
-    return {
-        "input": item.outcome.input,
-        "status": "added",
-        "commit_state": "confirmed",
-        "source_id": source.id,
-        "title": None if source.title is None else redact_operation_text(source.title),
-        "status_label": view["status_label"],
-    }
-
-
 #: Max accepted upload size. Bounds temp-file disk pressure under concurrent
 #: uploads; an upload exceeding it is rejected with 413 before it is spooled to
 #: completion. 200 MiB comfortably covers documents/audio while staying
@@ -108,11 +75,11 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 #: Chunk size when streaming an upload to the temp file.
 _UPLOAD_CHUNK = 1024 * 1024
 
-# The batch/wait caps (MAX_BATCH_URLS, MAX_WAIT_TIMEOUT, MAX_WAIT_SOURCE_IDS)
-# live in the transport-neutral _app core and are imported above so adapters
-# share the exact admission bounds. Batch continuation comes only from the public
-# outcome contract. tests/_guardrails/test_source_policy_parity.py forbids local
-# cap declarations.
+# The batch/wait cap policy (MAX_BATCH_URLS, MAX_WAIT_TIMEOUT, MAX_WAIT_SOURCE_IDS)
+# and the fatal-vs-isolate classifier now live in the transport-neutral _app core
+# (_app.source_batch / _app.source_wait) and are imported above so the MCP adapter
+# shares the exact same policy. tests/_guardrails/test_source_policy_parity.py
+# forbids re-declaring them here.
 
 #: Safe-basename sanitizer for a spooled upload. Aliased to the shared neutral
 #: helper (:func:`notebooklm._app.source_add.safe_upload_name`) so the REST
@@ -127,8 +94,6 @@ class SourceAddUrl(BaseModel):
 
     url: str
     allow_internal: bool = False
-    fallback_fetch: bool = False
-    cleanup_on_failure: bool = False
 
 
 class SourceAddText(BaseModel):
@@ -217,8 +182,6 @@ async def _add_source(
     title: str | None,
     mime_type: str | None = None,
     allow_internal: bool = False,
-    fallback_fetch: bool = False,
-    cleanup_on_failure: bool = False,
 ) -> dict[str, Any]:
     """Build + execute a source-add, then record the new id and project it.
 
@@ -238,26 +201,13 @@ async def _add_source(
         allow_internal=allow_internal,
     )
     result = await add_core.execute_source_add(
-        client,
-        add_core.SourceAddExecutionPlan(
-            notebook_id=notebook_id,
-            plan=plan,
-            fallback_fetch=fallback_fetch,
-            cleanup_on_failure=cleanup_on_failure,
-        ),
+        client, add_core.SourceAddExecutionPlan(notebook_id=notebook_id, plan=plan)
     )
     pending.record(notebook_id, result.source.id)
-    # Project with the shared enriched view (string ``kind`` / ``status_label`` /
-    # ``drive_status_label`` alongside the raw codes) so the create path matches
-    # ``GET`` — a raw ``to_jsonable`` here would leak bare ``status`` /
-    # ``_type_code`` integers.
-    payload = source_view(result.source)
-    fallback = getattr(result, "fallback", None)
-    if fallback is not None:
-        from ..._app.serialize import to_jsonable
-
-        payload["fallback"] = to_jsonable(fallback)
-    return payload
+    # Project with the shared enriched view (string ``kind`` / ``status_label``
+    # alongside the raw codes) so the create path matches ``GET`` — a raw
+    # ``to_jsonable`` here would leak bare ``status`` / ``_type_code`` integers.
+    return source_view(result.source)
 
 
 @router.get("")
@@ -269,10 +219,8 @@ async def list_sources(
 ) -> dict[str, Any]:
     """List a notebook's sources.
 
-    Each source carries string ``kind`` / ``status_label`` /
-    ``drive_status_label`` labels plus the ``is_drive_degraded`` verdict,
-    alongside the raw type/status codes (shared with the MCP ``source_list``
-    surface). Defaults
+    Each source carries string ``kind`` / ``status_label`` labels alongside the
+    raw type/status codes (shared with the MCP ``source_list`` surface). Defaults
     to the full collection under ``sources`` (unchanged); supply ``?limit=`` to
     slice and add a ``meta`` block, ``?offset=`` to page forward.
     """
@@ -300,8 +248,7 @@ async def get_source(
         raise HTTPException(status_code=404, detail="Source not found")
     if source.is_ready:
         pending.drop(notebook_id, source_id)
-    # Enriched view: string ``kind`` / ``status_label`` / ``drive_status_label``
-    # plus the ``is_drive_degraded`` verdict, alongside the raw codes
+    # Enriched view: string ``kind`` / ``status_label`` alongside the raw codes
     # (shared with the MCP source surface).
     return source_view(source)
 
@@ -319,8 +266,6 @@ async def add_url(
         source_type="url",
         title=None,
         allow_internal=body.allow_internal,
-        fallback_fetch=body.fallback_fetch,
-        cleanup_on_failure=body.cleanup_on_failure,
     )
 
 
@@ -505,11 +450,18 @@ async def add_batch(
 ) -> dict[str, Any]:
     """Add many http(s) URL sources in one call (mirrors MCP ``source_add`` batch).
 
-    The shared notebook context is validated once up front. Local per-entry input
-    failures are recorded as unattempted and skipped. Valid entries are sent in one
-    batch-capable ``ADD_SOURCE`` RPC, whose public typed outcomes—not HTTP status or
-    presentation category—govern the positional result. A whole-request exception
-    retains any attached partial batch outcome for the shared REST error envelope.
+    The shared notebook / auth context is validated ONCE up front (a bad
+    ``notebook_id`` or stale auth surfaces as the normal top-level 404 / 401),
+    so a whole-batch failure is never masked as ``201`` with every item errored.
+    Only per-entry **input** failures (bad URL / 404 / SSRF-blocked host) are
+    isolated — recorded as an ``error`` item and skipped — so partial failure stays
+    visible; a **fatal** service failure (auth / rate-limit / 5xx, per
+    :func:`batch_item_is_fatal`) re-raises so the top-level handler maps it to the
+    right 401 / 429 / 5xx instead of a partial-success envelope. Each entry is added
+    SEQUENTIALLY (concurrent bulk writes
+    invite backend rate-limiting) with ``source_type="url"`` so the http/https
+    SSRF guard runs per item. Results are positional (``results[i]`` ↔
+    ``urls[i]``).
 
     The top-level ``status`` is ``"added"`` once at least one source was added,
     else ``"error"`` (every item failed) — so the envelope can't claim success
@@ -523,16 +475,10 @@ async def add_batch(
     # swallowed into a 201-all-errored body. Letting it raise here routes it
     # through the normal classify → 404 / 401 contract.
     await client.notebooks.get(notebook_id)
-    results: list[dict[str, Any] | None] = [None] * len(body.urls)
-    settled: list[SourceBatchItemOutcome | None] = [None] * len(body.urls)
-    valid_positions: list[int] = []
-    valid_urls: list[str] = []
-    for index, entry in enumerate(body.urls):
+    results: list[dict[str, Any]] = []
+    for entry in body.urls:
         try:
-            # Validate through the normal URL plan, but do not execute it: the
-            # execution step is the single-item add_url path this endpoint is
-            # specifically avoiding.
-            add_core.build_source_add_plan(
+            plan = add_core.build_source_add_plan(
                 content=entry,
                 source_type="url",
                 title=None,
@@ -542,64 +488,44 @@ async def add_batch(
                 looks_path_shaped=add_core.looks_like_path,
                 allow_internal=body.allow_internal,
             )
-        except Exception as exc:  # noqa: BLE001 - positional input isolation
+            result = await add_core.execute_source_add(
+                client, add_core.SourceAddExecutionPlan(notebook_id=notebook_id, plan=plan)
+            )
+        except Exception as exc:  # noqa: BLE001 - per-item isolation; CancelledError still propagates
+            # Re-raise service/infra failures (auth / rate-limit / server /
+            # transport) so the top-level handler maps them to the correct
+            # 401 / 429 / 5xx instead of masking them as a 200/201 batch
+            # envelope; keep per-item isolation only for per-URL input failures.
+            if batch_item_is_fatal(exc):
+                raise
             # ``error_item`` routes ``str(exc)`` through the shared ``_redact``
             # chokepoint (same scrubber as ``safe_detail``), so the per-item text
             # carries no raw exception/stack detail (CodeQL information-exposure).
-            settled[index] = unattempted_source_batch_item(entry, exc, member=index)
+            results.append({"input": entry, "status": "error", "error": error_item(exc)})
         else:
-            valid_positions.append(index)
-            valid_urls.append(entry)
-
-    try:
-        outcomes = (
-            await client.sources.add_urls_batch(notebook_id, valid_urls) if valid_urls else []
-        )
-    except BaseException as exc:
-        preserve_batch_call_failure(
-            exc,
-            local_items=settled,
-            valid_positions=valid_positions,
-            valid_inputs=valid_urls,
-        )
-        raise
-    for index, outcome in zip(valid_positions, outcomes, strict=False):
-        settled[index] = remap_source_batch_item(outcome, member=index)
-    if len(outcomes) != len(valid_urls):
-        error = RuntimeError("source batch result count did not match validated input count")
-        for index in valid_positions[len(outcomes) :]:
-            settled[index] = unknown_source_batch_item(body.urls[index], error, member=index)
-        known = [item for item in settled if item is not None]
-        preserve_batch_projection_failure(error, known)
-        raise error
-    finalized_outcomes = [item for item in settled if item is not None]
-    if len(finalized_outcomes) != len(body.urls):
-        error = RuntimeError("source batch settlement lost positional outcomes")
-        preserve_batch_projection_failure(error, finalized_outcomes)
-        raise error
-    try:
-        for index, outcome in enumerate(finalized_outcomes):
-            results[index] = _project_batch_item(outcome)
-            if outcome.source is not None:
-                pending.record(notebook_id, outcome.source.id)
-        finalized = [item for item in results if item is not None]
-        if len(finalized) != len(body.urls):
-            raise RuntimeError("source batch projection lost positional outcomes")
-        added = sum(1 for item in finalized if item["status"] == "added")
-        # Nothing created → 200 (not 201). ``status`` mirrors the MCP batch envelope:
-        # "added" when ≥1 succeeded, "error" when every item failed.
-        if not added:
-            response.status_code = 200
-        return {
-            "status": "added" if added else "error",
-            "notebook_id": notebook_id,
-            "added": added,
-            "failed": len(finalized) - added,
-            "results": finalized,
-        }
-    except BaseException as exc:
-        preserve_batch_projection_failure(exc, finalized_outcomes)
-        raise
+            pending.record(notebook_id, result.source.id)
+            view = source_view(result.source)
+            results.append(
+                {
+                    "input": entry,
+                    "status": "added",
+                    "source_id": result.source.id,
+                    "title": result.source.title,
+                    "status_label": view["status_label"],
+                }
+            )
+    added = sum(1 for item in results if item["status"] == "added")
+    # Nothing created → 200 (not 201). ``status`` mirrors the MCP batch envelope:
+    # "added" when ≥1 succeeded, "error" when every item failed.
+    if not added:
+        response.status_code = 200
+    return {
+        "status": "added" if added else "error",
+        "notebook_id": notebook_id,
+        "added": added,
+        "failed": len(results) - added,
+        "results": results,
+    }
 
 
 @router.post("/wait", dependencies=[Depends(limit_source_wait)])
@@ -612,8 +538,7 @@ async def wait_sources(notebook_id: str, body: SourceWaitBody, client: ClientDep
         {"notebook_id", "ok", "ready", "timed_out", "failed", "not_found"}
 
     plus per-bucket ``*_count`` and a ``total_count`` (their sum). ``ready`` holds
-    the sources that reached READY (each with ``kind`` / ``status_label`` /
-    ``drive_status_label`` labels);
+    the sources that reached READY (each with ``kind`` / ``status_label`` labels);
     the error buckets hold ``{"source_id", "error"}`` entries. ``ok`` is true iff
     all three error buckets are empty — the all-sources mode reports partial
     progress rather than discarding the sources that did become ready.
@@ -653,7 +578,7 @@ async def rename_source(
     result = await mut_core.execute_source_rename(
         client,
         mut_core.SourceRenamePlan(
-            notebook_id=notebook_id, source_id=source_id, new_title=body.title
+            notebook_id=notebook_id, source_id=source_id, new_title=body.title, json_output=True
         ),
         resolve_source_id=passthrough_source_id,
     )

@@ -12,8 +12,8 @@ mutation prologue, and a URL builder that read
 CSRF and the URL's ``f.sid`` from different generations on the wire.
 
 The fix — which is what the current code implements (see
-``src/notebooklm/_web/transport/auth.py::AuthRefreshCoordinator.snapshot`` and
-``RpcExecutor.build_url`` in ``src/notebooklm/_web/transport/executor.py``, the
+``src/notebooklm/_runtime/auth.py::AuthRefreshCoordinator.snapshot`` and
+``RpcExecutor.build_url`` in ``src/notebooklm/_rpc_executor.py``, the
 canonical homes since PR #4b inlined the Session-level
 ``_snapshot`` / ``_build_url`` thin wrappers) — introduces a dedicated
 ``_auth_snapshot_lock`` that:
@@ -217,13 +217,13 @@ async def test_concurrent_refresh_does_not_tear_auth_triple_across_fan_out():
         """
         nonlocal current_gen
         new_gen = next(gen_iter)
-        async with core._web_runtime.auth_coord.get_auth_snapshot_lock():
+        async with core._collaborators.auth_coord.get_auth_snapshot_lock():
             core._auth.csrf_token = f"CSRF_{new_gen}"
             core._auth.session_id = f"SID_{new_gen}"
             # Update the live httpx cookie jar synchronously — this is
             # the same jar httpx merges into the outgoing Cookie header.
-            assert core._web_runtime.kernel.http_client is not None
-            core._web_runtime.kernel.get_http_client().cookies.set(
+            assert core._collaborators.kernel.http_client is not None
+            core._collaborators.kernel.get_http_client().cookies.set(
                 "SID", f"sid_cookie_{new_gen}", domain=".google.com"
             )
             core._auth.cookies = {("SID", ".google.com"): f"sid_cookie_{new_gen}"}
@@ -233,10 +233,10 @@ async def test_concurrent_refresh_does_not_tear_auth_triple_across_fan_out():
     try:
         # Replace the auto-built client with one using our MockTransport so
         # we can observe outgoing requests post-cookie-merge.
-        prior_cookies = core._web_runtime.kernel.get_http_client().cookies
-        await core._web_runtime.kernel.get_http_client().aclose()
+        prior_cookies = core._collaborators.kernel.get_http_client().cookies
+        await core._collaborators.kernel.get_http_client().aclose()
         install_http_client_for_test(
-            core._web_runtime.kernel,
+            core._collaborators.kernel,
             httpx.AsyncClient(
                 cookies=prior_cookies,
                 transport=transport,
@@ -249,7 +249,7 @@ async def test_concurrent_refresh_does_not_tear_auth_triple_across_fan_out():
         # instance. Without this priming, the lazy-init's "first caller
         # wins" check-then-assign would race the parallel coroutines and
         # potentially create two distinct Lock instances.
-        core._web_runtime.auth_coord.get_auth_snapshot_lock()
+        core._collaborators.auth_coord.get_auth_snapshot_lock()
 
         # Fan out 50 RPCs and one refresh concurrently. ``asyncio.gather``
         # schedules them together; the handler's ``asyncio.sleep(0)``
@@ -257,7 +257,7 @@ async def test_concurrent_refresh_does_not_tear_auth_triple_across_fan_out():
         # acquired write between RPC ``AuthRefreshCoordinator.snapshot()``
         # and ``client.post(...)`` boundaries.
         async def one_rpc() -> None:
-            await core._web_runtime.executor.rpc_call(RPC_METHOD, [])
+            await core._rpc_executor.rpc_call(RPC_METHOD, [])
 
         await asyncio.gather(
             bump_generation_under_lock(),

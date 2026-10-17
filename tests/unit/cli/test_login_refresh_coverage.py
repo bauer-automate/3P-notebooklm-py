@@ -25,10 +25,9 @@ import httpx
 import pytest
 
 import notebooklm.cli.playwright_login_io as playwright_login_io_module
-from notebooklm._auth.profile_store import ReplaceResult, ReplaceStatus
+from notebooklm._auth.storage import LoginWriteOutcome, LoginWriteStatus
 from notebooklm.cli.services.login import refresh
 from notebooklm.cli.services.login.outcomes import BrowserCookieOutcome
-from notebooklm.exceptions import AuthError
 
 REFRESH = "notebooklm.cli.services.login.refresh"
 # The async bridge is no longer ``refresh.run_async`` (#1393 inverted it behind
@@ -53,13 +52,6 @@ def _outcome(message: str = "[red]boom[/red]") -> BrowserCookieOutcome:
 
 def _deps(**overrides: Any) -> refresh.RefreshDeps:
     return replace(refresh.default_refresh_deps(), **overrides)
-
-
-def test_default_refresh_deps_uses_native_login_operation() -> None:
-    assert (
-        refresh.default_refresh_deps().replace_profile_from_login
-        is refresh.replace_profile_from_login
-    )
 
 
 def _login_base_deps(**overrides: Any) -> refresh.RefreshDeps:
@@ -264,7 +256,7 @@ def test_login_with_cookies_validation_error_exits(tmp_path, capsys) -> None:
 
 def test_login_with_cookies_save_oserror_exits(tmp_path) -> None:
     """An OSError while writing storage exits 1."""
-    deps = _login_base_deps(replace_profile_from_login=MagicMock(side_effect=OSError("disk full")))
+    deps = _login_base_deps(replace_from_login=MagicMock(side_effect=OSError("disk full")))
     with pytest.raises(SystemExit) as exc_info:
         refresh._login_with_browser_cookies(tmp_path / "out" / "storage.json", "chrome", deps=deps)
     assert exc_info.value.code == 1
@@ -277,8 +269,8 @@ def test_login_with_cookies_lock_unavailable_exits(tmp_path) -> None:
     lock failure is a whole-write failure — no separate best-effort metadata step
     survives it."""
     deps = _login_base_deps(
-        replace_profile_from_login=MagicMock(
-            return_value=ReplaceResult(ReplaceStatus.LOCK_UNAVAILABLE)
+        replace_from_login=MagicMock(
+            return_value=LoginWriteOutcome(LoginWriteStatus.LOCK_UNAVAILABLE)
         )
     )
     with pytest.raises(SystemExit) as exc_info:
@@ -304,19 +296,17 @@ def test_login_with_cookies_account_line_printed(tmp_path, capsys) -> None:
     assert "dave@example.com" in out
 
 
-@pytest.mark.parametrize("error_type", [ValueError, AuthError])
-def test_login_with_cookies_verify_auth_or_value_error_warns(tmp_path, capsys, error_type) -> None:
-    """Expected verification failures warn without exiting or reporting a bug."""
+def test_login_with_cookies_verify_valueerror_warns(tmp_path, capsys) -> None:
+    """A ValueError from verification warns but does not exit."""
     deps = _login_base_deps()
     with patch.object(
         playwright_login_io_module,
         "run_async",
-        side_effect=error_type("invalid cookies"),
+        side_effect=ValueError("invalid cookies"),
     ):
         refresh._login_with_browser_cookies(tmp_path / "storage.json", "chrome", deps=deps)
     out = capsys.readouterr().out
     assert "failed validation" in out
-    assert "Unexpected error" not in out
 
 
 def test_login_with_cookies_verify_network_error_warns(tmp_path, capsys) -> None:

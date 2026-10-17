@@ -31,13 +31,7 @@ from notebooklm import NotebookLMClient
 
 # Mock-only tests (no real HTTP, no cassette) — opt out of the
 # integration-tree enforcement hook in ``tests/integration/conftest.py``.
-pytestmark = [
-    pytest.mark.allow_no_vcr,
-    pytest.mark.filterwarnings(
-        "ignore:Non-default legacy NotebookLMClient.*"
-        "tuning arguments are deprecated:DeprecationWarning"
-    ),
-]
+pytestmark = pytest.mark.allow_no_vcr
 
 
 @pytest.fixture
@@ -91,21 +85,19 @@ async def test_custom_upload_timeout_propagates_to_start(
     capturing = _make_capturing_async_client(captured)
 
     async with NotebookLMClient(auth_tokens, upload_timeout=custom) as client:
-        # Call the helper directly — exercises the start-resumable-upload
-        # site in isolation. The patched client raises in ``send`` before
-        # opening a socket, so the POST fails fast and network-free; we
-        # only care that the timeout kwarg was captured at construction.
-        with (
-            patch.object(httpx, "AsyncClient", capturing),
-            pytest.raises((httpx.HTTPError, OSError)),
-        ):
-            await client.sources._start_resumable_upload(
-                notebook_id="nb-test",
-                filename=tmp_upload_file.name,
-                file_size=tmp_upload_file.stat().st_size,
-                source_id="src-test",
-                content_type="text/plain",
-            )
+        with patch.object(httpx, "AsyncClient", capturing):
+            # Call the helper directly — exercises the start-resumable-upload
+            # site in isolation. The patched client raises in ``send`` before
+            # opening a socket, so the POST fails fast and network-free; we
+            # only care that the timeout kwarg was captured at construction.
+            with pytest.raises((httpx.HTTPError, OSError)):
+                await client.sources._start_resumable_upload(
+                    notebook_id="nb-test",
+                    filename=tmp_upload_file.name,
+                    file_size=tmp_upload_file.stat().st_size,
+                    source_id="src-test",
+                    content_type="text/plain",
+                )
 
     assert captured, "Expected at least one httpx.AsyncClient construction"
     timeout = captured[0]
@@ -120,17 +112,15 @@ async def test_default_upload_timeout_preserves_back_compat_start(auth_tokens) -
     capturing = _make_capturing_async_client(captured)
 
     async with NotebookLMClient(auth_tokens) as client:  # no upload_timeout
-        with (
-            patch.object(httpx, "AsyncClient", capturing),
-            pytest.raises((httpx.HTTPError, OSError)),
-        ):
-            await client.sources._start_resumable_upload(
-                notebook_id="nb-test",
-                filename="dummy.txt",
-                file_size=256,
-                source_id="src-test",
-                content_type="text/plain",
-            )
+        with patch.object(httpx, "AsyncClient", capturing):
+            with pytest.raises((httpx.HTTPError, OSError)):
+                await client.sources._start_resumable_upload(
+                    notebook_id="nb-test",
+                    filename="dummy.txt",
+                    file_size=256,
+                    source_id="src-test",
+                    content_type="text/plain",
+                )
 
     assert captured
     timeout = captured[0]
@@ -148,14 +138,12 @@ async def test_custom_upload_timeout_propagates_to_finalize(
     capturing = _make_capturing_async_client(captured)
 
     async with NotebookLMClient(auth_tokens, upload_timeout=custom) as client:
-        with (
-            patch.object(httpx, "AsyncClient", capturing),
-            pytest.raises((httpx.HTTPError, OSError)),
-        ):
-            await client.sources._upload_file_streaming(
-                upload_url="https://notebooklm.google.com/upload/_/?upload_id=timeout",
-                file_obj=tmp_upload_file,
-            )
+        with patch.object(httpx, "AsyncClient", capturing):
+            with pytest.raises((httpx.HTTPError, OSError)):
+                await client.sources._upload_file_streaming(
+                    upload_url="https://notebooklm.google.com/upload/_/?upload_id=timeout",
+                    file_obj=tmp_upload_file,
+                )
 
     assert captured, "Expected at least one httpx.AsyncClient construction"
     finalize_timeout = captured[-1]
@@ -172,14 +160,12 @@ async def test_default_upload_timeout_preserves_back_compat_finalize(
     capturing = _make_capturing_async_client(captured)
 
     async with NotebookLMClient(auth_tokens) as client:  # no upload_timeout
-        with (
-            patch.object(httpx, "AsyncClient", capturing),
-            pytest.raises((httpx.HTTPError, OSError)),
-        ):
-            await client.sources._upload_file_streaming(
-                upload_url="https://notebooklm.google.com/upload/_/?upload_id=timeout",
-                file_obj=tmp_upload_file,
-            )
+        with patch.object(httpx, "AsyncClient", capturing):
+            with pytest.raises((httpx.HTTPError, OSError)):
+                await client.sources._upload_file_streaming(
+                    upload_url="https://notebooklm.google.com/upload/_/?upload_id=timeout",
+                    file_obj=tmp_upload_file,
+                )
 
     assert captured
     finalize_timeout = captured[-1]

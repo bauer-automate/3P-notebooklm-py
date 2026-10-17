@@ -6,8 +6,6 @@ One place that knows, per *regenerable baseline*, how to:
 * where its committed JSON file lives (``Baseline.path``);
 * how to **serialize** it deterministically (``Baseline.dump`` /
   ``Baseline.sort_keys``).
-* for shrink-only ratchets, what counts as reviewed **growth**
-  (``Baseline.growth_check``).
 
 A baseline is a value the code already derives — e.g. ``notebooklm.types.__all__``
 or the collected public surface of the ungated public modules. The freeze tests
@@ -39,16 +37,11 @@ _TESTS_ROOT = Path(__file__).resolve().parents[1]
 _PROJECT_ROOT = _TESTS_ROOT.parent
 _FIXTURES_DIR = _TESTS_ROOT / "fixtures"
 _BASELINES_DIR = _FIXTURES_DIR / "baselines"
-_BROWSER_ROOT = _PROJECT_ROOT / "src" / "notebooklm" / "_browser"
-_AUTH_ROOT = _PROJECT_ROOT / "src" / "notebooklm" / "_auth"
-_AUTH_FACADE = _PROJECT_ROOT / "src" / "notebooklm" / "auth.py"
 
 # Audit source-of-truth for the allowlist ``extra_public_names`` (mirrors
 # ``scripts/audit_public_api_compat.py``). The collected public surface for a
 # module is ``__all__`` plus any *resolvable* allowlist extras not already in it.
 _ALLOWLIST_PATH = _PROJECT_ROOT / "scripts" / "api-compat-allowlist.json"
-
-GrowthCheck = Callable[[object, object], list[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -96,15 +89,11 @@ UNGATED_PUBLIC_MODULES: tuple[str, ...] = (
     "notebooklm",
     "notebooklm.artifacts",
     "notebooklm.config",
-    "notebooklm.downloads",
     "notebooklm.exceptions",
     "notebooklm.io",
     "notebooklm.log",
     "notebooklm.migration",
-    "notebooklm.outcomes",
-    "notebooklm.options",
     "notebooklm.paths",
-    "notebooklm.raw",
     "notebooklm.research",
     "notebooklm.urls",
     "notebooklm.utils",
@@ -136,190 +125,18 @@ def _derive_cli_contract() -> dict[str, object]:
     return build_cli_contract()
 
 
-@lru_cache(maxsize=1)
 def _derive_auth_patch_sites() -> dict[str, object]:
-    """Stable full-joint projection from the auth patch-site audit."""
+    """Stable path/line-free projection from the auth patch-site audit."""
     from scripts.audit_auth_patch_sites import build_projection, collect_sites
 
     return build_projection(collect_sites(_TESTS_ROOT))
 
 
-@lru_cache(maxsize=1)
-def _derive_browser_patch_sites() -> dict[str, object]:
-    """Stable projection from patch sites into the browser package."""
-    from scripts.audit_auth_patch_sites import build_projection, collect_sites
-
-    return build_projection(
-        collect_sites(
-            _TESTS_ROOT,
-            _BROWSER_ROOT,
-            package_dotted="notebooklm._browser",
-        )
-    )
-
-
-@lru_cache(maxsize=1)
-def _derive_auth_facade_patch_sites() -> dict[str, object]:
-    """Public-auth facade substitution projection (relocation sentinel)."""
-    from scripts.audit_auth_patch_sites import build_projection, collect_sites
-
-    return build_projection(
-        collect_sites(
-            _TESTS_ROOT,
-            _AUTH_FACADE,
-            package_dotted="notebooklm.auth",
-        )
-    )
-
-
-@lru_cache(maxsize=1)
-def _derive_auth_family_patch_scorecard() -> dict[str, object]:
-    from scripts.audit_auth_patch_sites import build_family_scorecard
-
-    return build_family_scorecard(
-        [
-            _derive_auth_patch_sites(),
-            _derive_browser_patch_sites(),
-            _derive_auth_facade_patch_sites(),
-        ]
-    )
-
-
-def _patch_projection_growth(previous: object, current: object) -> list[str]:
-    from scripts.audit_auth_patch_sites import projection_growth
-
-    return projection_growth(previous, current)
-
-
-def _auth_family_growth(previous: object, current: object) -> list[str]:
-    from scripts.audit_auth_patch_sites import family_scorecard_growth
-
-    return family_scorecard_growth(previous, current)
-
-
-@lru_cache(maxsize=1)
-def _derive_auth_shared_mutations() -> dict[str, object]:
-    from scripts.audit_auth_shared_mutations import build_projection, collect_mutations
-
-    return build_projection(
-        collect_mutations(
-            _TESTS_ROOT,
-            {
-                "notebooklm._auth": _AUTH_ROOT,
-                "notebooklm._browser": _BROWSER_ROOT,
-            },
-        )
-    )
-
-
-def _auth_shared_mutation_growth(previous: object, current: object) -> list[str]:
-    from scripts.audit_auth_shared_mutations import projection_growth
-
-    return projection_growth(previous, current)
-
-
-@lru_cache(maxsize=1)
 def _derive_auth_import_graph() -> dict[str, object]:
     """Static direct-module import graph for ``notebooklm._auth``."""
     from scripts.audit_auth_import_graph import build_projection
 
     return build_projection()
-
-
-@lru_cache(maxsize=1)
-def _derive_browser_import_graph() -> dict[str, object]:
-    """Package-aware import projection for ``notebooklm._browser``."""
-    from scripts.audit_auth_import_graph import build_projection
-
-    return build_projection(
-        _BROWSER_ROOT,
-        package_prefix="notebooklm._browser",
-        include_external=True,
-    )
-
-
-@lru_cache(maxsize=1)
-def _derive_backend_runtime_coupling() -> dict[str, object]:
-    """Clean-interpreter public-entry and backend-stage coupling projection."""
-    from scripts.audit_backend_coupling import build_runtime_projection
-
-    return build_runtime_projection()
-
-
-def _backend_runtime_coupling_growth(previous: object, current: object) -> list[str]:
-    from scripts.audit_backend_coupling import runtime_projection_growth
-
-    return runtime_projection_growth(previous, current)
-
-
-@lru_cache(maxsize=1)
-def _derive_backend_static_coupling() -> dict[str, object]:
-    """Resolved authored-code cross-subsystem import projection."""
-    from scripts.audit_backend_coupling import build_static_projection
-
-    return build_static_projection()
-
-
-def _backend_static_coupling_growth(previous: object, current: object) -> list[str]:
-    from scripts.audit_backend_coupling import static_projection_growth
-
-    return static_projection_growth(previous, current)
-
-
-@lru_cache(maxsize=1)
-def _derive_module_size() -> dict[str, object]:
-    """Current module-size budget, allowlist ceilings, and shrink locks."""
-    from tests._baselines.module_size import derive_module_size
-
-    return derive_module_size()
-
-
-def _module_size_growth(previous: object, current: object) -> list[str]:
-    from tests._baselines.module_size import module_size_growth
-
-    return module_size_growth(previous, current)
-
-
-@lru_cache(maxsize=1)
-def _derive_storage_transaction_policy() -> dict[str, list[str]]:
-    """Direct callers of each profile-transaction lock-failure policy."""
-    from tests._baselines.storage_transaction_policy import derive_storage_transaction_policy
-
-    return derive_storage_transaction_policy()
-
-
-def _storage_transaction_policy_growth(previous: object, current: object) -> list[str]:
-    from tests._baselines.storage_transaction_policy import storage_transaction_policy_growth
-
-    return storage_transaction_policy_growth(previous, current)
-
-
-@lru_cache(maxsize=1)
-def _derive_guardrail_inline_literals() -> dict[str, dict[str, int]]:
-    """Large inline container literals still grandfathered in guardrail tests."""
-    from tests._baselines.guardrail_literals import inventory_large_inline_literals
-
-    return inventory_large_inline_literals()
-
-
-@lru_cache(maxsize=1)
-def _derive_backend_boundary() -> dict[str, list[dict[str, str]]]:
-    """Exact lazy public-type-to-Web compatibility-shim allowlist."""
-    from tests._baselines.backend_boundary import derive_backend_boundary
-
-    return derive_backend_boundary()
-
-
-def _backend_boundary_growth(previous: object, current: object) -> list[str]:
-    from tests._baselines.backend_boundary import backend_boundary_growth
-
-    return backend_boundary_growth(previous, current)
-
-
-def _guardrail_inline_literal_growth(previous: object, current: object) -> list[str]:
-    from tests._baselines.guardrail_literals import guardrail_literal_growth
-
-    return guardrail_literal_growth(previous, current)
 
 
 # ---------------------------------------------------------------------------
@@ -333,9 +150,8 @@ class Baseline:
 
     ``derive`` returns the live value; ``path`` is the committed JSON file;
     ``sort_keys`` controls JSON key ordering on dump (lists always preserve
-    order — only dict *keys* are affected). ``growth_check`` optionally protects
-    shrink-only state from accidental expansion. ``load()`` reads the committed
-    value; ``write()`` rewrites it from ``derive()`` (dev-only, behind
+    order — only dict *keys* are affected). ``load()`` reads the committed value;
+    ``write()`` rewrites it from ``derive()`` (dev-only, behind
     ``--update-baselines``).
     """
 
@@ -343,7 +159,6 @@ class Baseline:
     path: Path
     derive: Callable[[], object]
     sort_keys: bool = False
-    growth_check: GrowthCheck | None = field(default=None, compare=False)
     # Extra metadata kept out of equality/hash; documents intent.
     description: str = field(default="", compare=False)
 
@@ -355,7 +170,7 @@ class Baseline:
         """The committed baseline value (parsed JSON)."""
         return json.loads(self.path.read_text(encoding="utf-8"))
 
-    def write(self, *, allow_growth: bool = False) -> None:
+    def write(self) -> None:
         """Rewrite the committed file from ``derive()``. Dev-only (regen seam).
 
         Enforces the dev-only-regen invariant at the seam itself (not only at the
@@ -367,110 +182,17 @@ class Baseline:
                 "refusing to regenerate baselines in CI: baselines are dev-only "
                 "regenerated and CI only diffs (ADR-0022)."
             )
-        derived = self.derive()
-        if self.growth_check is not None and self.path.is_file() and not allow_growth:
-            growth = self.growth_check(self.load(), derived)
-            if growth:
-                details = "\n  ".join(growth)
-                raise RuntimeError(
-                    f"refusing to grow the shrink-only {self.name} baseline:\n  {details}\n"
-                    "Review the growth, then rerun `python scripts/regen_baselines.py "
-                    "--allow-growth` to acknowledge it explicitly."
-                )
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(self.dump(derived), encoding="utf-8")
+        self.path.write_text(self.dump(self.derive()), encoding="utf-8")
 
 
 BASELINES: list[Baseline] = [
-    Baseline(
-        name="backend_runtime_coupling",
-        path=_BASELINES_DIR / "backend_runtime_coupling.json",
-        derive=_derive_backend_runtime_coupling,
-        sort_keys=True,
-        growth_check=_backend_runtime_coupling_growth,
-        description=(
-            "Clean-interpreter exact module, object, network, profile, and lifecycle ratchets."
-        ),
-    ),
-    Baseline(
-        name="backend_static_coupling",
-        path=_BASELINES_DIR / "backend_static_coupling.json",
-        derive=_derive_backend_static_coupling,
-        sort_keys=True,
-        growth_check=_backend_static_coupling_growth,
-        description=("Resolved cross-subsystem imports with local, type-only, and dynamic edges."),
-    ),
-    Baseline(
-        name="backend_boundary",
-        path=_BASELINES_DIR / "backend_boundary.json",
-        derive=_derive_backend_boundary,
-        sort_keys=True,
-        growth_check=_backend_boundary_growth,
-        description="Lazy public-type-to-Web compatibility edges; shrink-only through v0.x.",
-    ),
-    Baseline(
-        name="module_size",
-        path=_BASELINES_DIR / "module_size.json",
-        derive=_derive_module_size,
-        sort_keys=True,
-        growth_check=_module_size_growth,
-        description="Module-size budget plus live over-budget and shrink-locked ceilings.",
-    ),
-    Baseline(
-        name="storage_transaction_policy",
-        path=_BASELINES_DIR / "storage_transaction_policy.json",
-        derive=_derive_storage_transaction_policy,
-        sort_keys=True,
-        growth_check=_storage_transaction_policy_growth,
-        description="Direct owners of the profile transaction's lock-failure policies.",
-    ),
-    Baseline(
-        name="guardrail_inline_literals",
-        path=_BASELINES_DIR / "guardrail_inline_literals.json",
-        derive=_derive_guardrail_inline_literals,
-        sort_keys=True,
-        growth_check=_guardrail_inline_literal_growth,
-        description="Grandfathered large module-level literals in guardrail tests.",
-    ),
     Baseline(
         name="auth_patch_sites",
         path=_BASELINES_DIR / "auth_patch_sites.json",
         derive=_derive_auth_patch_sites,
         sort_keys=True,
-        growth_check=_patch_projection_growth,
-        description="Auth test patch sites with package/path/lexical-owner identity.",
-    ),
-    Baseline(
-        name="browser_patch_sites",
-        path=_BASELINES_DIR / "browser_patch_sites.json",
-        derive=_derive_browser_patch_sites,
-        sort_keys=True,
-        growth_check=_patch_projection_growth,
-        description="Browser test patch sites with package/path/lexical-owner identity.",
-    ),
-    Baseline(
-        name="auth_facade_patch_sites",
-        path=_BASELINES_DIR / "auth_facade_patch_sites.json",
-        derive=_derive_auth_facade_patch_sites,
-        sort_keys=True,
-        growth_check=_patch_projection_growth,
-        description="Public auth facade substitutions; a no-growth relocation sentinel.",
-    ),
-    Baseline(
-        name="auth_family_patch_scorecard",
-        path=_BASELINES_DIR / "auth_family_patch_scorecard.json",
-        derive=_derive_auth_family_patch_scorecard,
-        sort_keys=True,
-        growth_check=_auth_family_growth,
-        description="Combined auth/browser/facade scorecard retaining package identity.",
-    ),
-    Baseline(
-        name="auth_shared_mutations",
-        path=_BASELINES_DIR / "auth_shared_mutations.json",
-        derive=_derive_auth_shared_mutations,
-        sort_keys=True,
-        growth_check=_auth_shared_mutation_growth,
-        description="Auth/browser shared-owner mutations with lexical ownership.",
+        description="Auth test patch sites aggregated by module, attribute, and idiom.",
     ),
     Baseline(
         name="auth_import_graph",
@@ -478,13 +200,6 @@ BASELINES: list[Baseline] = [
         derive=_derive_auth_import_graph,
         sort_keys=True,
         description="Static direct-module import graph for notebooklm._auth.",
-    ),
-    Baseline(
-        name="browser_import_graph",
-        path=_BASELINES_DIR / "browser_import_graph.json",
-        derive=_derive_browser_import_graph,
-        sort_keys=True,
-        description="Static package-aware import graph for notebooklm._browser.",
     ),
     Baseline(
         name="types_all",
@@ -522,7 +237,6 @@ def baseline_by_name(name: str) -> Baseline:
 __all__ = [
     "BASELINES",
     "Baseline",
-    "GrowthCheck",
     "UNGATED_PUBLIC_MODULES",
     "allowlist_extra_public_names",
     "baseline_by_name",

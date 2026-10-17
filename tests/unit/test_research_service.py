@@ -26,7 +26,6 @@ from notebooklm.cli.services.research import (
     ResearchWaitResult,
     execute_research_wait,
 )
-from tests._helpers.operation import ClientStub
 
 # ---------------------------------------------------------------------------
 # Fixtures: a fake notebook client with only the surface the service touches
@@ -91,7 +90,7 @@ class _FakeResearchAPI:
         self.wait_for_completion = AsyncMock(side_effect=adapted)
 
 
-class _FakeClient(ClientStub):
+class _FakeClient:
     def __init__(self, *, wait_side_effect: Any) -> None:
         self.research = _FakeResearchAPI(side_effect=wait_side_effect)
 
@@ -362,6 +361,7 @@ async def test_import_all_passes_json_output_flag():
         timeout=300,
         interval=5,
         import_all=True,
+        json_output=True,
     )
     client = _FakeClient(
         wait_side_effect=[
@@ -387,7 +387,6 @@ async def test_import_all_passes_json_output_flag():
         client=client,
         resolve_id=_fake_resolve,
         import_sources=import_mock,
-        json_output=True,
     )
 
     call_kwargs = import_mock.await_args.kwargs
@@ -636,7 +635,7 @@ class TestResearchWaitPlan:
         plan = ResearchWaitPlan(notebook_id="nb", timeout=10, interval=1)
         assert plan.import_all is False
         assert plan.cited_only is False
-        assert not hasattr(plan, "json_output")
+        assert plan.json_output is False
 
     def test_is_frozen(self):
         from dataclasses import FrozenInstanceError

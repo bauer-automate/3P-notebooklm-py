@@ -12,19 +12,12 @@ and returns ``202``. The poll (``GET .../artifacts/{task_id}``) projects the raw
 ``GenerationState`` through the registry to resolve the same ``NOT_FOUND``
 ambiguity as the source poll:
 
-* a registry-known task in any **non-terminal** state → ``200`` (still polling).
-  The partition is :attr:`GenerationState.is_terminal`, not an enumeration here,
-  so this covers ``PENDING`` / ``IN_PROGRESS`` / ``NOT_FOUND`` (the one-shot
-  post-generate lag), the ``UNKNOWN`` and rare ``SUGGESTED`` /
-  ``PENDING_REVIEW`` states, and anything added to the enum later;
+* a registry-known task at ``PENDING`` / ``IN_PROGRESS`` / ``NOT_FOUND`` → ``200``
+  (still polling — ``NOT_FOUND`` is the one-shot post-generate lag);
 * ``COMPLETED`` → ``200`` ready (dropped from the registry);
 * ``REMOVED`` → ``410`` (sustained terminal absence; dropped);
 * ``FAILED`` → ``409`` with the error (dropped);
 * an unknown task id → ``404``.
-
-Only terminal states are dropped from the registry: evicting a still-running
-task would make its next benign ``NOT_FOUND`` poll ``404`` rather than project
-(#2127, which also moved ``UNKNOWN`` onto the non-terminal side).
 
 Download streams the bytes from a **server-generated** ``mkstemp`` path (never a
 caller-supplied one — ``build_download_plan`` does not validate path shapes),
@@ -40,9 +33,9 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.types import Receive, Scope, Send
@@ -51,7 +44,6 @@ from ..._app import artifacts as artifact_core
 from ..._app import download as download_core
 from ..._app import download_specs as download_specs_core
 from ..._app import generate as generate_core
-from ..._app.generation_requests import UNSET, GenerationKind, build_generation_request
 from ..._app.language import is_supported_language
 from ..._app.resolve import FULL_ID_PATTERN
 from ..._app.serialize import to_jsonable
@@ -107,6 +99,97 @@ GENERATE_TYPES: tuple[str, ...] = (
     "mind-map",
     "report",
 )
+
+#: Per-kind default option values (mirroring the CLI ``generate`` Choice
+#: defaults) so a bare generate request succeeds without restating every enum.
+#: ``build_generation_plan`` enum-maps + validates these.
+_KIND_DEFAULTS: dict[str, dict[str, Any]] = {
+    "audio": {"audio_format": "deep-dive", "audio_length": "default"},
+    "video": {"video_format": "explainer", "style": "auto"},
+    "cinematic-video": {},
+    "slide-deck": {"deck_format": "detailed", "deck_length": "default"},
+    "quiz": {"quantity": "standard", "difficulty": "medium"},
+    "flashcards": {"quantity": "standard", "difficulty": "medium"},
+    "infographic": {"orientation": "landscape", "detail": "standard", "style": "auto"},
+    "data-table": {},
+    "mind-map": {"map_kind": "interactive"},
+    "report": {"report_format": "briefing-doc"},
+}
+
+#: Per-kind agent-settable options → their accepted choices (``None`` = free text,
+#: only ``style_prompt``). Mirrors the MCP ``studio_generate`` ``_KIND_OPTIONS``
+#: table so the REST generate route enforces the SAME three things:
+#:
+#: * **Choice validation** up front — a bad value is a clean 400, not a raw
+#:   ``KeyError`` from a generate-core display-name lookup that runs before its own
+#:   choice validation.
+#: * **The ``style`` collision** — ``video`` and ``infographic`` both take a
+#:   ``style`` kwarg with DIFFERENT value sets; keying by ``type`` keeps them apart.
+#: * **Wrong-kind rejection** — an option irrelevant to the chosen type (e.g.
+#:   ``orientation`` on ``quiz``) is rejected rather than silently ignored by the
+#:   neutral core (``build_generation_plan`` "picks the relevant subset").
+#:
+#: The literal tuples are DUPLICATED from the neutral core's private ``_*_MAP``
+#: maps (the server layer must not import the core privates — same rule the MCP
+#: table follows); ``tests/server/test_artifacts.py`` pins them equal to the core
+#: maps so they cannot silently drift. ``map_kind`` has no core map (the core reads
+#: it raw), so it is validated here ONLY.
+_KIND_OPTIONS: dict[str, dict[str, tuple[str, ...] | None]] = {
+    "audio": {
+        "audio_format": ("deep-dive", "brief", "critique", "debate"),
+        "audio_length": ("short", "default", "long"),
+    },
+    "video": {
+        "video_format": ("explainer", "brief", "cinematic", "short"),
+        "style": (
+            "auto",
+            "custom",
+            "classic",
+            "whiteboard",
+            "kawaii",
+            "anime",
+            "watercolor",
+            "retro-print",
+            "heritage",
+            "paper-craft",
+        ),
+        "style_prompt": None,
+    },
+    "cinematic-video": {},
+    "slide-deck": {
+        "deck_format": ("detailed", "presenter"),
+        "deck_length": ("default", "short"),
+    },
+    "quiz": {
+        "quantity": ("fewer", "standard", "more"),
+        "difficulty": ("easy", "medium", "hard"),
+    },
+    "flashcards": {
+        "quantity": ("fewer", "standard", "more"),
+        "difficulty": ("easy", "medium", "hard"),
+    },
+    "infographic": {
+        "orientation": ("landscape", "portrait", "square"),
+        "detail": ("concise", "standard", "detailed"),
+        "style": (
+            "auto",
+            "sketch-note",
+            "professional",
+            "bento-grid",
+            "editorial",
+            "instructional",
+            "bricks",
+            "clay",
+            "anime",
+            "kawaii",
+            "scientific",
+        ),
+    },
+    "data-table": {},
+    "mind-map": {"map_kind": ("interactive", "note-backed")},
+    "report": {"report_format": ("briefing-doc", "study-guide", "blog-post", "custom")},
+}
+
 
 #: Shared immutable projection. REST adds no per-adapter fields.
 DOWNLOAD_SPECS: Mapping[str, download_core.DownloadTypeSpec] = (
@@ -191,38 +274,65 @@ async def generate(
     if body.language is not None and not is_supported_language(body.language):
         raise ValidationError(f"Unsupported language {body.language!r}")
 
+    # Validate caller-supplied per-kind overrides against the choice set for THIS
+    # ``type`` (mirroring the MCP ``studio_generate`` loop): an option not accepted
+    # by this kind is rejected — the neutral core would otherwise silently ignore
+    # it — and a bad value is a clean 400. ``style_prompt`` (choices ``None``) is
+    # free text; the core enforces the ``style=custom`` ⇔ ``style_prompt`` rule.
+    allowed = _KIND_OPTIONS[body.type]
+    overrides: dict[str, Any] = {}
+    for key, value in (
+        ("report_format", body.report_format),
+        ("audio_format", body.audio_format),
+        ("audio_length", body.audio_length),
+        ("quantity", body.quantity),
+        ("difficulty", body.difficulty),
+        ("video_format", body.video_format),
+        ("style", body.style),
+        ("style_prompt", body.style_prompt),
+        ("deck_format", body.deck_format),
+        ("deck_length", body.deck_length),
+        ("orientation", body.orientation),
+        ("detail", body.detail),
+        ("map_kind", body.map_kind),
+    ):
+        if value is None:
+            continue
+        if key not in allowed:
+            accepts = (
+                f"this kind accepts {sorted(allowed)}"
+                if allowed
+                else "this kind accepts no per-kind options"
+            )
+            raise ValidationError(f"option {key!r} is not valid for type {body.type!r}; {accepts}")
+        choices = allowed[key]
+        if choices is not None and value not in choices:
+            raise ValidationError(f"Invalid {key} {value!r}; expected one of {list(choices)}")
+        overrides[key] = value
+
     # Treat empty / whitespace-only instructions as absent so the default request
     # shape stays byte-identical (no blank prompt slot reaches the server).
     instructions = body.instructions if (body.instructions and body.instructions.strip()) else None
-    request = build_generation_request(
-        cast(GenerationKind, body.type),
-        notebook_id=notebook_id,
-        # The removed plan builder normalized omitted/explicit-empty source lists
-        # to the existing all-sources contract and an absent/null language to
-        # English. Keep those adapter semantics while the typed request itself can
-        # still represent omission separately for direct callers.
-        source_ids=UNSET if not body.source_ids else tuple(body.source_ids),
-        language=body.language or "en",
-        instructions=instructions,
-        option_values={
-            "report_format": body.report_format,
-            "audio_format": body.audio_format,
-            "audio_length": body.audio_length,
-            "quantity": body.quantity,
-            "difficulty": body.difficulty,
-            "video_format": body.video_format,
-            "style": body.style,
-            "style_prompt": body.style_prompt,
-            "deck_format": body.deck_format,
-            "deck_length": body.deck_length,
-            "orientation": body.orientation,
-            "detail": body.detail,
-            "map_kind": body.map_kind,
-        },
-        extra_instructions=None,
+    raw_args: dict[str, Any] = dict(_KIND_DEFAULTS[body.type])
+    raw_args.update(
+        {
+            "notebook_id": notebook_id,
+            "description": instructions or "",
+            # ``mind-map`` reads ``raw_args["instructions"]`` (every other kind reads
+            # ``description``); forward BOTH so mind-map instructions actually reach
+            # the client — the extra key is ignored by the other builders.
+            "instructions": instructions,
+            "source_ids": tuple(body.source_ids or ()),
+            "language": body.language,
+            "wait": False,
+            "json_output": True,
+        }
     )
+    raw_args.update(overrides)
+
+    plan = generate_core.build_generation_plan(body.type, raw_args)
     result = await generate_core.execute_generation(
-        request,
+        plan,
         client,
         notebook_resolver=passthrough_notebook_id,
         source_resolver=passthrough_source_ids,
@@ -247,24 +357,13 @@ async def poll(
     state = status.status
     projected = {"notebook_id": notebook_id, **to_jsonable(view)}
 
+    if state in (GenerationState.PENDING, GenerationState.IN_PROGRESS):
+        return projected
     if state == GenerationState.NOT_FOUND:
         if pending.knows(notebook_id, task_id):
             return projected
         raise HTTPException(status_code=404, detail="Artifact task not found")
-    if not status.is_terminal:
-        # Still running (PENDING / IN_PROGRESS / UNKNOWN / SUGGESTED /
-        # PENDING_REVIEW, and anything added to GenerationState later — the
-        # partition lives on that enum, so non-terminal is the default here).
-        # Keep the task in the pending registry so a later NOT_FOUND poll still
-        # projects instead of 404ing (#2127).
-        #
-        # ORDERING: this block must stay *below* the NOT_FOUND check. NOT_FOUND
-        # is also non-terminal, so hoisting this above it would swallow that
-        # case and make the registry-miss 404 unreachable. The route needs a
-        # three-way split (terminal / absent / running) but the type supplies a
-        # binary one; the third case is recovered by statement order alone.
-        return projected
-    # Terminal states only: drop from the registry, then project.
+    # Terminal states: drop from the registry, then project.
     pending.drop(notebook_id, task_id)
     if state == GenerationState.REMOVED:
         raise HTTPException(status_code=410, detail="Artifact was removed")
@@ -272,7 +371,8 @@ async def poll(
         raise HTTPException(
             status_code=409, detail=safe_detail(view.error) if view.error else "Generation failed"
         )
-    # COMPLETED — the only remaining terminal state — surfaces the projected view.
+    # COMPLETED — and, defensively, any unmodeled state — surfaces the projected
+    # view rather than a 500.
     return projected
 
 
@@ -368,9 +468,7 @@ class _CleanupFileResponse(FileResponse):
 
 
 @router.post("/download", dependencies=[Depends(limit_download)])
-async def download(
-    notebook_id: str, body: ArtifactDownload, client: ClientDep, request: Request
-) -> FileResponse:
+async def download(notebook_id: str, body: ArtifactDownload, client: ClientDep) -> FileResponse:
     """Download a completed artifact, streaming from a server-generated temp path."""
     spec = DOWNLOAD_SPECS.get(body.type)
     if spec is None:
@@ -381,10 +479,7 @@ async def download(
     # file, which the download core treats as a conflict and may auto-rename
     # (download.py); an isolated empty dir avoids that, and we assert the served
     # path stays inside it so a surprising resolved path can never be streamed.
-    temp_factory = request.app.state._download_temp_factory
-    temp_dir = (
-        temp_factory() if temp_factory is not None else tempfile.mkdtemp(prefix="nblm-download-")
-    )
+    temp_dir = tempfile.mkdtemp(prefix="nblm-download-")
     # On SUCCESS, ownership of the temp dir passes to the returned
     # ``_CleanupFileResponse`` (cleans after streaming, disconnect-safe); every
     # other exit — validation, a not-ready 409, an unexpected raise — cleans in the
@@ -422,15 +517,10 @@ async def download(
         # No completed artifact of this kind exists yet (not ready), or a
         # pre-download error — surface as 409, not 500.
         if result.outcome != download_core.DownloadOutcome.SINGLE_DOWNLOADED:
-            failure = result.failure
             detail = (
-                safe_detail(failure.detail)
-                if failure is not None and failure.detail
-                else (
-                    failure.reason.replace("_", " ")
-                    if failure is not None
-                    else f"No completed {body.type} artifact is available yet"
-                )
+                safe_detail(result.error)
+                if result.error
+                else (f"No completed {body.type} artifact is available yet")
             )
             raise HTTPException(status_code=409, detail=detail)
 

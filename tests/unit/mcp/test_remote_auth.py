@@ -177,10 +177,9 @@ async def test_authenticated_tool_call_over_http_transport() -> None:
     transport; this is the one path that also exercises HTTP + the bearer gate).
     """
     pytest.importorskip("starlette")
-    import httpx2 as httpx  # fastmcp 4 builds its HTTP client on httpx2
+    import httpx
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
-    from mcp.shared.exceptions import MCPError
 
     from notebooklm.mcp.server import create_server
 
@@ -225,18 +224,7 @@ async def test_authenticated_tool_call_over_http_transport() -> None:
             stub.notebooks.list.assert_awaited()  # dispatch really reached the client
 
         # Wrong bearer → rejected by the auth middleware with 401 (never a tool).
-        # fastmcp 4's client surfaces the rejection as a bare ``MCPError`` with no
-        # HTTP status, so assert the 401 with a direct request to the same app.
-        with pytest.raises(MCPError):
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
             async with Client(make_transport("wrong-token")) as mcp:
                 await mcp.list_tools()
-        async with httpx_factory() as raw:
-            response = await raw.post(
-                "/mcp",
-                headers={
-                    "Authorization": "Bearer wrong-token",
-                    "Accept": "application/json, text/event-stream",
-                },
-                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-            )
-        assert response.status_code == 401
+        assert excinfo.value.response.status_code == 401

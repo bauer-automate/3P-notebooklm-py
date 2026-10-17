@@ -14,14 +14,11 @@ record the calls each namespace received.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from notebooklm._idempotency import mark_unconfirmed
 from notebooklm._types.artifacts import Artifact, GenerationState, GenerationStatus
-from notebooklm._types.chat import AskResult, ChatSettings, ConversationTurnKey
+from notebooklm._types.chat import AskResult, ChatSettings
 from notebooklm._types.common import AccountLimits, UserSettings
 from notebooklm._types.notebooks import Notebook, PromptSuggestion
 from notebooklm._types.notes import Note
@@ -34,20 +31,14 @@ from notebooklm._types.research import (
 )
 from notebooklm._types.sharing import SharedUser, ShareStatus
 from notebooklm._types.sources import Source, SourceFulltext
-from notebooklm.downloads import resolve_download_format
 from notebooklm.exceptions import (
     ArtifactNotFoundError,
-    NetworkError,
     NotebookNotFoundError,
     NoteNotFoundError,
-    RateLimitError,
-    ServerError,
     SourceNotFoundError,
     SourceProcessingError,
     SourceTimeoutError,
 )
-from notebooklm.options import UseDefault
-from notebooklm.outcomes import SourceBatchItemOutcome
 from notebooklm.rpc.types import (
     ChatGoal,
     ChatResponseLength,
@@ -55,14 +46,6 @@ from notebooklm.rpc.types import (
     SharePermission,
     ShareViewLevel,
     SourceStatus,
-)
-from notebooklm.types import (
-    ArtifactDownloadListing,
-    ArtifactDownloadRequest,
-    ArtifactDownloadSelection,
-    ArtifactListing,
-    ArtifactLookup,
-    ArtifactLookupStatus,
 )
 
 #: download-spec kind -> internal artifact type-code.
@@ -155,24 +138,6 @@ class FakeSources:
 
     async def add_url(self, notebook_id: str, url: str) -> Source:
         return self._add(notebook_id, title=url, url=url)
-
-    async def add_urls_batch(
-        self, notebook_id: str, urls: list[str]
-    ) -> list[SourceBatchItemOutcome]:
-        """Model typed outcomes; real-client wire batching is unit-tested separately."""
-        outcomes: list[SourceBatchItemOutcome] = []
-        for url in urls:
-            try:
-                source = await self.add_url(notebook_id, url)
-            except Exception as exc:  # noqa: BLE001 - scripted per-item outcome
-                if isinstance(exc, (NetworkError, RateLimitError, ServerError)):
-                    mark_unconfirmed(exc)
-                outcomes.append(SourceBatchItemOutcome(url=url, error=exc))
-            else:
-                outcomes.append(SourceBatchItemOutcome(url=url, source=source))
-        return outcomes
-
-    _add_urls_batch = add_urls_batch
 
     async def add_text(self, notebook_id: str, title: str, content: str) -> Source:
         return self._add(notebook_id, title=title)
@@ -338,7 +303,6 @@ class FakeChat:
             turn_number=1,
             is_follow_up=conversation_id is not None,
             raw_response='[["wrb.fr", ... internal wire blob ...]]',
-            turn_key=self._s.chat_turn_key,
         )
 
     async def set_mode(self, notebook_id: str, mode: Any) -> None:
@@ -370,16 +334,6 @@ class FakeArtifacts:
 
     async def list(self, notebook_id: str, *args: Any, **kwargs: Any) -> list[Artifact]:
         return list(self._s.artifacts_store.get(notebook_id, {}).values())
-
-    async def list_with_status(self, notebook_id: str) -> ArtifactListing:
-        """Return complete aggregate evidence for the fake's single in-memory store."""
-        return ArtifactListing(items=tuple(await self.list(notebook_id)), is_complete=True)
-
-    async def lookup(self, notebook_id: str, artifact_id: str) -> ArtifactLookup:
-        artifact = self._s.artifacts_store.get(notebook_id, {}).get(artifact_id)
-        if artifact is None:
-            return ArtifactLookup(status=ArtifactLookupStatus.MISSING)
-        return ArtifactLookup(status=ArtifactLookupStatus.FOUND, artifact=artifact)
 
     async def poll_status(self, notebook_id: str, task_id: str) -> GenerationStatus:
         state = self._s.poll_states.get((notebook_id, task_id), GenerationState.NOT_FOUND)
@@ -423,10 +377,7 @@ class FakeArtifacts:
         )
         return GenerationStatus(task_id=artifact_id, status=status)
 
-    async def get_prompt(
-        self, notebook_id: str, artifact_id: str, *, require_complete: bool = False
-    ) -> str | None:
-        self._s.last_prompt_require_complete = require_complete
+    async def get_prompt(self, notebook_id: str, artifact_id: str) -> str | None:
         if (notebook_id, artifact_id) in self._s.prompts_store:
             return self._s.prompts_store[(notebook_id, artifact_id)]
         if artifact_id in self._s.artifacts_store.get(notebook_id, {}):
@@ -462,36 +413,6 @@ class FakeArtifacts:
         self, notebook_id: str, output_path: str, artifact_id: str | None = None, **kwargs: Any
     ) -> str:
         # A format-bearing download kind (output_format → pdf/pptx).
-        return await self._do_download(output_path)
-
-    async def prepare_downloads(self, request: ArtifactDownloadRequest) -> ArtifactDownloadListing:
-        """Prepare immutable typed selections from one complete fake snapshot."""
-        self._s.last_download_request = request
-        representation, format_spec = resolve_download_format(request.kind, request.output_format)
-        selections: list[ArtifactDownloadSelection] = []
-        for artifact in self._s.artifacts_store.get(request.notebook_id, {}).values():
-            if artifact.kind is not request.kind or not artifact.is_completed:
-                continue
-            selection = ArtifactDownloadSelection(
-                notebook_id=request.notebook_id,
-                artifact_id=artifact.id,
-                kind=request.kind,
-                title=artifact.title,
-                created_at=artifact.created_at,
-                representation=representation,
-                extension=format_spec.extension,
-                mime_type=format_spec.mime_type,
-                last_modified_at=artifact.last_modified_at,
-            )
-            self._s.prepared_downloads.add(selection)
-            selections.append(selection)
-        return ArtifactDownloadListing(selections=tuple(selections), is_complete=True)
-
-    async def download(self, selection: ArtifactDownloadSelection, output_path: str) -> str:
-        """Consume only an identity prepared by this fake artifact namespace."""
-        if selection not in self._s.prepared_downloads:
-            raise ValueError("download selection was not prepared by this client")
-        self._s.downloaded_selections.append(selection)
         return await self._do_download(output_path)
 
     async def _do_download(self, output_path: str) -> str:
@@ -655,7 +576,6 @@ class FakeMindMaps:
         language: str | None = "en",
         instructions: str | None = None,
         wait: bool = True,
-        failure_policy: str = "legacy",
     ) -> Any:
         # Record the forwarded kwargs so a test can assert instructions reach here.
         self._s.last_mind_map_generate = {
@@ -702,19 +622,9 @@ class FakeClient:
         self.sources_store: dict[str, dict[str, Source]] = {}
         self.notes_store: dict[str, dict[str, Note]] = {}
         self.artifacts_store: dict[str, dict[str, Artifact]] = {}
-        # ``Any``, not ``GenerationState``: the poll route reads predicates off
-        # the status object, and ``GenerationStatus.status`` is documented
-        # raw-string-permissive. Typing this loosely lets a test hand the route
-        # a plain ``str`` — the same guarantee ``retry_status`` below already
-        # gives the retry route.
-        self.poll_states: dict[tuple[str, str], Any] = {}
+        self.poll_states: dict[tuple[str, str], GenerationState] = {}
         self.public_shares: dict[str, bool] = {}
         self.share_view_levels: dict[str, ShareViewLevel] = {}
-        #: #2130 — per-notebook ``maxIndividualsShareLimit`` /
-        #: ``isPublicSharingAllowed``. Unset means the backend made no claim, so
-        #: the default matches the real parser's ``None``.
-        self.share_limits: dict[str, int | None] = {}
-        self.public_sharing_allowed: dict[str, bool | None] = {}
         self.shared_users: dict[str, dict[str, SharedUser]] = {}
         self.fulltext_store: dict[tuple[str, str], str] = {}
         self.guide_store: dict[tuple[str, str], SourceGuide] = {}
@@ -722,7 +632,6 @@ class FakeClient:
         self.cancelled_research: list[tuple[str, str]] = []
         self.imported_research: list[tuple[str, str, list[Any]]] = []
         self.prompts_store: dict[tuple[str, str], str | None] = {}
-        self.last_prompt_require_complete: bool | None = None
         self.note_backed_mind_maps: dict[str, list[Any]] = {}
         self.mind_maps_store: dict[str, list[Any]] = {}
         self.renamed_mind_maps: list[tuple[str, str, str, Any]] = []
@@ -754,13 +663,7 @@ class FakeClient:
         self.hide_new_sources: bool = False
         self.download_bytes: bytes = b"FAKE-ARTIFACT-BYTES"
         self.download_return_path: str | None = None
-        self.prepared_downloads: set[ArtifactDownloadSelection] = set()
-        self.last_download_request: ArtifactDownloadRequest | None = None
-        self.downloaded_selections: list[ArtifactDownloadSelection] = []
         self.chat_error: Exception | None = None
-        # ConversationTurnKey handed back on the next ask (#2122). ``None`` is
-        # the default because most streams a test builds carry no key.
-        self.chat_turn_key: ConversationTurnKey | None = None
         self.last_share_notify: bool | None = None
         self.last_configure: dict[str, Any] | None = None
         self.last_get_settings: str | None = None
@@ -780,7 +683,6 @@ class FakeClient:
         self.next_research = 1
         self.uploaded_paths: list[str] = []
         self.last_ask: dict[str, Any] | None = None
-        self.operation_enters = 0
 
         self.notebooks = FakeNotebooks(self)
         self.sources = FakeSources(self)
@@ -791,14 +693,6 @@ class FakeClient:
         self.research = FakeResearch(self)
         self.mind_maps = FakeMindMaps(self)
         self.settings = FakeSettings(self)
-
-    @asynccontextmanager
-    async def operation(
-        self, timeout: float | None | UseDefault = None
-    ) -> AsyncIterator[FakeClient]:
-        """Mirror an admitted client operation without adding fake timing policy."""
-        self.operation_enters += 1
-        yield self
 
     async def get_account_email(self, *, live_fallback: bool = True) -> str | None:
         return self.account_email
@@ -846,6 +740,4 @@ class FakeClient:
             share_url=f"https://notebooklm.google.com/notebook/{notebook_id}"
             if is_public
             else None,
-            max_individuals_share_limit=self.share_limits.get(notebook_id),
-            is_public_sharing_allowed=self.public_sharing_allowed.get(notebook_id),
         )

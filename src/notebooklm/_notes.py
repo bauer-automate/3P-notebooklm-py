@@ -1,27 +1,34 @@
-"""Backend-neutral notes namespace contract."""
+"""Notes API for NotebookLM user-created notes.
+
+Provides operations for creating, updating, listing, and deleting
+user-created notes in notebooks. Notes are distinct from artifacts -
+they are user-created content, not AI-generated.
+
+Note-row primitives live in :mod:`_note_service` and the
+mind-map-only facade lives in :mod:`_mind_map` as
+:class:`NoteBackedMindMapService`. Saving a chat answer as a
+citation-rich note lives on :class:`ChatAPI` as ``save_answer_as_note``
+(refactor-history.md Step 8, ADR-0013); the former
+``NotesAPI.create_from_chat`` forwarder was removed in v0.7.0.
+"""
 
 from __future__ import annotations
 
 import builtins
-import contextlib
-from abc import ABC, abstractmethod
+import logging
 from typing import Any
 
-from ._runtime.call_supervisor import OperationLease
+from ._lookup import unwrap_or_raise
+from ._mind_map import NoteBackedMindMapService
+from ._note_service import NoteRowKind, NoteService
+from ._row_adapters.notes import NoteRow
+from .exceptions import NoteNotFoundError
 from .types import Note
 
-
-def _normalize_note_ids(note_id: str | list[str]) -> list[str]:
-    """Validate a complete delete request and deduplicate it before any I/O."""
-    ids = [note_id] if isinstance(note_id, str) else note_id
-    if not isinstance(ids, list) or any(
-        not isinstance(value, str) or not value.strip() for value in ids
-    ):
-        raise ValueError("note_id must be a non-empty ID or a list of non-empty IDs")
-    return list(dict.fromkeys(value.strip() for value in ids))
+logger = logging.getLogger(__name__)
 
 
-class NotesAPI(ABC):
+class NotesAPI:
     """Operations on NotebookLM notes.
 
     Notes are user-created content, distinct from AI-generated artifacts.
@@ -38,14 +45,25 @@ class NotesAPI(ABC):
             await client.notes.delete(notebook_id, note.id)
     """
 
-    @abstractmethod
-    def _operation_scope(
-        self, label: str
-    ) -> contextlib.AbstractAsyncContextManager[OperationLease | None]:
-        """Return the backend's scope for one multi-call workflow."""
-        raise NotImplementedError
+    def __init__(
+        self,
+        *,
+        notes: NoteService,
+        mind_maps: NoteBackedMindMapService,
+    ):
+        """Initialize the notes API.
 
-    @abstractmethod
+        Args:
+            notes: Backend note-row primitives. Owns
+                ``fetch_note_rows`` / ``classify_row`` / ``create_note``
+                / ``update_note`` / ``delete_note``.
+            mind_maps: Mind-map-only facade backed by ``notes``. Owns
+                the ``list_mind_maps`` / ``delete_mind_map`` paths the
+                public ``NotesAPI`` surface forwards through.
+        """
+        self._notes = notes
+        self._mind_maps = mind_maps
+
     async def list(self, notebook_id: str) -> list[Note]:
         """List all text notes in the notebook.
 
@@ -59,8 +77,18 @@ class NotesAPI(ABC):
         Returns:
             List of Note objects.
         """
+        logger.debug("Listing notes in notebook: %s", notebook_id)
+        all_items = await self._get_all_notes_and_mind_maps(notebook_id)
+        notes: list[Note] = []
 
-    @abstractmethod
+        for item in all_items:
+            kind = self._notes.classify_row(item)
+            if kind in (NoteRowKind.DELETED, NoteRowKind.MIND_MAP):
+                continue
+            notes.append(self._parse_note(item, notebook_id))
+
+        return notes
+
     async def get(self, notebook_id: str, note_id: str) -> Note:
         """Get a specific note by ID.
 
@@ -76,8 +104,14 @@ class NotesAPI(ABC):
                 ``notebooks.get``; issue #1247). Use :meth:`get_or_none` for the
                 sanctioned ``None``-on-miss lookup.
         """
+        # ``_lookup.unwrap_or_raise`` single-sources the raise-on-miss decision
+        # (#1247). Internal callers that need the silent optional-lookup must
+        # use ``get_or_none`` directly.
+        return unwrap_or_raise(
+            await self.get_or_none(notebook_id, note_id),
+            NoteNotFoundError(note_id),
+        )
 
-    @abstractmethod
     async def get_or_none(self, notebook_id: str, note_id: str) -> Note | None:
         """Get a note by ID, returning ``None`` when it does not exist.
 
@@ -95,8 +129,21 @@ class NotesAPI(ABC):
         Returns:
             The :class:`~notebooklm.types.Note`, or ``None`` if not found.
         """
+        all_items = await self._get_all_notes_and_mind_maps(notebook_id)
+        for item in all_items:
+            # The id-slot read goes through ``NoteRow.id`` so the position
+            # knowledge stays in the adapter (``NoteRow`` stringifies the raw
+            # slot, matching the unified ``SourceRow.id`` convention) instead
+            # of an open-coded ``item[0]`` that silently flips found →
+            # not-found if the id slot ever moves.
+            if isinstance(item, list) and len(item) > 0 and NoteRow(item).id == note_id:
+                return self._parse_note(item, notebook_id)
+        return None
 
-    @abstractmethod
+    # Internal optional-lookup alias: a stable private name so internal call
+    # sites and tests use the ``None``-on-miss lookup rather than the raising get().
+    _get_or_none = get_or_none
+
     async def create(
         self,
         notebook_id: str,
@@ -113,8 +160,12 @@ class NotesAPI(ABC):
         Returns:
             The created Note object.
         """
+        return await self._notes.create_note(
+            notebook_id,
+            title=title,
+            content=content,
+        )
 
-    @abstractmethod
     async def update(
         self,
         notebook_id: str,
@@ -142,10 +193,16 @@ class NotesAPI(ABC):
             :class:`NoteNotFoundError` instead of silently "succeeding" via the
             ``allow_null=True`` no-op (#1362).
         """
+        # v0.8.0 (issue #1362): detect a missing target at the public facade
+        # (never inside ``_note_service`` — that crosses the layer boundary).
+        # ``get_or_none`` is the silent optional-lookup; only a genuine miss
+        # yields ``None`` (transport/auth/decode faults propagate).
+        if await self.get_or_none(notebook_id, note_id) is None:
+            raise NoteNotFoundError(note_id)
+        await self._notes.update_note(notebook_id, note_id, content, title)
 
-    @abstractmethod
-    async def delete(self, notebook_id: str, note_id: str | builtins.list[str]) -> None:
-        """Delete one or several notes with one delete request.
+    async def delete(self, notebook_id: str, note_id: str) -> None:
+        """Delete a note from the notebook.
 
         Note: This clears the note content/title rather than removing it
         from the list entirely. Google may garbage collect cleared notes later.
@@ -156,17 +213,16 @@ class NotesAPI(ABC):
 
         Args:
             notebook_id: The notebook ID.
-            note_id: One ID or a list of IDs. Duplicates are removed; an empty
-                list is a no-op. Explicit note-backed mind-map IDs are accepted,
-                just as in the single-ID path; interactive maps use artifacts.delete.
+            note_id: The note ID.
 
         .. versionchanged:: 0.7.0
             **Breaking change:** previously returned a hardcoded ``True``;
             now returns ``None`` (issue #1211). ``if await notes.delete(...):``
             no longer enters its block.
         """
+        logger.debug("Deleting note %s from notebook %s", note_id, notebook_id)
+        await self._notes.delete_note(notebook_id, note_id)
 
-    @abstractmethod
     async def list_mind_maps(self, notebook_id: str) -> builtins.list[Any]:
         """List all mind maps in the notebook.
 
@@ -184,8 +240,8 @@ class NotesAPI(ABC):
         Returns:
             List of raw mind map data.
         """
+        return await self._mind_maps.list_mind_maps(notebook_id)
 
-    @abstractmethod
     async def delete_mind_map(self, notebook_id: str, mind_map_id: str) -> None:
         """Delete a mind map from the notebook.
 
@@ -201,6 +257,54 @@ class NotesAPI(ABC):
             **Breaking change:** previously returned a hardcoded ``True``;
             now returns ``None`` (issue #1211).
         """
+        await self._mind_maps.delete_mind_map(notebook_id, mind_map_id)
 
+    # =========================================================================
+    # Private Helpers
+    # =========================================================================
 
-__all__ = ["NotesAPI"]
+    async def _get_all_notes_and_mind_maps(self, notebook_id: str) -> builtins.list[Any]:
+        """Fetch all notes and mind maps from the API."""
+        return await self._notes.fetch_note_rows(notebook_id)
+
+    def _is_deleted(self, item: builtins.list[Any]) -> bool:
+        """Check if a note/mind map item is deleted (status=2).
+
+        Delegates to :meth:`NoteService.classify_row`, which reads the
+        deletion sentinel via :attr:`NoteRow.is_deleted`. The wire
+        shape (``[id, None, 2]`` — content slot ``None`` plus the
+        soft-delete sentinel at position 2) is documented on
+        :class:`NoteRow`; this method exists only as the historical
+        ``NotesAPI`` private surface.
+
+        Args:
+            item: Raw note/mind map data.
+
+        Returns:
+            True if the item is deleted (soft-deleted with status=2).
+        """
+        return self._notes.classify_row(item) == NoteRowKind.DELETED
+
+    def _extract_content(self, item: builtins.list[Any]) -> str | None:
+        """Extract content string from note/mind map item."""
+        return self._notes.extract_content(item)
+
+    def _parse_note(self, item: builtins.list[Any], notebook_id: str) -> Note:
+        """Parse a raw note item into a Note object.
+
+        Position knowledge (legacy ``[id, content]`` vs current
+        ``[id, [id, content, metadata, None, title]]`` dispatch, and
+        the title slot at ``raw[1][4]``) lives in
+        :class:`notebooklm._row_adapters.notes.NoteRow` — this method just
+        reads the named properties. ``content`` defaults to ``""``
+        (not ``None``) here to preserve the v0.4.1 :class:`Note`
+        contract.
+        """
+        row = NoteRow(item)
+        return Note(
+            id=row.id,
+            notebook_id=notebook_id,
+            title=row.title,
+            content=row.content or "",
+            created_at=row.created_at,
+        )

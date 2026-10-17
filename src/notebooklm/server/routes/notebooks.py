@@ -23,7 +23,6 @@ from pydantic import BaseModel
 from ..._app import notebooks as core
 from ..._app.notebooks import SUGGEST_SURFACE_MAP, SuggestSurface
 from ..._app.serialize import to_jsonable
-from ..._app.views import notebook_view
 from ...client import NotebookLMClient
 from .._context import get_client
 from .._pagination import MAX_LIMIT, paginate_envelope
@@ -60,23 +59,21 @@ async def list_notebooks(
     ``?limit=`` to slice and add a ``meta`` block; ``?offset=`` pages forward.
     """
     notebooks = await client.notebooks.list()
-    return paginate_envelope(
-        [notebook_view(nb) for nb in notebooks], key="notebooks", limit=limit, offset=offset
-    )
+    return paginate_envelope(to_jsonable(notebooks), key="notebooks", limit=limit, offset=offset)
 
 
 @router.get("/{notebook_id}")
 async def get_notebook(notebook_id: str, client: ClientDep) -> dict[str, Any]:
     """Fetch one notebook (raises ``NotebookNotFoundError`` → 404 on a miss)."""
     notebook = await client.notebooks.get(notebook_id)
-    return notebook_view(notebook)
+    return to_jsonable(notebook)
 
 
 @router.post("", status_code=201)
 async def create_notebook(body: NotebookCreate, client: ClientDep) -> dict[str, Any]:
     """Create a notebook with the given title."""
     result = await core.execute_notebook_create(client, body.title)
-    return notebook_view(result.notebook)
+    return to_jsonable(result.notebook)
 
 
 @router.patch("/{notebook_id}")

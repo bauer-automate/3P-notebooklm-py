@@ -75,7 +75,7 @@ _FORBIDDEN_IMPORTS = {
     "notebooklm._auth.mint_service",
     "notebooklm._auth.profile_store",
     "notebooklm._auth.refresh",
-    "notebooklm._web",
+    "notebooklm._auth.session",
     "notebooklm._auth.storage_lock",
     "notebooklm._auth.tokens",
     "notebooklm.cli",
@@ -118,13 +118,11 @@ _EXPECTED_IMPORTS: tuple[ImportRecord, ...] = (
     ("module", 0, "typing", "ClassVar", None),
     ("module", 0, "typing", "cast", None),
     ("module", 0, "httpx", "", None),
-    ("module", 2, "_request_context", "policy_key", None),
     ("module", 1, "", "single_flight", "_single_flight"),
     ("module", 1, "cookie_types", "CookieJar", None),
     ("module", 1, "paths", "canonical_storage_key", None),
     ("module", 1, "cookies", "_LoadedCookiePair", None),
     ("module", 1, "extraction", "_LoginRedirectError", None),
-    ("module", 1, "profile_migration", "_LoadedProfilePair", None),
     ("module", 1, "storage", "CookieSnapshot", None),
     ("ColdRecoveryCoordinator.recover", 1, "extraction", "_LoginRedirectError", None),
     ("ColdRecoveryCoordinator._drive_cold", 1, "extraction", "_LoginRedirectError", None),
@@ -134,10 +132,10 @@ _EXPECTED_IMPORTS: tuple[ImportRecord, ...] = (
     ("coalesced_cold_recovery", 1, "cookies", "_build_cookie_pair_from_storage", None),
     ("coalesced_cold_recovery", 1, "cookies", "_clone_cookie_jar", None),
     ("coalesced_cold_recovery", 1, "storage", "snapshot_cookie_jar", None),
-    ("try_storage_cookie_reload", 1, "cookies", "_replace_cookie_jar", None),
-    ("try_storage_cookie_reload", 1, "profile_migration", "_load_profile_pair_pure", None),
+    ("_try_headless_reauth_result", 2, "paths", "get_browser_profile_dir", None),
     ("_try_headless_reauth_result", 1, "cookies", "_build_cookie_pair_from_storage", None),
-    ("_try_headless_reauth_result", 1, "recovery_rungs", "installed_headless_rung", None),
+    ("_try_headless_reauth_result", 1, "headless_reauth", "HeadlessReauthStatus", None),
+    ("_try_headless_reauth_result", 1, "headless_reauth", "attempt_headless_reauth", None),
     ("try_headless_reauth", 1, "cookies", "_replace_cookie_jar", None),
     ("_run_master_token_reauth", 1, "cookies", "_build_cookie_pair_from_storage", None),
     ("_run_master_token_reauth", 1, "master_token", "MasterTokenError", None),
@@ -147,7 +145,7 @@ _EXPECTED_IMPORTS: tuple[ImportRecord, ...] = (
     ("_try_master_token_reauth_result", 1, "cookies", "_LoadedCookiePair", None),
     ("try_master_token_reauth", 1, "cookies", "_replace_cookie_jar", None),
 )
-_CLASS_HASH = "441063d197b3703e7c4bc4351c7de99f4f4164ac64c83689abbcc98541249060"
+_CLASS_HASH = "ebc51a5732119e65bc53999db2749985464ee2a587127c6f32db08a414455c19"
 _ADAPTER_HASH = "53737bcc7a75cd7c388108b0f5180df1defdbf2f48fedf2cb5eefc6260aafdb2"
 
 

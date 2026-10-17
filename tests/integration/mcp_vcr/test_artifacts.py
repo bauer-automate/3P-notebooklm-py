@@ -50,7 +50,7 @@ import urllib.parse
 
 import pytest
 
-from tests.integration.conftest import WEB_CASSETTES_DIR, skip_no_cassettes
+from tests.integration.conftest import CASSETTES_DIR, skip_no_cassettes
 from tests.vcr_config import notebooklm_vcr
 
 from .conftest import build_mcp_client
@@ -80,7 +80,7 @@ def _recorded_generate_source_ids(cassette: str) -> list[str]:
     UUIDs) keeps the test resilient to a future re-record while still producing a
     structurally-matching ``CREATE_ARTIFACT`` body.
     """
-    text = (WEB_CASSETTES_DIR / cassette).read_text(encoding="utf-8")
+    text = (CASSETTES_DIR / cassette).read_text(encoding="utf-8")
     for body in re.findall(r"body: (f\.req=[^\n]+)", text):
         f_req = urllib.parse.parse_qs(body).get("f.req", [])
         if not f_req:
@@ -173,12 +173,6 @@ async def test_mcp_studio_list_over_vcr() -> None:
     assert any(isinstance(p, str) and p for p in prompts), (
         f"expected at least one non-empty generation_prompt; got {prompts}"
     )
-    # Both recorded LIST_ARTIFACTS rows reference one source. This pins the
-    # full wire -> SDK -> MCP path, including unknown rather than zero counts.
-    table = next(it for it in items if it["id"] == STUDIO_LIST_PROMPTED_ARTIFACT_ID)
-    assert table["source_count"] == 1
-    assert table["duration_seconds"] is None
-    assert table["slide_count"] is None
 
 
 #: mind_maps_interactive.yaml — the completed data-table artifact whose recorded

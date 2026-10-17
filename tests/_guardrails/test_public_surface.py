@@ -87,22 +87,18 @@ EXPECTED_AUTH_ALL: list[str] = [
 # prefer routing new CLI needs through ``_app/`` service functions instead.
 AUTH_CROSS_BOUNDARY_NAMES: list[str] = [
     "Account",
-    "app_host_scope_note",
+    "AccountRecord",
     "assert_account_writable",
     "bootstrap_missing_storage_from_master_token",
-    "browser_login_channels",
     "build_cookie_jar",
     "build_httpx_cookies_from_storage",
-    "capture_browser_oauth_token",
-    "check_headless_reauth_readiness",
+    "CLEAR_ACCOUNT",
     "cookie_names_from_storage",
-    "ensure_browser_login_available",
     "enumerate_accounts",
     "extract_cookies_from_storage",
     "extract_cookies_with_domains",
     "fetch_tokens_passive",
     "fetch_tokens_with_domains",
-    "filter_storage_state_cookies_by_domain_policy",
     "GOOGLE_REGIONAL_CCTLDS",
     "master_token_bootstrap",
     "master_token_remint",
@@ -111,10 +107,8 @@ AUTH_CROSS_BOUNDARY_NAMES: list[str] = [
     "read_account_metadata",
     "read_master_token",
     "repair_account_metadata_from_playwright_storage",
-    "ReplaceResult",
-    "replace_profile_from_login",
+    "replace_from_login",
     "resolve_account_identity",
-    "run_browser_login_capture",
     "validate_with_recovery",
 ]
 
@@ -159,12 +153,10 @@ AUTH_CROSS_BOUNDARY_NAMES: list[str] = [
 # earlier revision of this PR did) silently broke that documented promise with no
 # guardrail catching it, since the audit script only diffs ``__all__`` membership.
 _AUTH_DEBLESSED_KEEP_IMPORTABLE: list[str] = [
-    "AccountRecord",
     "advance_cookie_snapshot_after_save",
     "ALLOWED_COOKIE_DOMAINS",
     "authuser_query",
     "clear_account_metadata",
-    "CLEAR_ACCOUNT",
     "CookieSaveResult",
     "CookieSnapshot",
     "CookieSnapshotKey",
@@ -194,7 +186,6 @@ _AUTH_DEBLESSED_KEEP_IMPORTABLE: list[str] = [
     "persist_minted_jar",
     "read_account_metadata_from_storage_state",
     "recover_psidts_in_memory",
-    "replace_from_login",
     "save_cookies_to_storage",
     "snapshot_cookie_jar",
     "write_account_metadata",
@@ -330,7 +321,7 @@ def _collect_external_imports_by_root() -> dict[tuple[str, str], frozenset[str]]
                     module_basename = module.rsplit(".", 1)[1]
                 # Relative imports (``from .auth import X`` / ``from ..auth``):
                 # resolve against the importing file's package so a same-named
-                # SIBLING module (e.g. ``_web/transport/auth.py``) is NOT misattributed
+                # SIBLING module (e.g. ``_runtime/auth.py``) is NOT misattributed
                 # to the top-level ``notebooklm.auth`` facade.
                 elif node.level > 0 and module and file_pkg_parts is not None:
                     pops = node.level - 1
@@ -573,11 +564,9 @@ def test_auth_deblessed_names_stay_importable_but_unblessed() -> None:
     cross-boundary ledger shrink (follow-up to #2103), plus
     ``read_account_metadata_from_storage_state``, whose facade alias the same
     follow-up must keep per ``scripts/api-compat-allowlist.json``'s explicit
-    retained-and-importable promise, plus ``AccountRecord``, ``CLEAR_ACCOUNT``,
-    and ``replace_from_login``, whose last first-party callers migrated to the
-    native primitive-shaped login operation in B3.
+    retained-and-importable promise.
     """
-    assert len(_AUTH_DEBLESSED_KEEP_IMPORTABLE) == 40
+    assert len(_AUTH_DEBLESSED_KEEP_IMPORTABLE) == 37
     assert len(_AUTH_DEBLESSED_KEEP_IMPORTABLE) == len(set(_AUTH_DEBLESSED_KEEP_IMPORTABLE)), (
         "_AUTH_DEBLESSED_KEEP_IMPORTABLE must not contain duplicates"
     )

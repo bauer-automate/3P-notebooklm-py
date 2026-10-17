@@ -28,11 +28,8 @@ import os
 import sys
 import warnings
 from collections import Counter
-from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -106,7 +103,6 @@ def _result(
         # issues. Pin both phrasings (decoder.py:117 and :470).
         "Parse error: API rate limit exceeded. Please wait before retrying.",
         "Parse error: API rate limit or quota exceeded. Please wait before retrying.",
-        "Parse error: RateLimitError",
         # ``httpx.ReadTimeout`` with an empty message stringifies to the
         # class name (see issue #864 fallback in make_rpc_request) and is
         # a Google-side flake that passes on retry — see #1004 and the
@@ -287,15 +283,6 @@ class _TimingOutClient:
         raise httpx.ReadTimeout("")
 
 
-class _LeakyRequestClient:
-    async def post(self, url: str, *, content: str, headers: dict[str, str]) -> httpx.Response:
-        request = httpx.Request("POST", url)
-        raise httpx.ConnectError(
-            "failed request for /notebook/disposable-resource-handle",
-            request=request,
-        )
-
-
 @pytest.fixture
 def timing_out_auth() -> check_rpc_health.AuthTokens:
     return check_rpc_health.AuthTokens(
@@ -317,22 +304,6 @@ async def test_make_rpc_request_surfaces_class_name_for_empty_message_errors(
     )
     assert response_text is None
     assert error == "ReadTimeout"
-
-
-@pytest.mark.asyncio
-async def test_make_rpc_request_withholds_url_and_resource_handle(
-    timing_out_auth: check_rpc_health.AuthTokens,
-) -> None:
-    response_text, error = await make_rpc_request(
-        _LeakyRequestClient(),
-        timing_out_auth,
-        check_rpc_health.RPCMethod.GET_SUGGESTED_REPORTS,
-        [[2], "disposable-resource-handle"],
-        source_path="/notebook/disposable-resource-handle",
-    )
-    assert response_text is None
-    assert error == "ConnectError"
-    assert "disposable-resource-handle" not in error
 
 
 @pytest.mark.asyncio
@@ -365,38 +336,6 @@ async def test_test_rpc_method_with_data_propagates_empty_message_errors(
 
 
 @pytest.mark.asyncio
-async def test_test_rpc_method_with_data_keeps_redacted_rate_limit_transient(
-    monkeypatch: pytest.MonkeyPatch,
-    timing_out_auth: check_rpc_health.AuthTokens,
-) -> None:
-    method = check_rpc_health.RPCMethod.CREATE_NOTEBOOK
-
-    async def fake_request(*args: Any, **kwargs: Any) -> tuple[str, None]:
-        return "wire response", None
-
-    def raise_rate_limit(*args: Any, **kwargs: Any) -> Any:
-        raise check_rpc_health.RateLimitError("quota response with sensitive detail")
-
-    monkeypatch.setattr(check_rpc_health, "make_rpc_request", fake_request)
-    monkeypatch.setattr(check_rpc_health, "strip_anti_xssi", lambda value: value)
-    monkeypatch.setattr(check_rpc_health, "parse_chunked_response", lambda value: [])
-    monkeypatch.setattr(check_rpc_health, "collect_rpc_ids", lambda chunks: [method.value])
-    monkeypatch.setattr(check_rpc_health, "decode_response", raise_rate_limit)
-
-    result, data = await check_rpc_health.test_rpc_method_with_data(
-        _TimingOutClient(),
-        timing_out_auth,
-        method,
-        ["Title"],
-    )
-
-    assert data is None
-    assert result.error == "Parse error: RateLimitError"
-    assert check_rpc_health.is_transient_error(result.error)
-    assert "sensitive detail" not in result.error
-
-
-@pytest.mark.asyncio
 async def test_check_method_propagates_empty_message_errors(
     timing_out_auth: check_rpc_health.AuthTokens,
 ) -> None:
@@ -422,71 +361,9 @@ def test_is_transient_error_classifies_readtimeout_as_transient() -> None:
     # point at client- or network-side problems worth surfacing. If this
     # policy ever changes, update this test deliberately — don't drop it.
     assert is_transient_error("ReadTimeout") is True
-    assert is_transient_error("Chat rate limit reached: terminal stream sequence 3") is True
     assert is_transient_error("ConnectTimeout") is False
     assert is_transient_error("WriteTimeout") is False
     assert is_transient_error("PoolTimeout") is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("created_id", ["probe-owned-notebook", None])
-async def test_full_health_runs_without_a_provisioned_fallback(monkeypatch, created_id):
-    monkeypatch.delenv("NOTEBOOKLM_READ_ONLY_NOTEBOOK_ID", raising=False)
-    monkeypatch.delenv("NOTEBOOKLM_GENERATION_NOTEBOOK_ID", raising=False)
-    auth = SimpleNamespace(csrf_token="fake", account_route="0")
-    client = object()
-
-    @asynccontextmanager
-    async def probe_client(_auth):
-        yield client
-
-    temp = check_rpc_health.TempResources(notebook_id=created_id)
-
-    async def setup(_client, _auth, results):
-        results.append(
-            _result(
-                "CREATE_NOTEBOOK",
-                CheckStatus.OK if created_id else CheckStatus.ERROR,
-                error=None if created_id else "creation failed",
-            )
-        )
-        return temp
-
-    probe = AsyncMock(return_value=_result("READ", CheckStatus.OK))
-    cleanup = AsyncMock()
-    monkeypatch.setattr(check_rpc_health, "load_auth", AsyncMock(return_value=auth))
-    monkeypatch.setattr(check_rpc_health, "describe_cookie_scopes", lambda _auth: "fixture")
-    monkeypatch.setattr(check_rpc_health, "build_probe_client", probe_client)
-    monkeypatch.setattr(check_rpc_health, "setup_temp_resources", setup)
-    monkeypatch.setattr(check_rpc_health, "cleanup_temp_resources", cleanup)
-    monkeypatch.setattr(check_rpc_health, "check_method", probe)
-    monkeypatch.setattr(
-        check_rpc_health,
-        "check_chat_query",
-        AsyncMock(return_value=_result("CHAT", CheckStatus.OK)),
-    )
-    monkeypatch.setattr(
-        check_rpc_health,
-        "check_customization_table",
-        AsyncMock(return_value=(check_rpc_health.CustomizationStatus.UNKNOWN, "fixture")),
-    )
-    monkeypatch.setattr(
-        check_rpc_health,
-        "check_build_label",
-        AsyncMock(return_value=check_rpc_health.classify_build_label(None, "fixture")),
-    )
-    monkeypatch.setattr(check_rpc_health, "probe_rebrand_host", AsyncMock(return_value=[]))
-    monkeypatch.setattr(check_rpc_health, "CALL_DELAY", 0)
-
-    results, customization, state, build = await check_rpc_health.run_health_check(full_mode=True)
-
-    assert probe.await_count == len(list(check_rpc_health.RPCMethod))
-    assert all(call.args[3] == created_id for call in probe.await_args_list)
-    if created_id:
-        cleanup.assert_awaited_once_with(client, auth, temp, results)
-    else:
-        cleanup.assert_not_awaited()
-        assert check_rpc_health.print_summary(results, customization, state, build) == 3
 
 
 @pytest.mark.asyncio
@@ -826,28 +703,6 @@ async def test_chat_probe_ok_on_recognized_server_error_frame() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_probe_ok_on_rate_limit_frame(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A terminal stream sequence without an RPC payload raises RateLimitError
-    # (server quota exhausted): the wire contract is intact, the server merely
-    # declined. -> OK (#2323).
-    from notebooklm.exceptions import RateLimitError
-
-    def _raise_rate_limit(_text: str) -> Any:
-        raise RateLimitError(
-            "Chat rate limit reached: the request ended before the server "
-            "returned an RPC payload (terminal stream sequence 3). Retry later."
-        )
-
-    monkeypatch.setattr(check_rpc_health, "parse_streaming_chat_response", _raise_rate_limit)
-    client = _ChatClient(text=")]}'\n")
-    result = await check_rpc_health.check_chat_query(client, _chat_auth(), "nb_123")
-    assert result.status is CheckStatus.OK
-    assert "Server declined (recognized frame)" in (result.error or "")
-    assert "RateLimitError" in (result.error or "")
-    assert "rate limit reached" not in (result.error or "")
-
-
-@pytest.mark.asyncio
 async def test_chat_probe_error_on_http_status() -> None:
     client = _ChatClient(status=500, text="boom")
     result = await check_rpc_health.check_chat_query(client, _chat_auth(), "nb_123")
@@ -895,36 +750,15 @@ def test_main_exits_two_when_auth_missing(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert excinfo.value.code == 2
 
 
-def test_main_exits_two_on_unhandled_crash(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """An unhandled crash in main must return exit code 2 (infrastructure failure),
-    never exit 1 which the workflow interprets as an RPC mismatch (#2323).
-    Secrets in the exception and formatted traceback must be scrubbed.
-    """
-    monkeypatch.setenv("NOTEBOOKLM_AUTH_JSON", "{}")
-    monkeypatch.setattr("sys.argv", ["check_rpc_health.py"])
+async def _load_auth_raising(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> None:
+    """Run ``load_auth`` with the private storage owner raising ``error``."""
+    from notebooklm._auth import tokens as tokens_module
 
-    async def _crashing_run(*_args: Any, **_kwargs: Any) -> Any:
-        # Include a secret token that should be redacted by scrub_secrets
-        raise RuntimeError("Crash with SID=secret_cookie_value_here")
-
-    monkeypatch.setattr(check_rpc_health, "run_health_check", _crashing_run)
-    exit_code = check_rpc_health.main()
-    assert exit_code == 2
-    err = capsys.readouterr().err
-    assert "FATAL: RPC health check crashed:" in err
-    assert "secret_cookie_value_here" not in err
-    assert "***" in err
-
-
-def _raising_stored_auth(error: BaseException):
-    """Return an injected stored-auth loader that raises ``error``."""
-
-    async def load(**_kwargs: Any) -> Any:
+    async def load(_self: object, **_kwargs: Any) -> Any:
         raise error
 
-    return load
+    monkeypatch.setattr(tokens_module.StoredAuthLoader, "load", load)
+    await check_rpc_health.load_auth(None)
 
 
 @pytest.mark.asyncio
@@ -974,9 +808,8 @@ async def test_load_auth_uses_private_owner_with_exact_arguments_and_no_warning(
 async def test_load_auth_preserves_unmapped_error_identity(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:
-    monkeypatch.setattr(check_rpc_health, "_load_stored_auth", _raising_stored_auth(error))
     with pytest.raises(type(error)) as excinfo:
-        await check_rpc_health.load_auth(None)
+        await _load_auth_raising(monkeypatch, error)
     assert excinfo.value is error
 
 
@@ -989,10 +822,8 @@ async def test_load_auth_exits_two_and_names_the_source_on_value_error(
     with no context, so without the source line a corrupt storage_state.json
     prints only ``Expecting value: line 1 column 1 (char 0)``.
     """
-    error = ValueError("Expecting value: line 1 column 1")
-    monkeypatch.setattr(check_rpc_health, "_load_stored_auth", _raising_stored_auth(error))
     with pytest.raises(SystemExit) as excinfo:
-        await check_rpc_health.load_auth(None)
+        await _load_auth_raising(monkeypatch, ValueError("Expecting value: line 1 column 1"))
     assert excinfo.value.code == 2
 
     stderr = capsys.readouterr().err
@@ -1013,9 +844,8 @@ async def test_load_auth_exits_two_and_scrubs_secrets_on_http_error(
         "All connection attempts failed for "
         "https://notebooklm.google.com/batchexecute?f.sid=-8891234567890123456"
     )
-    monkeypatch.setattr(check_rpc_health, "_load_stored_auth", _raising_stored_auth(leaky))
     with pytest.raises(SystemExit) as excinfo:
-        await check_rpc_health.load_auth(None)
+        await _load_auth_raising(monkeypatch, leaky)
     assert excinfo.value.code == 2
 
     stderr = capsys.readouterr().err
@@ -1026,31 +856,16 @@ async def test_load_auth_exits_two_and_scrubs_secrets_on_http_error(
 
 
 # ---------------------------------------------------------------------------
-# GET_CUSTOMIZATION_CHOICES studio option-table cross-check (#2284)
+# sqTeoe studio-customization cohort tripwire
 # ---------------------------------------------------------------------------
 
-CustomizationStatus = check_rpc_health.CustomizationStatus
+CohortStatus = check_rpc_health.CohortStatus
 build_customization_choices_params = check_rpc_health.build_customization_choices_params
-check_customization_table = check_rpc_health.check_customization_table
-compare_customization_choices = check_rpc_health.compare_customization_choices
+check_customization_cohort = check_rpc_health.check_customization_cohort
 make_raw_rpc_request = check_rpc_health.make_raw_rpc_request
 
-_CHOICES_ID = check_rpc_health.RPCMethod.GET_CUSTOMIZATION_CHOICES.value
-_OPTS = [2, None, None, [1, None, None, None, None, None, None, None, None, None, [1]]]
-# The four families as served live on 2026-09-02 (labels verbatim, descriptions elided).
-# CINEMATIC is a dedicated generation flow and is not always included in this
-# account/UI availability table; its absence is not removal of wire format 3.
-_LIVE_TABLE: list[Any] = [
-    [
-        [[[1, "Deep Dive", "d"], [2, "Brief", "d"], [3, "Critique", "d"], [4, "Debate", "d"]]],
-        [[[1, "Explainer", "d"], [2, "Brief", "d"], [4, "Short", "d"]]],
-        [[[1, "Detailed Deck", "d"], [2, "Presenter Slides", "d"]]],
-        [[["Briefing Doc", "d", "directive"]]],
-    ]
-]
 
-
-def _probe_auth() -> check_rpc_health.AuthTokens:
+def _cohort_auth() -> check_rpc_health.AuthTokens:
     return check_rpc_health.AuthTokens(
         cookies={"SID": "sid"},
         csrf_token="csrf",
@@ -1058,15 +873,20 @@ def _probe_auth() -> check_rpc_health.AuthTokens:
     )
 
 
-def _choices_frame(payload: Any) -> str:
-    inner = "null" if payload is None else json.dumps(json.dumps(payload))
-    return ")]}'\n\n" + f'[["wrb.fr","{_CHOICES_ID}",{inner},null,null,null,"generic"]]'
-
-
-def test_build_customization_choices_params_is_the_production_shape() -> None:
-    """Context only, plus the notebook id when known — the old ``[nbctx, None, 3]`` drew 3 (#2284)."""
-    assert build_customization_choices_params(None) == [_OPTS]
-    assert build_customization_choices_params("nb_42") == [_OPTS, "nb_42"]
+def test_build_customization_choices_params_shape() -> None:
+    """The reverse-engineered ``[nbctx, None, artifact_type]`` shape is verified."""
+    params = build_customization_choices_params("nb_42")
+    assert params == [
+        [
+            2,
+            None,
+            None,
+            [1, None, None, None, None, None, None, None, None, None, [1]],
+            ["nb_42"],
+        ],
+        None,
+        3,  # artifact_type = video
+    ]
 
 
 @pytest.mark.asyncio
@@ -1082,204 +902,96 @@ async def test_make_raw_rpc_request_threads_id_into_query_and_body() -> None:
 
     text, error = await make_raw_rpc_request(
         FakeClient(),
-        _probe_auth(),
-        "OcvKNc",
+        _cohort_auth(),
+        "sqTeoe",
         [["x"]],
         source_path="/notebook/nb_1",
     )
     assert error is None
     assert text == ")]}'\n\n[]"
     query = parse_qs(urlparse(captured["url"]).query)
-    assert query["rpcids"] == ["OcvKNc"]
+    assert query["rpcids"] == ["sqTeoe"]
     assert query["source-path"] == ["/notebook/nb_1"]
-    assert "OcvKNc" in captured["content"]
+    # The body's f.req carries the override id, kept in sync with the query param.
+    assert "sqTeoe" in captured["content"]
     # The fallback RPCMethod (LIST_NOTEBOOKS) must NOT leak into the wire.
     assert check_rpc_health.RPCMethod.LIST_NOTEBOOKS.value not in captured["content"]
 
 
-def test_compare_customization_choices_matches_live_table_without_cinematic_row() -> None:
-    status, detail = compare_customization_choices(_LIVE_TABLE)
-    assert status is CustomizationStatus.MATCH
-    assert "required customization choices are present" in detail
-
-
-def test_compare_customization_choices_matches_when_optional_cinematic_row_is_served() -> None:
-    """CINEMATIC has appeared in sqTeoe too; both availability shapes are valid."""
-    table = json.loads(json.dumps(_LIVE_TABLE))
-    table[0][1][0].insert(2, [3, "Cinematic", "d"])
-    status, detail = compare_customization_choices(table)
-    assert status is CustomizationStatus.MATCH
-    assert "required customization choices are present" in detail
-
-
-def test_compare_customization_choices_drifts_on_a_new_code() -> None:
-    """A served row the client does not model (e.g. AudioFormat 5 "Lecture") is DRIFT."""
-    table = json.loads(json.dumps(_LIVE_TABLE))
-    table[0][0][0].append([5, "Lecture", "d"])
-    status, detail = compare_customization_choices(table)
-    assert status is CustomizationStatus.DRIFT
-    assert "audio: served codes not modelled [(5, 'Lecture')]" in detail
-
-
-def test_compare_customization_choices_drifts_on_a_dropped_member_only() -> None:
-    """Codes decide DRIFT; a label rename is reported but is not drift on its own."""
-    table = json.loads(json.dumps(_LIVE_TABLE))
-    del table[0][1][0][2]  # video: Short (4) no longer served
-    status, detail = compare_customization_choices(table)
-    assert status is CustomizationStatus.DRIFT
-    assert "video: modelled codes not served [(4, 'SHORT')]" in detail
-    assert "served codes not modelled" not in detail
-
-
-def test_compare_customization_choices_reports_a_label_rename_without_drift() -> None:
-    """Labels follow ``hl`` and Google's copy; only the codes are load-bearing (#1597)."""
-    table = json.loads(json.dumps(_LIVE_TABLE))
-    table[0][1][0][2] = [4, "Panel", "d"]  # video: Short renamed, code unchanged
-    status, detail = compare_customization_choices(table)
-    assert status is CustomizationStatus.MATCH
-    assert "video: label differs from member name [(4, 'Panel', 'SHORT')]" in detail
-
-
-def test_compare_customization_choices_drifts_on_an_unmodelled_family() -> None:
-    table = json.loads(json.dumps(_LIVE_TABLE))
-    table[0].append([[[1, "Infographic style", "d"]]])
-    status, detail = compare_customization_choices(table)
-    assert status is CustomizationStatus.DRIFT
-    assert "1 unmodelled family slot(s) served" in detail
-
-
-def test_compare_customization_choices_drifts_on_an_empty_family_or_no_presets() -> None:
-    table = json.loads(json.dumps(_LIVE_TABLE))
-    table[0][2] = [[]]
-    table[0][3] = [[]]
-    status, detail = compare_customization_choices(table)
-    assert status is CustomizationStatus.DRIFT
-    assert "slide_deck: no rows served" in detail
-    assert "reports: no well-formed presets served" in detail
-    # Presets that are present but all malformed count as none.
-    table[0][3] = [[["no directive", "d", ""]]]
-    _, detail = compare_customization_choices(table)
-    assert "reports: no well-formed presets served" in detail
-
-
 @pytest.mark.asyncio
-async def test_check_customization_table_matches_on_the_live_shape() -> None:
-    captured: dict[str, Any] = {}
+async def test_check_customization_cohort_gated_on_null() -> None:
+    """A genuine null payload is GATED (the expected steady state, NOT a failure)."""
 
-    class LiveClient:
+    class NullClient:
         async def post(self, url: str, *, content: str, headers: dict[str, str]) -> httpx.Response:
-            captured["url"] = url
-            captured["content"] = content
-            return httpx.Response(
-                200, text=_choices_frame(_LIVE_TABLE), request=httpx.Request("POST", url)
-            )
+            # wrb.fr frame whose payload is JSON null -> decode_response(..., allow_null) == None
+            body = ')]}\'\n\n[["wrb.fr","sqTeoe","null",null,null,null,"generic"]]'
+            return httpx.Response(200, text=body, request=httpx.Request("POST", url))
 
-    status, detail = await check_customization_table(LiveClient(), _probe_auth(), "nb_1")
-    assert status is CustomizationStatus.MATCH
-    assert parse_qs(urlparse(captured["url"]).query)["rpcids"] == [_CHOICES_ID]
-    # The probe sends the production request shape, not the old ``[nbctx, None, 3]``.
-    sent = json.loads(parse_qs(captured["content"])["f.req"][0])[0][0]
-    assert sent[0] == _CHOICES_ID
-    assert json.loads(sent[1]) == [_OPTS, "nb_1"]
+    status, detail = await check_customization_cohort(NullClient(), _cohort_auth(), "nb_1")
+    assert status is CohortStatus.GATED
+    assert "gated" in detail.lower()
 
 
 @pytest.mark.asyncio
-async def test_check_customization_table_drifts_on_a_served_difference() -> None:
-    table = json.loads(json.dumps(_LIVE_TABLE))
-    table[0][0][0].append([5, "Lecture", "d"])
+async def test_check_customization_cohort_migrated_on_non_null() -> None:
+    """A non-null payload is the loud MIGRATED signal (cohort flipped)."""
 
-    class DriftClient:
+    class MigratedClient:
         async def post(self, url: str, *, content: str, headers: dict[str, str]) -> httpx.Response:
-            return httpx.Response(
-                200, text=_choices_frame(table), request=httpx.Request("POST", url)
-            )
+            body = ')]}\'\n\n[["wrb.fr","sqTeoe","[[1,2,3]]",null,null,null,"generic"]]'
+            return httpx.Response(200, text=body, request=httpx.Request("POST", url))
 
-    status, detail = await check_customization_table(DriftClient(), _probe_auth(), None)
-    assert status is CustomizationStatus.DRIFT
-    assert "Lecture" in detail
+    status, _ = await check_customization_cohort(MigratedClient(), _cohort_auth(), "nb_1")
+    assert status is CohortStatus.MIGRATED
 
 
 @pytest.mark.asyncio
-async def test_check_customization_table_unknown_on_transport_error() -> None:
-    """A transport failure never alarms; it draws UNKNOWN (no conclusion)."""
+async def test_check_customization_cohort_unknown_on_transport_error() -> None:
+    """A transport failure never alarms; it draws UNKNOWN (no cohort conclusion)."""
 
     class FailingClient:
         async def post(self, url: str, *, content: str, headers: dict[str, str]) -> httpx.Response:
             raise httpx.ReadTimeout("")
 
-    status, detail = await check_customization_table(FailingClient(), _probe_auth(), "nb_1")
-    assert status is CustomizationStatus.UNKNOWN
+    status, detail = await check_customization_cohort(FailingClient(), _cohort_auth(), "nb_1")
+    assert status is CohortStatus.UNKNOWN
     assert detail == "ReadTimeout"
 
 
 @pytest.mark.asyncio
-async def test_check_customization_table_rejection_is_unknown_not_a_crash() -> None:
-    """A status-bearing null is a probe failure (UNKNOWN), never an empty table or a crash."""
-
-    class RejectedClient:
-        async def post(self, url: str, *, content: str, headers: dict[str, str]) -> httpx.Response:
-            body = ")]}'\n\n" + f'[["wrb.fr","{_CHOICES_ID}",null,null,null,[3],"generic"]]'
-            return httpx.Response(200, text=body, request=httpx.Request("POST", url))
-
-    status, detail = await check_customization_table(RejectedClient(), _probe_auth(), "nb_1")
-    assert status is CustomizationStatus.UNKNOWN
-    assert detail.startswith("RPC error")
+async def test_check_customization_cohort_unknown_without_notebook() -> None:
+    status, _ = await check_customization_cohort(object(), _cohort_auth(), None)
+    assert status is CohortStatus.UNKNOWN
 
 
-@pytest.mark.asyncio
-async def test_check_customization_table_absent_id_still_propagates() -> None:
-    """The absent-id drift guard (UnknownRPCMethodError) must stay loud."""
-
-    class RotatedClient:
-        async def post(self, url: str, *, content: str, headers: dict[str, str]) -> httpx.Response:
-            body = ")]}'\n\n" + '[["wrb.fr","zzzzzz","[[]]",null,null,null,"generic"]]'
-            return httpx.Response(200, text=body, request=httpx.Request("POST", url))
-
-    with pytest.raises(check_rpc_health.UnknownRPCMethodError):
-        await check_customization_table(RotatedClient(), _probe_auth(), "nb_1")
-
-
-@pytest.mark.asyncio
-async def test_check_customization_table_bad_envelope_is_drift() -> None:
-    class ReshapedClient:
-        async def post(self, url: str, *, content: str, headers: dict[str, str]) -> httpx.Response:
-            return httpx.Response(
-                200, text=_choices_frame([42]), request=httpx.Request("POST", url)
-            )
-
-    status, detail = await check_customization_table(ReshapedClient(), _probe_auth(), None)
-    assert status is CustomizationStatus.DRIFT
-    assert detail.startswith("unrecognized envelope")
-
-
-def test_compute_exit_code_customization_drift_is_four() -> None:
-    """DRIFT draws exit 4 when no higher-priority RPC drift fired."""
+def test_compute_exit_code_cohort_migrated_is_four() -> None:
+    """MIGRATED draws exit 4 when no higher-priority drift fired."""
     clean = Counter({CheckStatus.OK: 3})
-    assert check_rpc_health.compute_exit_code(clean, [], CustomizationStatus.DRIFT) == 4
-    assert check_rpc_health.compute_exit_code(clean, [], CustomizationStatus.MATCH) == 0
-    assert check_rpc_health.compute_exit_code(clean, [], CustomizationStatus.UNKNOWN) == 0
-    # RPC drift outranks the enum drift.
+    assert check_rpc_health.compute_exit_code(clean, [], CohortStatus.MIGRATED) == 4
+    assert check_rpc_health.compute_exit_code(clean, [], CohortStatus.GATED) == 0
+    # RPC drift outranks the cohort flip.
     mismatch = Counter({CheckStatus.MISMATCH: 1})
-    assert check_rpc_health.compute_exit_code(mismatch, [], CustomizationStatus.DRIFT) == 1
+    assert check_rpc_health.compute_exit_code(mismatch, [], CohortStatus.MIGRATED) == 1
     real_error = [_result("e", CheckStatus.ERROR, error="Parse error: boom")]
-    assert check_rpc_health.compute_exit_code(Counter(), real_error, CustomizationStatus.DRIFT) == 3
+    assert check_rpc_health.compute_exit_code(Counter(), real_error, CohortStatus.MIGRATED) == 3
 
 
-def test_print_summary_reports_customization_drift(capsys: pytest.CaptureFixture[str]) -> None:
+def test_print_summary_reports_cohort_flip(capsys: pytest.CaptureFixture[str]) -> None:
     results = [_result("ok", CheckStatus.OK)]
-    rc = print_summary(results, CustomizationStatus.DRIFT)
+    rc = print_summary(results, CohortStatus.MIGRATED)
     out = capsys.readouterr().out
     assert rc == 4
-    assert "CUSTOMIZATION DRIFT" in out
-    assert "sqTeoe option tables = DRIFT" in out
+    assert "COHORT FLIP" in out
+    assert "sqTeoe customization choices = MIGRATED" in out
 
 
-def test_print_summary_match_is_pass(capsys: pytest.CaptureFixture[str]) -> None:
+def test_print_summary_gated_is_pass(capsys: pytest.CaptureFixture[str]) -> None:
     results = [_result("ok", CheckStatus.OK)]
-    rc = print_summary(results, CustomizationStatus.MATCH)
+    rc = print_summary(results, CohortStatus.GATED)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "sqTeoe option tables = MATCH" in out
+    assert "sqTeoe customization choices = GATED" in out
     assert "RESULT: PASS" in out
 
 
@@ -1334,7 +1046,7 @@ def test_compute_exit_code_cannot_see_the_rebrand_lane() -> None:
     assert params == [
         "counts",
         "non_transient_errors",
-        "customization_status",
+        "cohort_status",
         "build_label_status",
     ]
 
@@ -1405,68 +1117,9 @@ def test_rebrand_login_redirect_is_unauthenticated(location: str) -> None:
     ["https://notebook.google.com/app", "/app/notebook", "", None, "::not a url::"],
 )
 def test_rebrand_non_login_redirect_stays_absent(location: str | None) -> None:
-    """Redirects outside known sign-in/access-gate destinations still answer ABSENT."""
+    """Only sign-in redirects are excused — everything else still answers ABSENT."""
     verdict = check_rpc_health.classify_rebrand_status(302, location)
     assert verdict is not None and verdict[0] is RebrandProbeStatus.ABSENT
-
-
-@pytest.mark.parametrize("host", ["notebook.google", "notebooklm.google"])
-@pytest.mark.parametrize("path", ["/?location=unsupported", "/login"])
-@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
-def test_rebrand_access_gate_redirect_is_unknown(host: str, path: str, status: int) -> None:
-    """An access gate says nothing about endpoint availability or expired auth."""
-    verdict = check_rpc_health.classify_rebrand_status(status, f"https://{host}{path}")
-    assert verdict == (
-        RebrandProbeStatus.UNKNOWN,
-        f"HTTP {status} redirect to access gate — no conclusion drawn",
-    )
-
-
-@pytest.mark.parametrize(
-    "location",
-    [
-        "https://notebook.google.evil.example/",
-        "https://notebooklm.google.evil.example/",
-        "https://notnotebook.google/",
-        "https://notnotebooklm.google/",
-        "https://example.com/?continue=https://notebook.google/",
-        "https://notebook.google@example.com/",
-    ],
-)
-def test_rebrand_access_gate_lookalikes_stay_absent(location: str) -> None:
-    verdict = check_rpc_health.classify_rebrand_status(302, location)
-    assert verdict == (
-        RebrandProbeStatus.ABSENT,
-        "HTTP 302 (redirect, not an RPC response)",
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("host", ["notebook.google", "notebooklm.google"])
-@pytest.mark.parametrize("previous_status", ["PRESENT", "ABSENT"])
-async def test_rebrand_access_gate_preserves_recorded_capabilities(
-    host: str, previous_status: str
-) -> None:
-    """Both RPC probes must preserve the last observation through access gates."""
-    client = _ChatClient(
-        status=302,
-        text="",
-        response_headers={"Location": f"https://{host}/?location=unsupported"},
-    )
-    probes = [
-        await check_rpc_health.probe_rebrand_batchexecute(
-            client, _chat_auth(), "notebook.google.com"
-        ),
-        await check_rpc_health.probe_rebrand_chat(
-            client, _chat_auth(), "notebook.google.com", "nb_123"
-        ),
-    ]
-    previous = {"batchexecute": previous_status, "chat": previous_status}
-    state = check_rpc_health.build_rebrand_state("notebook.google.com", probes, previous)
-    assert state["observed"] == {"batchexecute": "UNKNOWN", "chat": "UNKNOWN"}
-    assert state["state"] == previous
-    assert state["transitions"] == []
-    assert state["changed"] is False
 
 
 def test_retarget_url_keeps_path_and_query() -> None:
@@ -1581,25 +1234,6 @@ async def test_rebrand_chat_present_on_recognized_server_frame() -> None:
         client, _chat_auth(), "notebook.google.com", "nb_123"
     )
     assert probe.status is RebrandProbeStatus.PRESENT
-
-
-@pytest.mark.asyncio
-async def test_rebrand_chat_present_on_rate_limit_frame(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A rate-limit frame proves the endpoint is live — it just declined (#2323)."""
-    from notebooklm.exceptions import RateLimitError
-
-    def _raise_rate_limit(_text: str) -> Any:
-        raise RateLimitError("Chat rate limit reached")
-
-    monkeypatch.setattr(check_rpc_health, "parse_streaming_chat_response", _raise_rate_limit)
-    client = _ChatClient(text=")]}'\n")
-    probe = await check_rpc_health.probe_rebrand_chat(
-        client, _chat_auth(), "notebook.google.com", "nb_123"
-    )
-    assert probe.status is RebrandProbeStatus.PRESENT
-    assert "recognized server frame" in probe.detail
 
 
 @pytest.mark.asyncio
@@ -1883,7 +1517,7 @@ def test_print_summary_exit_code_is_rebrand_independent(
         [RebrandProbe(check_rpc_health.REBRAND_BATCHEXECUTE, status, "d")],
         load_rebrand_state(None),
     )
-    rc = print_summary(results, CustomizationStatus.MATCH, state)
+    rc = print_summary(results, CohortStatus.GATED, state)
     out = capsys.readouterr().out
     assert rc == 0
     assert "REBRAND:" in out
@@ -1980,7 +1614,7 @@ def test_main_threads_the_rebrand_state_into_the_report(
         rebrand_state_path: Path | None = None,
         rebrand_previous_state_path: Path | None = None,
         rebrand_run_id: str | None = None,
-    ) -> tuple[list[CheckResult], CustomizationStatus, dict[str, Any], Any]:
+    ) -> tuple[list[CheckResult], CohortStatus, dict[str, Any], Any]:
         captured["base_url_source"] = base_url_source
         captured["rebrand_state_path"] = rebrand_state_path
         captured["rebrand_previous_state_path"] = rebrand_previous_state_path
@@ -1992,7 +1626,7 @@ def test_main_threads_the_rebrand_state_into_the_report(
         )
         return (
             [_result("ok", CheckStatus.OK)],
-            CustomizationStatus.MATCH,
+            CohortStatus.GATED,
             state,
             check_rpc_health.classify_build_label(check_rpc_health.DEFAULT_BL, ""),
         )
@@ -2150,13 +1784,10 @@ async def test_fetch_app_shell_gives_up_on_a_redirect_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_app_shell_reports_a_transport_error() -> None:
-    client = _ShellClient(
-        raises=httpx.ConnectError("connection refused for disposable-resource-handle")
-    )
+    client = _ShellClient(raises=httpx.ConnectError("connection refused"))
     html, detail = await fetch_app_shell(client, "https://notebook.google.com/")
     assert html is None
-    assert detail == "ConnectError"
-    assert "disposable-resource-handle" not in detail
+    assert "connection refused" in detail
 
 
 @pytest.mark.asyncio
@@ -2249,32 +1880,26 @@ def test_compute_exit_code_stale_build_label_is_five() -> None:
     """STALE draws exit 5 — below every live-breakage code, above OK."""
     clean = Counter({CheckStatus.OK: 3})
     assert (
-        check_rpc_health.compute_exit_code(
-            clean, [], CustomizationStatus.MATCH, BuildLabelStatus.STALE
-        )
+        check_rpc_health.compute_exit_code(clean, [], CohortStatus.GATED, BuildLabelStatus.STALE)
         == 5
     )
     for benign in (BuildLabelStatus.CURRENT, BuildLabelStatus.DRIFTED, BuildLabelStatus.UNKNOWN):
-        assert check_rpc_health.compute_exit_code(clean, [], CustomizationStatus.MATCH, benign) == 0
+        assert check_rpc_health.compute_exit_code(clean, [], CohortStatus.GATED, benign) == 0
     # Every live-breakage signal outranks a stale pin: it must never mask one.
     mismatch = Counter({CheckStatus.MISMATCH: 1})
     assert (
-        check_rpc_health.compute_exit_code(
-            mismatch, [], CustomizationStatus.MATCH, BuildLabelStatus.STALE
-        )
+        check_rpc_health.compute_exit_code(mismatch, [], CohortStatus.GATED, BuildLabelStatus.STALE)
         == 1
     )
     real_error = [_result("e", CheckStatus.ERROR, error="Parse error: boom")]
     assert (
         check_rpc_health.compute_exit_code(
-            Counter(), real_error, CustomizationStatus.MATCH, BuildLabelStatus.STALE
+            Counter(), real_error, CohortStatus.GATED, BuildLabelStatus.STALE
         )
         == 3
     )
     assert (
-        check_rpc_health.compute_exit_code(
-            clean, [], CustomizationStatus.DRIFT, BuildLabelStatus.STALE
-        )
+        check_rpc_health.compute_exit_code(clean, [], CohortStatus.MIGRATED, BuildLabelStatus.STALE)
         == 4
     )
 
@@ -2286,7 +1911,7 @@ def test_compute_exit_code_defaults_to_no_build_label_opinion() -> None:
 
 def test_print_summary_reports_a_stale_build_label(capsys: pytest.CaptureFixture[str]) -> None:
     stale = classify_build_label(_label(check_rpc_health.BUILD_LABEL_STALE_AFTER_DAYS + 30), "")
-    rc = print_summary([_result("ok", CheckStatus.OK)], CustomizationStatus.MATCH, None, stale)
+    rc = print_summary([_result("ok", CheckStatus.OK)], CohortStatus.GATED, None, stale)
     out = capsys.readouterr().out
     assert rc == 5
     assert "BUILDLBL: STALE" in out
@@ -2299,7 +1924,7 @@ def test_print_summary_drift_inside_the_window_still_passes(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     drifted = classify_build_label(_label(10), "")
-    rc = print_summary([_result("ok", CheckStatus.OK)], CustomizationStatus.MATCH, None, drifted)
+    rc = print_summary([_result("ok", CheckStatus.OK)], CohortStatus.GATED, None, drifted)
     out = capsys.readouterr().out
     assert rc == 0
     assert "BUILDLBL: DRIFTED" in out
@@ -2309,7 +1934,7 @@ def test_print_summary_drift_inside_the_window_still_passes(
 def test_print_summary_without_a_build_label_verdict_is_silent(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    rc = print_summary([_result("ok", CheckStatus.OK)], CustomizationStatus.MATCH)
+    rc = print_summary([_result("ok", CheckStatus.OK)], CohortStatus.GATED)
     out = capsys.readouterr().out
     assert rc == 0
     assert "BUILDLBL" not in out

@@ -17,8 +17,6 @@ from typing import Any, Protocol
 import httpx
 
 from .._env import get_base_url
-from .._request_context import has_bound_policy, policy_child_environment, policy_env, policy_key
-from .._url_utils import is_notebooklm_app_host
 from ..paths import get_storage_path, resolve_profile
 from . import cookies as _auth_cookies
 from . import extraction as _auth_extraction
@@ -28,7 +26,6 @@ from . import recovery as _auth_recovery
 from . import single_flight as _single_flight
 from . import storage as _auth_storage
 from .account import authuser_query
-from .bound_refresh import run_bound_refresh
 from .cookie_types import CookieJar
 from .paths import resolve_auth_json_env
 from .profile_store import ProfileStore
@@ -53,8 +50,6 @@ extract_session_id_from_html = _auth_extraction.extract_session_id_from_html
 # hand-rolled pre-check this module used to carry, and message formatting now
 # lives entirely behind the classifier.
 _url_only_extraction_failure = _auth_extraction._url_only_extraction_failure
-_login_probe_url = _auth_extraction._login_probe_url
-_signed_out_probe_failure = _auth_extraction._signed_out_probe_failure
 
 # Env-var names live in ``_auth.paths``; aliased so the refresh bodies can
 # reference them without an extra hop.
@@ -107,7 +102,8 @@ _REFRESH_ATTEMPTED_CONTEXT: ContextVar[bool] = ContextVar(
 # ``_REFRESH_GENERATIONS`` / ``_REFRESH_LOCKS_BY_LOOP`` / ``_get_refresh_lock``)
 # were deleted in the same PR that introduced the shared core; there is no
 # revert-hazard split. A single refresh-cmd "rung policy" discriminator keys the
-# flight and its success epoch both include the bound policy identity.
+# flight; the success epoch is keyed per canonical PATH only (see
+# ``single_flight.py``).
 _REFRESH_FLIGHT_POLICY = "refresh-cmd"
 
 # Cap on how many times a single caller FOLLOWS a failing refresh-cmd leader
@@ -193,22 +189,23 @@ async def _refresh_cmd_leader_body(
     *,
     deps: RefreshCmdDeps = _PRODUCTION_REFRESH_CMD_DEPS,
 ) -> None:
-    """Execute one command under the profile lock, bumping only its policy epoch.
+    """Leader-only body: run ``_run_refresh_cmd`` under a cross-process flock.
 
-    Legacy flock losers wait and reload. Bound policies wait and run their own
-    command because incompatible execution policies cannot substitute for it.
+    Runs as the single-flight leader's ``asyncio.Task``. In-process coalescing
+    already guarantees one subprocess per process; the per-path flock adds the
+    CROSS-process exclusion that closes the refresh-cmd stampede ([refresh-2]),
+    mirroring the keepalive rotation flock. Re-mint rungs deliberately take NO
+    such flock (each cross-process re-mint owns its own browser — §c.5/§c.7).
+
+    On a genuine cross-process contention (another process holds the flock and
+    is refreshing) the subprocess is skipped and — rather than reload the STALE
+    file immediately (the holder has not finished writing yet) — the loser WAITS
+    (bounded) for the holder to release, then the caller reloads the fresh
+    cookies it wrote (:func:`_wait_for_refresh_holder`). The success epoch is
+    bumped ONLY after our OWN subprocess actually exits zero, so a skipped
+    (wait-then-reload) or failed attempt leaves waiters retrying (single_flight
+    guarantee 2).
     """
-    if has_bound_policy():
-        await run_bound_refresh(
-            resolved_storage_path,
-            profile,
-            runner=deps.runner(),
-            lock_path=deps.lock_path()(resolved_storage_path),
-            flock=deps.flock(),
-            wait_for_holder=_wait_for_refresh_holder,
-        )
-        _single_flight.note_success(path_key)
-        return
     lock_path = deps.lock_path()(resolved_storage_path)
     if lock_path is None:
         await deps.runner()(resolved_storage_path, profile)
@@ -271,7 +268,7 @@ async def _coalesced_run_refresh_cmd(
     # ``refresh_key`` is already the canonical ``str(resolved_storage_path)``
     # computed by the caller; reuse it as the per-path success-epoch key rather
     # than recomputing.
-    path_key = policy_key(refresh_key)
+    path_key = refresh_key
     flight_key = (path_key, _REFRESH_FLIGHT_POLICY)
     # Capture the epoch BEFORE any wait (guarantee 1). A concurrent flight that
     # SUCCEEDS while we wait bumps past this baseline, letting us skip.
@@ -333,9 +330,9 @@ def _midsession_refresh_cmd_enabled() -> bool:
     """
     if _REFRESH_ATTEMPTED_CONTEXT.get() or os.environ.get(_REFRESH_ATTEMPTED_ENV) == "1":
         return False
-    if not policy_env(NOTEBOOKLM_REFRESH_CMD_ENV):
+    if not os.environ.get(NOTEBOOKLM_REFRESH_CMD_ENV):
         return False
-    return policy_env(NOTEBOOKLM_REFRESH_CMD_MIDSESSION_ENV) == "1"
+    return os.environ.get(NOTEBOOKLM_REFRESH_CMD_MIDSESSION_ENV) == "1"
 
 
 async def try_refresh_cmd_reauth(
@@ -349,7 +346,7 @@ async def try_refresh_cmd_reauth(
 
     Client-neutral adapter mirroring :func:`notebooklm._auth.recovery.try_headless_reauth`
     / :func:`~notebooklm._auth.recovery.try_master_token_reauth` so the
-    Web-owned mid-session ladder (``_web/transport/session_auth.py``) can slot the
+    mid-session ladder (``_auth/session.py:refresh_auth_session``) can slot the
     refresh-cmd rung between L2 (RotateCookies) and L3 (headless re-mint). It
     REUSES the same cold-start machinery — the ``single_flight``-coalesced
     :func:`_coalesced_run_refresh_cmd` and the per-path refresh flock
@@ -415,7 +412,7 @@ def _should_try_refresh(err: Exception) -> bool:
     """True when an auth failure should trigger NOTEBOOKLM_REFRESH_CMD."""
     if _REFRESH_ATTEMPTED_CONTEXT.get() or os.environ.get(_REFRESH_ATTEMPTED_ENV) == "1":
         return False
-    if not policy_env(NOTEBOOKLM_REFRESH_CMD_ENV):
+    if not os.environ.get(NOTEBOOKLM_REFRESH_CMD_ENV):
         return False
     msg = str(err).lower()
     return any(sig in msg for sig in _AUTH_ERROR_SIGNALS)
@@ -518,14 +515,14 @@ async def _run_refresh_cmd(storage_path: Path | None = None, profile: str | None
             argv, is malformed (unterminated quote), times out, or exits
             non-zero.
     """
-    cmd = policy_env(NOTEBOOKLM_REFRESH_CMD_ENV)
+    cmd = os.environ.get(NOTEBOOKLM_REFRESH_CMD_ENV)
     if not cmd:
         raise RuntimeError(f"{NOTEBOOKLM_REFRESH_CMD_ENV} is not set; cannot refresh cookies.")
     # Forward the full parent env (PATH/HOME/proxy/etc. the command needs),
     # minus the one credential-equivalent var below. See the "Environment
     # forwarding" section of this function's docstring for the SECURITY note
     # on why a hard allowlist is deliberately avoided (issue #1274).
-    refresh_env = policy_child_environment()
+    refresh_env = os.environ.copy()
     # Scrub the first-party secret / credential-equivalent env vars before
     # spawn (audit refresh-6). ``NOTEBOOKLM_AUTH_JSON`` carries the full
     # Playwright storage_state; ``NOTEBOOKLM_SERVER_TOKEN`` /
@@ -550,7 +547,7 @@ async def _run_refresh_cmd(storage_path: Path | None = None, profile: str | None
         storage_path or get_storage_path(profile=profile)
     )
 
-    use_shell = policy_env(NOTEBOOKLM_REFRESH_CMD_USE_SHELL_ENV) == "1"
+    use_shell = os.environ.get(NOTEBOOKLM_REFRESH_CMD_USE_SHELL_ENV) == "1"
     run_target: str | list[str]
     run_shell: bool
     if use_shell:
@@ -575,10 +572,7 @@ async def _run_refresh_cmd(storage_path: Path | None = None, profile: str | None
             raise RuntimeError(f"{NOTEBOOKLM_REFRESH_CMD_ENV} parsed to empty argv")
         # Log basename only — full argv may carry tokens and absolute paths
         # can leak secrets-directory layouts.
-        logger.info(
-            "Running refresh command: %s ...",
-            "configured" if has_bound_policy() else os.path.basename(argv[0]),
-        )
+        logger.info("Running refresh command: %s ...", os.path.basename(argv[0]))
         run_target = argv
         run_shell = False
 
@@ -593,10 +587,6 @@ async def _run_refresh_cmd(storage_path: Path | None = None, profile: str | None
             env=refresh_env,
         )
     except (subprocess.TimeoutExpired, OSError) as refresh_err:
-        if has_bound_policy():
-            raise RuntimeError(
-                f"{NOTEBOOKLM_REFRESH_CMD_ENV} failed to execute ({type(refresh_err).__name__})"
-            ) from None
         raise RuntimeError(
             f"{NOTEBOOKLM_REFRESH_CMD_ENV} failed to execute: {refresh_err}"
         ) from refresh_err
@@ -607,17 +597,26 @@ async def _run_refresh_cmd(storage_path: Path | None = None, profile: str | None
         # up through ``cli.error_handler`` and lands on stderr (or a JSON
         # envelope), which is the wrong audience for that material.
         #
-        # Bound policies never expose any portion of the captured command.
-        if has_bound_policy():
-            executable_basename = "configured recovery command"
-        elif isinstance(run_target, list) and run_target:
+        # Two-channel disclosure: the user sees only exit code + executable
+        # basename; developers running with ``-vv`` get the full output
+        # through the package's redacting DEBUG logger.
+        # In shell-mode ``run_target`` is the raw command STRING, not a
+        # list. Extract the basename of its first token
+        # so users still see a useful script name (the string is user-supplied
+        # and not a secret — its argv[0] equivalent is safe to surface).
+        if isinstance(run_target, list) and run_target:
             executable_basename = os.path.basename(run_target[0])
         elif isinstance(run_target, str) and run_target.strip():
             executable_basename = os.path.basename(run_target.split()[0])
         else:
             executable_basename = "shell"
-        # Metadata-only by default: captured output may contain secrets the
-        # redactor cannot recognize. Full output requires explicit debug opt-in.
+        # Default DEBUG line is metadata-only (audit refresh-8): basename +
+        # exit code + byte counts, never the raw captured output. A refresh
+        # command commonly prints bearer tokens / cookies / credentials-dir
+        # paths, and the redaction filter only collapses KNOWN credential
+        # shapes — so dumping raw ``%r`` here would surface anything the filter
+        # doesn't recognise. This matters more now the rung can fire
+        # mid-session in a long-lived server whose DEBUG log is retained.
         stdout_bytes = len((result.stdout or "").encode("utf-8", "replace"))
         stderr_bytes = len((result.stderr or "").encode("utf-8", "replace"))
         logger.debug(
@@ -727,8 +726,7 @@ async def _fetch_tokens_with_refresh(
     )
 
     async def resolve_route(path: Path | None) -> dict[str, Any]:
-        return await asyncio.to_thread(
-            _resolve_token_route_kwargs,
+        return _resolve_token_route_kwargs(
             path,
             authuser=explicit_authuser,
             account_email=account_email,
@@ -772,7 +770,7 @@ async def _fetch_tokens_with_exact_baseline(
         pair = await asyncio.to_thread(_auth_cookies._build_cookie_pair_from_storage, path)
         return pair.live, snapshot_cookie_jar(pair.live), pair.baseline
 
-    csrf, session_id, _, _, baseline = await _fetch_tokens_with_refresh_core(
+    result = await _fetch_tokens_with_refresh_core(
         cookie_jar,
         storage_path,
         profile,
@@ -782,9 +780,10 @@ async def _fetch_tokens_with_exact_baseline(
         env_auth=env_auth,
         allow_headless=allow_headless,
     )
+    baseline = result[4]
     if baseline is None:  # pragma: no cover - typed initial baseline is always retained
         raise AssertionError("typed token load lost its persistence baseline")
-    return csrf, session_id, baseline
+    return result[0], result[1], baseline
 
 
 async def _fetch_tokens_with_refresh_core(
@@ -815,19 +814,18 @@ async def _fetch_tokens_with_refresh_core(
         )
         return csrf, session_id, False, None, initial_baseline
     except ValueError as err:
-        with _auth_extraction._auth_error_boundary():
-            return await _cold_fallbacks(
-                err,
-                cookie_jar,
-                storage_path,
-                profile,
-                env_auth=env_auth,
-                allow_headless=allow_headless,
-                resolve_route=resolve_route,
-                load_replacement=load_replacement,
-                baseline=initial_baseline,
-                deps=deps,
-            )
+        return await _cold_fallbacks(
+            err,
+            cookie_jar,
+            storage_path,
+            profile,
+            env_auth=env_auth,
+            allow_headless=allow_headless,
+            resolve_route=resolve_route,
+            load_replacement=load_replacement,
+            baseline=initial_baseline,
+            deps=deps,
+        )
 
 
 async def _cold_fallbacks(
@@ -927,38 +925,6 @@ async def _cold_fallbacks(
     )
 
 
-async def _probe_signed_out_session(
-    client: Any, token_url: str, final_url: str
-) -> ValueError | None:
-    """Classify a token-less app page by where the app's ``/login`` lands.
-
-    Runs only after the app host answered without a CSRF token, so every caller
-    path raises before copying ``client.cookies`` (including any probe
-    Set-Cookie) back to its jar. Like the homepage GET it follows, this is a
-    plain GET, so the passive path stays free of rotation POSTs and disk writes.
-    An unconfirmed outcome keeps the caller's original diagnostic and is
-    logged, so a retired ``/login`` is not silent.
-    """
-    probe_url = _login_probe_url(token_url)
-    safe_url = _auth_extraction._safe_url
-    try:
-        probe = await client.get(probe_url, follow_redirects=True, timeout=30.0)
-    except httpx.HTTPError as exc:
-        logger.warning("Sign-in check %s failed: %s", safe_url(probe_url), type(exc).__name__)
-        return None
-    failure = _signed_out_probe_failure(
-        final_url, str(probe.url), tuple(str(hop.url) for hop in probe.history)
-    )
-    if failure is None:
-        logger.warning(
-            "Sign-in check %s ended at %s (HTTP %s) without confirming sign-out",
-            safe_url(probe_url),
-            safe_url(str(probe.url)),
-            probe.status_code,
-        )
-    return failure
-
-
 async def _fetch_tokens_with_jar(
     cookie_jar: httpx.Cookies,
     storage_path: Path | None = None,
@@ -1043,15 +1009,6 @@ async def _fetch_tokens_with_jar(
         if url_failure is not None:
             raise url_failure
 
-        # A signed-out session now lands on a token-less app page instead of a
-        # login redirect; ask ``/login`` before reporting a structure change.
-        if _auth_extraction.extract_wiz_field(
-            response.text, "SNlM0e", strict=False
-        ) is None and is_notebooklm_app_host(final_url):
-            signed_out = await _probe_signed_out_session(client, url, final_url)
-            if signed_out is not None:
-                raise signed_out
-
         csrf = extract_csrf_from_html(response.text, final_url, redirect_urls=redirect_urls)
         session_id = extract_session_id_from_html(
             response.text, final_url, redirect_urls=redirect_urls
@@ -1098,7 +1055,6 @@ async def fetch_tokens(
 
     Raises:
         httpx.HTTPError: If request fails
-        AuthError: If authentication is expired and recovery is exhausted
         ValueError: If tokens cannot be extracted from response
         RuntimeError: If ``NOTEBOOKLM_REFRESH_CMD`` is set but fails
     """
@@ -1112,7 +1068,8 @@ async def fetch_tokens(
         force_authuser_query=authuser is not None,
     )
     if refreshed:
-        _update_cookie_input(cookies, _cookie_map_from_jar(jar))
+        fresh = _cookie_map_from_jar(jar)
+        _update_cookie_input(cookies, fresh)
     return csrf, session_id
 
 
@@ -1138,14 +1095,13 @@ async def fetch_tokens_with_domains(
     account_email: str | None = None,
     allow_headless: bool = False,
 ) -> tuple[str, str]:
-    """Fetch and persist domain-preserving tokens; exhausted login recovery raises AuthError."""
+    """Fetch tokens with domain-preserving cookies and persist their observation."""
     storage_path = _auth_cookies.resolve_auth_storage_path(path, profile)
     pair = await asyncio.to_thread(_auth_cookies._build_cookie_pair_from_storage, storage_path)
     live = pair.live
 
     async def resolve_route(route_path: Path | None) -> dict[str, Any]:
-        return await asyncio.to_thread(
-            _resolve_token_route_kwargs,
+        return _resolve_token_route_kwargs(
             route_path,
             authuser=authuser,
             account_email=account_email,
@@ -1188,14 +1144,18 @@ async def fetch_tokens_passive(
     read-only. Unlike that function it:
 
     * never runs ``NOTEBOOKLM_REFRESH_CMD`` (no re-auth hook / subprocess);
-    * never fires the layer-1 keepalive poke that rotates ``__Secure-1PSIDTS`` server-side;
-    * never fires inline ``RotateCookies`` recovery: the strict loader raises ``ValueError``
-      for missing/expired PSIDTS instead of issuing a network POST + disk write; and
+    * never fires the layer-1 keepalive poke that rotates ``__Secure-1PSIDTS``
+      server-side;
+    * never fires the inline ``RotateCookies`` PSIDTS recovery (it loads the jar
+      with the no-recovery strict loader, so a missing/expired PSIDTS surfaces as
+      a plain ``ValueError`` instead of a network POST + disk write); and
     * never writes rotated cookies back to ``storage_state.json``.
 
-    This unattended-readiness probe answers "do the cookies currently on disk authenticate?"
-    without mutation, a refresh subprocess, or races with real work (issue #1569). Pair it with
-    a passive ``auth check --test`` or ``auth refresh --verify``.
+    This is the readiness probe an unattended monitor (systemd / cron health
+    check) wants: it answers "do the cookies currently on disk authenticate?"
+    without mutating state, spawning a refresh subprocess, or racing concurrent
+    real work (issue #1569). Pair it with a passive ``auth check --test`` or
+    ``auth refresh --verify``.
 
     Args:
         path: Path to storage_state.json. If provided, takes precedence over env vars.
@@ -1214,13 +1174,11 @@ async def fetch_tokens_passive(
         ValueError: If tokens cannot be extracted (e.g. redirected to sign-in).
     """
     path = _auth_cookies.resolve_auth_storage_path(path, profile)
-    # Strict (no-recovery) loader: missing/expired PSIDTS reports unauthenticated; no healing.
+    # Strict (no-recovery) loader: a missing/expired PSIDTS raises ``ValueError``
+    # rather than triggering the inline ``RotateCookies`` rotation + save. A
+    # readiness probe reports "not authenticated"; it does not heal. Offloaded.
     jar = await asyncio.to_thread(_build_httpx_cookies_from_storage_strict, path)
-    route_kwargs = await asyncio.to_thread(
-        _resolve_token_route_kwargs,
-        path,
-        authuser=authuser,
-        account_email=account_email,
-    )
-    # poke=False and no save keep disk and server-side rotation state untouched.
+    route_kwargs = _resolve_token_route_kwargs(path, authuser=authuser, account_email=account_email)
+    # poke=False + no save_cookies_to_storage ⇒ zero side effects on disk or
+    # on the server-side cookie rotation state.
     return await _fetch_tokens_with_jar(jar, path, poke=False, **route_kwargs)

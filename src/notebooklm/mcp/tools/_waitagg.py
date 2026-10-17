@@ -59,7 +59,6 @@ def _wait_bucket_entry(
     error: SourceNotFoundError | SourceProcessingError | SourceTimeoutError,
 ) -> dict[str, str]:
     """Project a handled wait failure onto its ``{source_id, error}`` bucket entry."""
-    assert error.source_id is not None
     return {"source_id": error.source_id, "error": str(error)}
 
 

@@ -11,7 +11,7 @@ import pytest
 
 import notebooklm._auth as auth_package
 import notebooklm.auth as auth_facade
-from notebooklm._auth import profile_migration, profile_store, storage
+from notebooklm._auth import profile_store, storage, storage_writer
 from notebooklm._auth.cookie_types import Cookie, CookieJar
 from notebooklm._auth.master_token_types import MasterToken
 from notebooklm._auth.profile_account import DomainSelection
@@ -27,14 +27,11 @@ FACADE_PATH = SRC_ROOT / "auth.py"
 AUTH_INIT_PATH = AUTH_ROOT / "__init__.py"
 ImportRecord = tuple[str, int, str, str, str | None]
 Caller = tuple[str, str, str]
-NativeReplaceCaller = tuple[str, str, str]
 
 _STORE_METHODS = {
     "_read_account_document",
-    "_update_account_if_document_unchanged",
     "read_document",
     "read_session",
-    "read_cookie_pair",
     "read_account",
     "update_account",
     "clear_account",
@@ -66,279 +63,11 @@ _MIGRATION_SERVICES = frozenset(
     }
 )
 
-_NATIVE_REPLACE_CALLER_TESTS: dict[NativeReplaceCaller, tuple[str, ...]] = {
-    ("_app/login_cookie.py", "import_cookie_payload", "replace_profile_from_login"): (
-        "tests/unit/app/test_app_login_cookie.py::test_import_preserves_callback_order_identity_and_backup",
-    ),
-    ("_browser/browser_capture.py", "replace_captured_profile", "replace_from_remint"): (
-        "tests/unit/test_browser_capture_headless_arm.py::test_headless_authenticated_landing_persists_storage",
-        "tests/unit/test_browser_capture_cdp_arm.py::test_cdp_authenticated_landing_persists_and_filters",
-    ),
-    ("_auth/storage.py", "replace_from_login", "replace_profile_from_login"): (
-        "tests/unit/test_storage_writer.py::test_replace_from_login_is_one_typed_delegation_and_exhaustive_projection",
-    ),
-    ("_auth/storage.py", "replace_from_remint", "replace_from_remint"): (
-        "tests/unit/test_storage_writer.py::test_replace_from_remint_is_one_typed_store_delegation_and_exact_legacy_result",
-    ),
-    (
-        "cli/_cookie_import.py",
-        "_import_cookie_json",
-        "replace_profile_from_login[injected]",
-    ): (
-        "tests/unit/cli/test_login_cookie_app_adapters.py::test_import_adapter_injects_native_login_operation",
-    ),
-    (
-        "cli/services/login/cookie_writes.py",
-        "_write_extracted_cookies",
-        "replace_profile_from_login",
-    ): (
-        "tests/unit/cli/test_cookie_writes.py::TestWriteExtractedCookies.test_lock_unavailable_returns_outcome",
-    ),
-    (
-        "cli/services/login/refresh.py",
-        "_login_with_browser_cookies",
-        "replace_profile_from_login",
-    ): (
-        "tests/unit/cli/test_login_refresh_coverage.py::test_login_with_cookies_lock_unavailable_exits",
-    ),
-    (
-        "cli/services/login/refresh.py",
-        "default_refresh_deps",
-        "replace_profile_from_login[injected]",
-    ): (
-        "tests/unit/cli/test_login_refresh_coverage.py::test_default_refresh_deps_uses_native_login_operation",
-    ),
-}
-
-_B3_ACCEPTANCE_TEST_FILES = frozenset(
-    {
-        "tests/_guardrails/test_auth_profile_store_boundary.py",
-        "tests/_guardrails/test_auth_storage_compatibility.py",
-        "tests/_guardrails/test_public_surface.py",
-        "tests/_guardrails/test_storage_writer_boundary.py",
-        "tests/unit/app/test_app_login_cookie.py",
-        "tests/unit/cli/test_cookie_writes.py",
-        "tests/unit/cli/test_login_cookie_app_adapters.py",
-        "tests/unit/cli/test_login_refresh_coverage.py",
-        "tests/unit/cli/test_playwright_login_render_contract.py",
-        "tests/unit/test_auth_profile_migration.py",
-        "tests/unit/test_auth_profile_store.py",
-        "tests/unit/test_auth_profile_store_login.py",
-        "tests/unit/test_auth_profile_store_remint.py",
-        "tests/unit/test_browser_capture_cdp_arm.py",
-        "tests/unit/test_browser_capture_headless_arm.py",
-        "tests/unit/test_storage_writer.py",
-    }
-)
-
 
 def _source_label(path: Path) -> str:
     if path.is_relative_to(AUTH_ROOT):
         return path.relative_to(AUTH_ROOT).as_posix()
     return path.relative_to(SRC_ROOT).as_posix()
-
-
-class _NativeReplaceCallerCollector(ast.NodeVisitor):
-    """Find bounded static native calls and dependency-injection boundaries.
-
-    Resolution follows same-scope aliases, exact string constants, static
-    dict/list/tuple entries, ``getattr``, ``partial``, and expanded keyword
-    dictionaries. Values propagated through calls or selected by dynamic keys
-    remain outside this structural proof.
-    """
-
-    _OPERATIONS = frozenset({"replace_from_remint", "replace_profile_from_login"})
-
-    def __init__(self, path: Path, root: Path) -> None:
-        self._path = path.relative_to(root).as_posix()
-        self._scope: list[str] = []
-        self._alias_scopes: list[dict[str, str]] = [{}]
-        self._container_scopes: list[dict[str, dict[str | int, str]]] = [{}]
-        self._string_scopes: list[dict[str, str]] = [{}]
-        self._partial_scopes: list[set[str]] = [{"partial"}]
-        self.callers: set[NativeReplaceCaller] = set()
-
-    @staticmethod
-    def _lookup(scopes: list[dict[str, object]], name: str) -> object | None:
-        for bindings in reversed(scopes):
-            if name in bindings:
-                return bindings[name]
-        return None
-
-    def _static_string(self, expression: ast.expr) -> str | None:
-        if isinstance(expression, ast.Constant) and isinstance(expression.value, str):
-            return expression.value
-        if isinstance(expression, ast.Name):
-            value = self._lookup(self._string_scopes, expression.id)
-            return value if isinstance(value, str) else None
-        return None
-
-    def _static_key(self, expression: ast.expr) -> str | int | None:
-        if isinstance(expression, ast.Constant) and isinstance(expression.value, str | int):
-            return expression.value
-        return self._static_string(expression)
-
-    def _container_operations(self, expression: ast.expr) -> dict[str | int, str]:
-        if isinstance(expression, ast.Name):
-            value = self._lookup(self._container_scopes, expression.id)
-            return dict(value) if isinstance(value, dict) else {}
-        if isinstance(expression, ast.Dict):
-            operations: dict[str | int, str] = {}
-            for key_node, value_node in zip(expression.keys, expression.values, strict=True):
-                if key_node is None:
-                    continue
-                key = self._static_key(key_node)
-                operation = self._operation(value_node)
-                if key is not None and operation is not None:
-                    operations[key] = operation
-            return operations
-        if isinstance(expression, ast.List | ast.Tuple):
-            return {
-                index: operation
-                for index, item in enumerate(expression.elts)
-                if (operation := self._operation(item)) is not None
-            }
-        return {}
-
-    def _is_partial_factory(self, expression: ast.expr) -> bool:
-        if isinstance(expression, ast.Name):
-            return any(expression.id in names for names in reversed(self._partial_scopes))
-        return isinstance(expression, ast.Attribute) and expression.attr == "partial"
-
-    def _operation(self, expression: ast.expr) -> str | None:
-        if isinstance(expression, ast.Name):
-            if expression.id in self._OPERATIONS:
-                return expression.id
-            value = self._lookup(self._alias_scopes, expression.id)
-            return value if isinstance(value, str) else None
-        if isinstance(expression, ast.Attribute) and expression.attr in self._OPERATIONS:
-            return expression.attr
-        if isinstance(expression, ast.Subscript):
-            key = self._static_key(expression.slice)
-            if isinstance(key, str) and key in self._OPERATIONS:
-                return key
-            return (
-                self._container_operations(expression.value).get(key) if key is not None else None
-            )
-        if isinstance(expression, ast.Call):
-            if (
-                isinstance(expression.func, ast.Name)
-                and expression.func.id == "getattr"
-                and len(expression.args) >= 2
-            ):
-                name = self._static_string(expression.args[1])
-                return name if name in self._OPERATIONS else None
-            if self._is_partial_factory(expression.func) and expression.args:
-                return self._operation(expression.args[0])
-        return None
-
-    def _record(self, operation: str) -> None:
-        owner = ".".join(self._scope) if self._scope else "<module>"
-        self.callers.add((self._path, owner, operation))
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
-        for imported in node.names:
-            if imported.name in self._OPERATIONS:
-                self._alias_scopes[-1][imported.asname or imported.name] = imported.name
-            if node.module == "functools" and imported.name == "partial":
-                self._partial_scopes[-1].add(imported.asname or imported.name)
-
-    def _bind_assignment(self, target: ast.expr, value: ast.expr) -> None:
-        if not isinstance(target, ast.Name):
-            return
-        name = target.id
-        self._alias_scopes[-1].pop(name, None)
-        self._container_scopes[-1].pop(name, None)
-        self._string_scopes[-1].pop(name, None)
-        operation = self._operation(value)
-        if operation is not None:
-            self._alias_scopes[-1][name] = operation
-        operations = self._container_operations(value)
-        if operations:
-            self._container_scopes[-1][name] = operations
-        static_string = self._static_string(value)
-        if static_string is not None:
-            self._string_scopes[-1][name] = static_string
-
-    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
-        for target in node.targets:
-            self._bind_assignment(target, node.value)
-        self.generic_visit(node)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
-        if node.value is not None:
-            self._bind_assignment(node.target, node.value)
-        self.generic_visit(node)
-
-    def _visit_scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        self._scope.append(node.name)
-        self._alias_scopes.append({})
-        self._container_scopes.append({})
-        self._string_scopes.append({})
-        self._partial_scopes.append(set())
-        self.generic_visit(node)
-        self._partial_scopes.pop()
-        self._string_scopes.pop()
-        self._container_scopes.pop()
-        self._alias_scopes.pop()
-        self._scope.pop()
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
-        self._visit_scope(node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
-        self._visit_scope(node)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
-        operation = self._operation(node.func)
-        if operation is not None:
-            self._record(operation)
-        for keyword in node.keywords:
-            if keyword.arg in self._OPERATIONS:
-                injected = self._operation(keyword.value)
-                if injected == keyword.arg:
-                    self._record(f"{keyword.arg}[injected]")
-            elif keyword.arg is None:
-                for name, injected in self._container_operations(keyword.value).items():
-                    if isinstance(name, str) and name in self._OPERATIONS and injected == name:
-                        self._record(f"{name}[injected]")
-        self.generic_visit(node)
-
-
-def _native_replace_callers(root: Path) -> set[NativeReplaceCaller]:
-    callers: set[NativeReplaceCaller] = set()
-    for path in sorted(root.rglob("*.py")):
-        collector = _NativeReplaceCallerCollector(path, root)
-        collector.visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-        callers.update(collector.callers)
-    return callers
-
-
-def _test_qualnames(path: Path) -> set[str]:
-    names: set[str] = set()
-
-    class Collector(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.scope: list[str] = []
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
-            self.scope.append(node.name)
-            self.generic_visit(node)
-            self.scope.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
-            self.scope.append(node.name)
-            if node.name.startswith("test_"):
-                names.add(".".join(self.scope))
-            self.generic_visit(node)
-            self.scope.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-    Collector().visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-    return names
 
 
 _EXPECTED_IMPORTS: list[ImportRecord] = [
@@ -363,20 +92,15 @@ _EXPECTED_IMPORTS: list[ImportRecord] = [
     ("module", 2, "exceptions", "LockUnavailableError", None),
     ("module", 1, "", "cookie_merge", "_cookie_merge"),
     ("module", 1, "", "cookie_policy", "_cookie_policy"),
-    ("module", 1, "", "mint_service", "_mint_service"),
     ("module", 1, "cookie_filter", "filter_storage_state_cookies_by_domain_policy", None),
     ("module", 1, "cookie_merge", "RecoveryObservation", None),
     ("module", 1, "cookie_types", "CookieIdentity", None),
     ("module", 1, "cookie_types", "CookieJar", None),
-    ("module", 1, "cookie_types", "StorageStateValidationError", None),
-    ("module", 1, "cookie_types", "_build_cookie_pair_from_storage_state", None),
-    ("module", 1, "cookie_types", "_LoadedCookiePair", None),
     ("module", 1, "credential_io", "_commit_profile_json", None),
     ("module", 1, "master_token_file", "MasterTokenFile", None),
     ("module", 1, "master_token_types", "MasterToken", None),
     ("module", 1, "paths", "_storage_state_lock_path", None),
     ("module", 1, "paths", "canonical_storage_key", None),
-    ("module", 1, "profile_account", "ACCOUNT_ROUTE_CLEARED_KEY", None),
     ("module", 1, "profile_account", "AccountDirective", None),
     ("module", 1, "profile_account", "AccountView", None),
     ("module", 1, "profile_account", "ClearAccount", None),
@@ -517,13 +241,9 @@ def test_production_importers_are_exactly_approved_store_owners_and_loader() -> 
         )
     }
     assert actual == {
-        "_android/assembly.py",
-        "_web/transport/cookie_persistence.py",
-        "_web/transport/init.py",
-        "account_email.py",
+        "_cookie_persistence.py",
+        "_runtime/init.py",
         "account_repair.py",
-        "auth.py",
-        "_browser/browser_capture.py",
         "master_token.py",
         "master_token_bootstrap.py",
         "profile_migration.py",
@@ -562,7 +282,6 @@ def test_profile_store_public_method_set_is_minimal_and_exact() -> None:
         "ordering_key",
         "read_document",
         "read_session",
-        "read_cookie_pair",
         "read_account",
         "update_account",
         "clear_account",
@@ -686,12 +405,12 @@ def test_replace_types_remain_internal_to_profile_store() -> None:
         "LoginWriteRequest",
         "MintedSessionWriteRequest",
         "ReplaceStatus",
+        "ReplaceResult",
     }
     assert names.isdisjoint(storage.__all__)
+    assert names.isdisjoint(storage_writer.__all__)
     assert all(not hasattr(auth_facade, name) for name in names)
     assert all(not hasattr(auth_package, name) for name in names)
-    assert auth_facade.ReplaceResult is profile_store.ReplaceResult
-    assert "ReplaceResult" not in auth_facade.__all__
 
 
 def test_profile_store_constructor_and_replace_method_signatures_are_exact() -> None:
@@ -713,95 +432,8 @@ def test_profile_store_constructor_and_replace_method_signatures_are_exact() -> 
     assert str(inspect.signature(profile_store.ProfileStore.write_master_token)) == (
         "(self, token: 'MasterToken') -> 'None'"
     )
-    assert str(inspect.signature(profile_store.ProfileStore.read_cookie_pair)) == (
-        "(self, *, require_routable: 'bool' = False) -> '_LoadedCookiePair'"
-    )
     assert profile_store.ProfileStore.write_master_token.__annotations__["token"] == "MasterToken"
     assert MasterToken.__module__ == "notebooklm._auth.master_token_types"
-
-
-def test_native_login_operation_signature_and_construction_are_exact() -> None:
-    assert str(inspect.signature(profile_migration.replace_profile_from_login)) == (
-        "(path: 'Path', state: 'Mapping[str, Any]', *, include_domains: 'set[str] | None', "
-        "include_optional: 'bool' = False, account_mode: \"Literal['keep', 'clear', 'set']\" "
-        "= 'keep', account_authuser: 'int | None' = None, account_email: 'str | None' = None, "
-        "backup: 'bool' = False) -> 'ReplaceResult'"
-    )
-    path = AUTH_ROOT / "profile_migration.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    operation = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "replace_profile_from_login"
-    )
-    called = [ast.unparse(node.func) for node in ast.walk(operation) if isinstance(node, ast.Call)]
-    assert called.count("ProfileStore") == 1
-    assert called.count("LoginWriteRequest") == 1
-    assert called.count("LoginProfileWriter") == 1
-    assert called.count("LegacyAccountMigrator") == 1
-    source = ast.unparse(operation)
-    assert source.index("account_mode not in") < source.index("ProfileDocument.decode")
-    assert source.index("account_mode == 'set'") < source.index("ProfileDocument.decode")
-    assert all(name not in source for name in {"AccountRecord", "KEEP_ACCOUNT", "CLEAR_ACCOUNT"})
-
-
-def test_every_native_replace_caller_has_a_live_b3_behavior_test() -> None:
-    assert _native_replace_callers(SRC_ROOT) == set(_NATIVE_REPLACE_CALLER_TESTS)
-    for targets in _NATIVE_REPLACE_CALLER_TESTS.values():
-        assert targets
-        for target in targets:
-            relative, qualname = target.split("::", 1)
-            assert relative in _B3_ACCEPTANCE_TEST_FILES
-            assert qualname in _test_qualnames(REPO_ROOT / relative)
-
-
-def test_native_replace_caller_inventory_bites_on_static_indirection(tmp_path: Path) -> None:
-    root = tmp_path / "notebooklm"
-    root.mkdir()
-    (root / "feature.py").write_text(
-        "import functools\n"
-        "import notebooklm.auth as auth\n"
-        "from notebooklm.auth import replace_profile_from_login as native_login\n"
-        "LOGIN_NAME = 'replace_profile_from_login'\n"
-        "OPERATIONS = {'login': auth.replace_profile_from_login}\n"
-        "def direct(store, request):\n"
-        "    store.replace_from_remint(request)\n"
-        "    native_login('path', {})\n"
-        "def via_getattr(store, request):\n"
-        "    getattr(store, 'replace_from_remint')(request)\n"
-        "    getattr(auth, LOGIN_NAME)('path', {})\n"
-        "def via_container(store, request):\n"
-        "    operations = {'remint': store.replace_from_remint}\n"
-        "    operations['remint'](request)\n"
-        "    OPERATIONS['login']('path', {})\n"
-        "def via_list(store, request):\n"
-        "    operations = [store.replace_from_remint]\n"
-        "    operations[0](request)\n"
-        "def via_tuple():\n"
-        "    operations = (auth.replace_profile_from_login,)\n"
-        "    operations[0]('path', {})\n"
-        "def via_partial():\n"
-        "    functools.partial(auth.replace_profile_from_login)('path', {})\n"
-        "def explicit_adapter(consume):\n"
-        "    consume(replace_profile_from_login=native_login)\n"
-        "def expanded_adapter(consume):\n"
-        "    kwargs = {'replace_profile_from_login': auth.replace_profile_from_login}\n"
-        "    consume(**kwargs)\n",
-        encoding="utf-8",
-    )
-    assert _native_replace_callers(root) == {
-        ("feature.py", "direct", "replace_from_remint"),
-        ("feature.py", "direct", "replace_profile_from_login"),
-        ("feature.py", "via_getattr", "replace_from_remint"),
-        ("feature.py", "via_getattr", "replace_profile_from_login"),
-        ("feature.py", "via_container", "replace_from_remint"),
-        ("feature.py", "via_container", "replace_profile_from_login"),
-        ("feature.py", "via_list", "replace_from_remint"),
-        ("feature.py", "via_tuple", "replace_profile_from_login"),
-        ("feature.py", "via_partial", "replace_profile_from_login"),
-        ("feature.py", "explicit_adapter", "replace_profile_from_login[injected]"),
-        ("feature.py", "expanded_adapter", "replace_profile_from_login[injected]"),
-    }
 
 
 def _master_token_method_violations(source: str) -> list[str]:
@@ -1559,53 +1191,14 @@ def test_direct_production_store_callers_are_exact_and_function_granular() -> No
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         actual.update(_store_calls(path, tree))
     assert actual == {
-        ("_android/assembly.py", "assemble_android_backend", "ProfileStore"),
-        ("_web/transport/cookie_persistence.py", "CookiePersistence.__init__", "ProfileStore"),
+        ("_cookie_persistence.py", "CookiePersistence.__init__", "ProfileStore"),
+        ("_cookie_persistence.py", "CookiePersistence._resolve_store", "ProfileStore"),
         (
-            "_web/transport/cookie_persistence.py",
-            "CookiePersistence._prepare_open_baseline",
-            "read_cookie_pair",
-        ),
-        (
-            "_web/transport/cookie_persistence.py",
-            "CookiePersistence._adopt_reloaded_baseline",
-            "read_cookie_pair",
-        ),
-        (
-            "_web/transport/cookie_persistence.py",
-            "CookiePersistence._save_canonical",
-            "read_cookie_pair",
-        ),
-        (
-            "_web/transport/cookie_persistence.py",
-            "CookiePersistence._save_v0_callback",
-            "read_cookie_pair",
-        ),
-        (
-            "_web/transport/cookie_persistence.py",
-            "CookiePersistence._resolve_store",
-            "ProfileStore",
-        ),
-        (
-            "_web/transport/cookie_persistence.py",
+            "_cookie_persistence.py",
             "CookiePersistence._save_canonical",
             "merge_cookie_observation",
         ),
-        ("_web/transport/init.py", "_build_web_transport", "ProfileStore"),
-        ("account_email.py", "_read_matching_account_heal_document", "ProfileStore"),
-        ("account_email.py", "_read_matching_account_heal_document", "read_document"),
-        (
-            "account_email.py",
-            "_write_account_metadata_if_document_unchanged",
-            "ProfileStore",
-        ),
-        (
-            "account_email.py",
-            "_write_account_metadata_if_document_unchanged",
-            "_update_account_if_document_unchanged",
-        ),
-        ("_browser/browser_capture.py", "replace_captured_profile", "ProfileStore"),
-        ("_browser/browser_capture.py", "replace_captured_profile", "replace_from_remint"),
+        ("_runtime/init.py", "build_collaborators", "ProfileStore"),
         ("master_token.py", "_bootstrapper", "ProfileStore"),
         (
             "master_token_bootstrap.py",
@@ -1629,11 +1222,6 @@ def test_direct_production_store_callers_are_exact_and_function_granular() -> No
         ("profile_store.py", "ProfileStore.read_account", "_read_account_document"),
         ("profile_store.py", "ProfileStore.clear_account", "read_document"),
         ("profile_store.py", "ProfileStore._read_cookie_document", "read_document"),
-        (
-            "profile_store.py",
-            "ProfileStore._update_account_if_document_unchanged",
-            "read_document",
-        ),
         ("profile_store.py", "in_storage_transaction", "ProfileStore"),
         (
             "profile_migration.py",
@@ -1641,8 +1229,6 @@ def test_direct_production_store_callers_are_exact_and_function_granular() -> No
             "_read_account_document",
         ),
         ("profile_migration.py", "LegacyAccountMigrator.promote", "update_account"),
-        ("profile_migration.py", "replace_profile_from_login", "ProfileStore"),
-        ("profile_migration.py", "replace_profile_from_login", _INSTANCE_ESCAPE),
         ("profile_migration.py", "LoginProfileWriter.write", "replace_from_login"),
         ("profile_migration.py", "AccountMetadataWriter.write", "update_account"),
         ("profile_migration.py", "AccountMetadataWriter.clear", "clear_account"),
@@ -1663,6 +1249,7 @@ def test_direct_production_store_callers_are_exact_and_function_granular() -> No
         ("storage.py", "read_account_metadata", "ProfileStore"),
         ("storage.py", "replace_from_remint", "ProfileStore"),
         ("storage.py", "replace_from_remint", "replace_from_remint"),
+        ("storage.py", "replace_from_login", "ProfileStore"),
         ("storage.py", "persist_minted_jar", "ProfileStore"),
         ("storage.py", "persist_minted_jar", "replace_minted_session"),
         ("storage.py", "update_account_metadata", "ProfileStore"),
@@ -1848,9 +1435,9 @@ def test_same_owner_later_rebinding_invalidates_deferred_store_provider() -> Non
         "        return ProfileStore(path)\n"
         "ProfileStore = object\n"
     )
-    assert _store_calls(SRC_ROOT / "_web/transport/cookie_persistence.py", tree) == {
+    assert _store_calls(SRC_ROOT / "_cookie_persistence.py", tree) == {
         (
-            "_web/transport/cookie_persistence.py",
+            "_cookie_persistence.py",
             "CookiePersistence.create",
             _UNTRUSTED_PROVIDER,
         )
@@ -1858,7 +1445,7 @@ def test_same_owner_later_rebinding_invalidates_deferred_store_provider() -> Non
 
 
 def test_arbitrary_store_sink_is_distinct_from_owned_projections_and_closure() -> None:
-    persistence_path = SRC_ROOT / "_web/transport/cookie_persistence.py"
+    persistence_path = SRC_ROOT / "_cookie_persistence.py"
     source = persistence_path.read_text(encoding="utf-8")
     marker = "                result = store.merge_cookie_observation(\n"
     assert source.count(marker) == 1
@@ -1867,7 +1454,7 @@ def test_arbitrary_store_sink_is_distinct_from_owned_projections_and_closure() -
     bitten = _store_calls(persistence_path, ast.parse(mutated))
     assert bitten - base == {
         (
-            "_web/transport/cookie_persistence.py",
+            "_cookie_persistence.py",
             "CookiePersistence._save_canonical",
             _INSTANCE_ESCAPE,
         )
@@ -2287,8 +1874,11 @@ def test_account_method_signatures_and_storage_leaf_import_are_exact() -> None:
     )
     imports = _collect_imports(storage_tree)
     assert [record for record in imports if record[2] == "profile_account"] == [
+        ("module", 1, "profile_account", "ClearAccount", None),
         ("module", 1, "profile_account", "DomainSelection", None),
+        ("module", 1, "profile_account", "KeepAccount", None),
         ("module", 1, "profile_account", "ProfileAccount", None),
+        ("module", 1, "profile_account", "SetAccount", None),
     ]
 
 
@@ -2299,29 +1889,7 @@ def _auth_edges() -> dict[str, set[str]]:
     for path in AUTH_ROOT.glob("*.py"):
         source = path.stem
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        parents = {
-            child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
-        }
-
-        def is_runtime_module_import(
-            node: ast.AST,
-            parent_map: dict[ast.AST, ast.AST] = parents,
-        ) -> bool:
-            current = node
-            while current in parent_map:
-                current = parent_map[current]
-                if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-                    return False
-                if isinstance(current, ast.If) and ast.unparse(current.test) in {
-                    "TYPE_CHECKING",
-                    "typing.TYPE_CHECKING",
-                }:
-                    return False
-            return True
-
         for node in ast.walk(tree):
-            if not is_runtime_module_import(node):
-                continue
             targets: list[str] = []
             if isinstance(node, ast.Import):
                 targets = [item.name for item in node.names]
@@ -2368,10 +1936,4 @@ def test_profile_store_is_not_exposed_by_facade_or_auth_package() -> None:
     for path in (FACADE_PATH, AUTH_INIT_PATH):
         source = path.read_text(encoding="utf-8")
         assert "ProfileStore" not in source
-    facade_imports = _collect_imports(
-        ast.parse(FACADE_PATH.read_text(encoding="utf-8"), filename=str(FACADE_PATH))
-    )
-    assert [record for record in facade_imports if record[2] == "_auth.profile_store"] == [
-        ("module", 1, "_auth.profile_store", "ReplaceResult", None)
-    ]
-    assert "profile_store" not in AUTH_INIT_PATH.read_text(encoding="utf-8")
+        assert "profile_store" not in source

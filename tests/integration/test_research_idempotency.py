@@ -26,8 +26,8 @@ The commit-lost-response model used by these tests:
 3. Test asserts exactly ONE request landed on the wire (no naive
    duplicate POST).
 
-Mirrors the full-transport one-send coverage in
-``tests/integration/test_side_effects_idempotency.py``.
+Mirrors the pattern in ``tests/integration/concurrency/test_idempotency_create.py``
+(audit item #2, sources/notebooks PROBE_THEN_CREATE family).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import httpx
 import pytest
 
 from notebooklm import NotebookLMClient, ServerError
-from notebooklm._web.policy import IDEMPOTENCY_REGISTRY, IdempotencyPolicy
+from notebooklm._idempotency import IDEMPOTENCY_REGISTRY, IdempotencyPolicy
 from notebooklm.rpc import RPCMethod
 from tests._fixtures.kernel_test_helpers import install_http_client_for_test
 
@@ -48,7 +48,7 @@ pytestmark = pytest.mark.allow_no_vcr
 
 
 # ---------------------------------------------------------------------------
-# Helpers shared with the other full-transport containment tests
+# Helpers (mirror the pattern from test_idempotency_create.py)
 # ---------------------------------------------------------------------------
 
 
@@ -59,22 +59,19 @@ def _wrb_response(rpc_id: str, payload) -> str:
     return f")]}}'\n{len(chunk)}\n{chunk}\n"
 
 
-async def _make_client_with_transport(
+def _make_client_with_transport(
     transport: httpx.AsyncBaseTransport,
     auth_tokens,
     *,
     server_error_max_retries: int = 3,
 ) -> NotebookLMClient:
-    """Open a real lifecycle generation, then install the mock transport."""
+    """Construct a ``NotebookLMClient`` wired to a mock httpx transport."""
     client = NotebookLMClient(
         auth_tokens,
         server_error_max_retries=server_error_max_retries,
     )
-    await client.__aenter__()
-    kernel = client._web_runtime.kernel
-    await kernel.get_http_client(expected_epoch=1).aclose()
     install_http_client_for_test(
-        kernel,
+        client._collaborators.kernel,
         httpx.AsyncClient(
             transport=transport,
             headers={
@@ -162,12 +159,12 @@ async def test_start_fast_research_no_inner_retry_on_5xx(auth_tokens) -> None:
         return httpx.Response(404, text="unexpected")
 
     transport = httpx.MockTransport(handler)
-    client = await _make_client_with_transport(transport, auth_tokens, server_error_max_retries=3)
+    client = _make_client_with_transport(transport, auth_tokens, server_error_max_retries=3)
     try:
         with pytest.raises(ServerError):
             await client.research.start(notebook_id, "what is quantum computing?")
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     # NON_IDEMPOTENT_NO_RETRY forces effective_disable_internal_retries=True
     # so the inner retry loop does not fire — exactly ONE POST.
@@ -194,12 +191,12 @@ async def test_start_deep_research_no_inner_retry_on_5xx(auth_tokens) -> None:
         return httpx.Response(404, text="unexpected")
 
     transport = httpx.MockTransport(handler)
-    client = await _make_client_with_transport(transport, auth_tokens, server_error_max_retries=3)
+    client = _make_client_with_transport(transport, auth_tokens, server_error_max_retries=3)
     try:
         with pytest.raises(ServerError):
             await client.research.start(notebook_id, "deep dive query", mode="deep")
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert request_count == 1, (
         f"expected exactly 1 START_DEEP_RESEARCH (NON_IDEMPOTENT_NO_RETRY), got {request_count}"
@@ -230,12 +227,12 @@ async def test_import_research_no_inner_retry_on_5xx(auth_tokens) -> None:
         return httpx.Response(404, text="unexpected")
 
     transport = httpx.MockTransport(handler)
-    client = await _make_client_with_transport(transport, auth_tokens, server_error_max_retries=3)
+    client = _make_client_with_transport(transport, auth_tokens, server_error_max_retries=3)
     try:
         with pytest.raises(ServerError):
             await client.research.import_sources(notebook_id, task_id, sources)
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert request_count == 1, (
         f"expected exactly 1 IMPORT_RESEARCH (NON_IDEMPOTENT_NO_RETRY), got {request_count}"
@@ -271,11 +268,11 @@ async def test_start_fast_research_happy_path_one_post(auth_tokens) -> None:
         return httpx.Response(404, text="unexpected")
 
     transport = httpx.MockTransport(handler)
-    client = await _make_client_with_transport(transport, auth_tokens)
+    client = _make_client_with_transport(transport, auth_tokens)
     try:
         result = await client.research.start(notebook_id, "test query")
     finally:
-        await client.close()
+        await client._collaborators.kernel.get_http_client().aclose()
 
     assert result is not None
     assert result.task_id == "task_xyz"

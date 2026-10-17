@@ -21,11 +21,6 @@ pytest.importorskip("fastmcp")
 
 from fastmcp.exceptions import ToolError  # noqa: E402 - after importorskip guard
 
-from notebooklm._app.generation_requests import (  # noqa: E402
-    GenerationKind,
-    generation_option_choices,
-)
-from notebooklm._idempotency import mark_unconfirmed  # noqa: E402
 from notebooklm._types.artifacts import (  # noqa: E402
     QUIZ_VARIANT,
     ArtifactStatus,
@@ -36,41 +31,16 @@ from notebooklm._types.research import MindMapResult  # noqa: E402
 from notebooklm.exceptions import (  # noqa: E402 - after importorskip guard
     ArtifactFeatureUnavailableError,
     ArtifactNotFoundError,
-    ClientError,
-    NetworkError,
     NotebookNotFoundError,
     RateLimitError,
-    RPCError,
 )
-from notebooklm.types import (  # noqa: E402
-    Artifact,
-    ArtifactLookup,
-    ArtifactLookupStatus,
-    ArtifactSlide,
-    ArtifactType,
-    GenerationState,
-    Note,
-)
+from notebooklm.mcp.tools.studio import _KIND_OPTIONS  # noqa: E402
+from notebooklm.types import Artifact, ArtifactType, GenerationState, Note  # noqa: E402
 
 from .conftest import AsyncMock  # noqa: E402 - after importorskip guard
 
 NB_ID = "11111111-1111-1111-1111-111111111111"
 TASK_ID = "task-abc-123"
-
-_GENERATION_KINDS: tuple[GenerationKind, ...] = (
-    "audio",
-    "video",
-    "cinematic-video",
-    "slide-deck",
-    "revise-slide",
-    "quiz",
-    "flashcards",
-    "infographic",
-    "data-table",
-    "mind-map",
-    "report",
-)
-_KIND_OPTIONS = {kind: generation_option_choices(kind) for kind in _GENERATION_KINDS}
 
 
 def _schema_enum(prop: dict[str, Any]) -> set[str] | None:
@@ -286,7 +256,7 @@ async def test_studio_list_kind_enum_matches_studio_kinds(mcp_list_tools) -> Non
     schema = next(t for t in tools if t.name == "studio_list").inputSchema
     enum = _schema_enum(schema["properties"]["kind"])
     assert enum == STUDIO_KINDS
-    assert enum is not None and len(enum) == 12
+    assert enum is not None and len(enum) == 10
     assert "cinematic-video" not in enum
 
 
@@ -504,9 +474,6 @@ async def test_studio_items_artifact_meta_opt_in() -> None:
     art_row = next(it for it in default if it["type"] == "audio")
     assert "generation_prompt" not in art_row
     assert "created_at" not in art_row
-    assert "duration_seconds" not in art_row
-    assert "slide_count" not in art_row
-    assert "source_count" not in art_row
 
     enriched = await studio_items(client, NB_ID, include_artifact_meta=True)
     art_row = next(it for it in enriched if it["type"] == "audio")
@@ -516,9 +483,6 @@ async def test_studio_items_artifact_meta_opt_in() -> None:
     note_row = next(it for it in enriched if it["type"] == "note")
     assert "generation_prompt" not in note_row
     assert "created_at" not in note_row
-    assert "duration_seconds" not in note_row
-    assert "slide_count" not in note_row
-    assert "source_count" not in note_row
 
 
 async def test_studio_list_summary_artifact_carries_created_at_and_prompt(
@@ -543,85 +507,6 @@ async def test_studio_list_summary_artifact_carries_created_at_and_prompt(
     assert row["generation_prompt"] == "Summarize the intro"
 
 
-@pytest.mark.parametrize("single_item", [False, True], ids=["summary", "item"])
-async def test_studio_list_inspection_uses_decoded_metadata(
-    mcp_call, mock_client, single_item: bool
-) -> None:
-    """Inspection projects listing metadata without a download or per-item fetch."""
-    slide = ArtifactSlide(None, None, None, "diagram", "slide text")
-    artifacts = [
-        Artifact(
-            id="audio-id",
-            title="Podcast",
-            _artifact_type=ArtifactTypeCode.AUDIO.value,
-            status=int(ArtifactStatus.COMPLETED),
-            duration_seconds=872.489796,
-            source_ids=("source-a", "source-b"),
-        ),
-        Artifact(
-            id="video-id",
-            title="Video",
-            _artifact_type=ArtifactTypeCode.VIDEO.value,
-            status=int(ArtifactStatus.COMPLETED),
-            duration_seconds=0.0,
-        ),
-        Artifact(
-            id="slides-id",
-            title="Deck",
-            _artifact_type=ArtifactTypeCode.SLIDE_DECK.value,
-            status=int(ArtifactStatus.COMPLETED),
-            slides=(slide, slide, slide),
-            source_ids=("source-a",),
-        ),
-    ]
-    mock_client.notes.list = AsyncMock(return_value=[])
-    mock_client.artifacts.list = AsyncMock(return_value=artifacts)
-    rows = []
-    if single_item:
-        for art in artifacts:
-            result = await mcp_call(
-                "studio_list", {"notebook": NB_ID, "item": art.title, "detail": "compact"}
-            )
-            rows.extend(result.structured_content["items"])
-    else:
-        result = await mcp_call("studio_list", {"notebook": NB_ID})
-        rows = result.structured_content["items"]
-
-    assert [row["duration_seconds"] for row in rows] == [872.489796, 0.0, None]
-    assert [row["slide_count"] for row in rows] == [None, None, 3]
-    assert [row["source_count"] for row in rows] == [2, None, 1]
-    assert mock_client.artifacts.list.await_count == (3 if single_item else 1)
-    assert mock_client.notes.list.await_count == (3 if single_item else 1)
-    for row in rows:
-        assert "slides" not in row  # Keep rendered text/images out of the summary.
-        assert "question_count" not in row  # Unobserved metadata stays unimplemented.
-        assert "generation_duration" not in row
-        assert "generator_version" not in row
-
-
-@pytest.mark.parametrize(
-    "type_code, status",
-    [
-        (ArtifactTypeCode.AUDIO, ArtifactStatus.PROCESSING),
-        (ArtifactTypeCode.SLIDE_DECK, ArtifactStatus.COMPLETED),
-        (ArtifactTypeCode.MIND_MAP, ArtifactStatus.COMPLETED),
-    ],
-)
-async def test_studio_list_absent_metadata_is_unknown(
-    mcp_call, mock_client, type_code: ArtifactTypeCode, status: ArtifactStatus
-) -> None:
-    """Missing listing metadata remains null for pending and completed artifacts."""
-    art = Artifact(id="art1", title="Missing metadata", _artifact_type=type_code, status=status)
-    mock_client.notes.list = AsyncMock(return_value=[])
-    mock_client.artifacts.list = AsyncMock(return_value=[art])
-
-    result = await mcp_call("studio_list", {"notebook": NB_ID})
-    row = result.structured_content["items"][0]
-    assert row["duration_seconds"] is None
-    assert row["slide_count"] is None
-    assert row["source_count"] is None
-
-
 async def test_studio_list_full_artifact_omits_prompt(mcp_call, mock_client) -> None:
     """``detail="full"`` leaves the artifact projection untouched — no ``generation_prompt``
     (the enrichment is scoped to summary mode)."""
@@ -631,9 +516,6 @@ async def test_studio_list_full_artifact_omits_prompt(mcp_call, mock_client) -> 
     result = await mcp_call("studio_list", {"notebook": NB_ID, "detail": "full"})
     row = result.structured_content["items"][0]
     assert "generation_prompt" not in row
-    assert "duration_seconds" not in row
-    assert "slide_count" not in row
-    assert "source_count" not in row
 
 
 # ---------------------------------------------------------------------------
@@ -1061,7 +943,7 @@ async def test_artifact_generate_cross_kind_style_is_validation_error(
     mcp_call, mock_client, artifact_type: str, opts: dict
 ) -> None:
     """A ``style`` value that IS in the global union Literal but invalid for THIS kind
-    projects as VALIDATION via the neutral option contract.
+    projects as VALIDATION via the runtime ``_KIND_OPTIONS`` loop.
 
     ``style`` is a single union Literal (video ∪ infographic), so these values pass
     the schema boundary and must be narrowed per-kind at runtime — proving the
@@ -1134,7 +1016,6 @@ async def test_artifact_generate_bad_option_value_is_schema_boundary_error(
 @pytest.mark.parametrize(
     "artifact_type,opts",
     [
-        ("audio", {"orientation": "landscape"}),  # shared REST parity case
         ("quiz", {"orientation": "portrait"}),  # infographic option on quiz
         ("video", {"deck_format": "presenter"}),  # slide-deck option on video
         ("audio", {"video_format": "brief"}),  # video option on audio
@@ -1142,7 +1023,6 @@ async def test_artifact_generate_bad_option_value_is_schema_boundary_error(
         ("cinematic-video", {"style": "classic"}),  # cinematic-video exposes NO options
     ],
     ids=[
-        "orientation-on-audio",
         "orientation-on-quiz",
         "deck-on-video",
         "video-on-audio",
@@ -1155,8 +1035,8 @@ async def test_artifact_generate_wrong_kind_option_is_validation_error(
 ) -> None:
     """An option valid for some OTHER kind is rejected, not silently ignored.
 
-    The MCP layer only parses the schema; the neutral request builder owns this
-    semantic rejection before any resource lookup.
+    The neutral core ignores irrelevant extras, so this rejection lives in the MCP tool;
+    without it an agent's mis-targeted option would silently no-op.
     """
     with pytest.raises(ToolError) as excinfo:
         await mcp_call(
@@ -1164,11 +1044,6 @@ async def test_artifact_generate_wrong_kind_option_is_validation_error(
             {"notebook": NB_ID, "artifact_type": artifact_type, **opts},
         )
     assert "VALIDATION" in str(excinfo.value)
-    if artifact_type == "audio" and opts == {"orientation": "landscape"}:
-        assert (
-            "option 'orientation' is not valid for generation kind 'audio'; "
-            "this kind accepts ['audio_format', 'audio_length']"
-        ) in str(excinfo.value)
 
 
 async def test_artifact_generate_wrong_kind_message_for_optionless_kind(
@@ -1195,8 +1070,12 @@ async def test_artifact_generate_style_prompt_requires_custom(mcp_call, mock_cli
 
 
 def test_kind_options_match_core_maps() -> None:
-    """The MCP schema's neutral choice authority matches the CLI enum maps."""
-    from notebooklm.cli import generate_cmd as gp
+    """The MCP per-kind choice tuples are DUPLICATED from the core's private maps (the
+    CLI/MCP boundary forbids importing them at runtime). Pin them equal so they can't
+    silently drift — the parity tests only exercise valid values and would miss a
+    *subset* drift (MCP wrongly rejecting a value the core accepts)."""
+    from notebooklm._app import generate_plans as gp
+    from notebooklm.mcp.tools.studio import _KIND_OPTIONS
 
     assert _KIND_OPTIONS["audio"]["audio_format"] == tuple(gp._AUDIO_FORMAT_MAP)
     assert _KIND_OPTIONS["audio"]["audio_length"] == tuple(gp._AUDIO_LENGTH_MAP)
@@ -1236,10 +1115,11 @@ async def test_artifact_generate_exposes_new_option_params(mcp_list_tools) -> No
 
 async def test_artifact_generate_option_params_expose_enums(mcp_list_tools) -> None:
     """Each finite-choice option param is typed ``Literal`` → the tool schema exposes a
-    JSON-schema ``enum`` matching the neutral contract (acceptance criterion for #1666).
+    JSON-schema ``enum`` matching ``_KIND_OPTIONS`` (acceptance criterion for #1666).
 
-    The expected enum is read from the neutral authority, so a contract change not
-    mirrored into the signature ``Literal`` fails here. ``style`` is a
+    The expected enum is read from ``_KIND_OPTIONS`` (pinned equal to the neutral core
+    maps by ``test_kind_options_match_core_maps``), so a core-map change not mirrored
+    into BOTH ``_KIND_OPTIONS`` and the signature ``Literal`` fails here. ``style`` is a
     single union Literal, so its enum is the union across video+infographic; ``quantity``
     /``difficulty`` are shared by quiz+flashcards (identical today — assert the union so
     a future flashcards-specific set is still covered)."""
@@ -1401,19 +1281,6 @@ async def test_artifact_download_audio(mcp_call, mock_client, tmp_path) -> None:
     assert result.structured_content["outcome"] == "single_downloaded"
     assert result.structured_content["output_path"] == out
     mock_client.artifacts.download_audio.assert_awaited_once()
-
-
-async def test_artifact_download_auth_error_is_typed_auth(mcp_call, mock_client, tmp_path) -> None:
-    from notebooklm.exceptions import AuthError
-
-    out = str(tmp_path / "out.mp3")
-    mock_client.artifacts.list = AsyncMock(return_value=[_AUDIO_ARTIFACT])
-    mock_client.artifacts.download_audio = AsyncMock(side_effect=AuthError("expired"))
-
-    with pytest.raises(ToolError, match=r"^AUTH:"):
-        await mcp_call(
-            "studio_download", {"notebook": NB_ID, "artifact_type": "audio", "path": out}
-        )
 
 
 async def test_artifact_download_reports_size_bytes(mcp_call, mock_client, tmp_path) -> None:
@@ -2040,80 +1907,13 @@ async def test_artifact_retry_completed_gives_actionable_error(mcp_call, mock_cl
     mock_client.artifacts.retry_failed = AsyncMock(
         side_effect=ArtifactFeatureUnavailableError("retry")
     )
-    mock_client.artifacts.lookup = AsyncMock(
-        return_value=ArtifactLookup(ArtifactLookupStatus.FOUND, artifact=art)
-    )
+    mock_client.artifacts.get_or_none = AsyncMock(return_value=art)
     with pytest.raises(ToolError) as excinfo:
         await mcp_call("studio_retry", {"notebook": NB_ID, "artifact": _ART_FULL})
     msg = str(excinfo.value)
     assert "completed" in msg  # names the current status
     assert "studio_generate" in msg  # actionable next step
     assert "Retry generation is unavailable" not in msg  # not the generic text
-
-
-@pytest.mark.parametrize(
-    "refusal",
-    [
-        pytest.param(ClientError("denied", rpc_code=7), id="permission_denied"),
-        pytest.param(RPCError("unavailable", rpc_code=14), id="unavailable"),
-        pytest.param(ClientError("gone", rpc_code=5), id="not_found"),
-    ],
-)
-async def test_artifact_retry_preserves_non_state_refusals(mcp_call, mock_client, refusal) -> None:
-    """#2188: only a wrong-STATE refusal may be relabelled "artifact is not failed".
-
-    A bare ``[7]`` PERMISSION_DENIED decodes to ``ClientError`` and ``[14]``
-    UNAVAILABLE to a plain ``RPCError`` — neither is caught by the typed
-    exclusions, so without a status check both would be rewritten into a
-    validation error, handing the caller the wrong category AND the wrong
-    recovery advice.
-    """
-    art = Artifact(
-        id=_ART_FULL,
-        title="Podcast 1",
-        _artifact_type=ArtifactTypeCode.AUDIO.value,
-        status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-    )
-    mock_client.artifacts.retry_failed = AsyncMock(side_effect=refusal)
-    mock_client.artifacts.lookup = AsyncMock(
-        return_value=ArtifactLookup(ArtifactLookupStatus.FOUND, artifact=art)
-    )
-
-    with pytest.raises(ToolError) as excinfo:
-        await mcp_call("studio_retry", {"notebook": NB_ID, "artifact": _ART_FULL})
-
-    assert "artifact is not failed" not in str(excinfo.value)
-
-
-@pytest.mark.parametrize("code", [3, 9])
-async def test_artifact_retry_state_refusal_with_status_is_enriched(
-    mcp_call, mock_client, code
-) -> None:
-    """A status-tagged state refusal still gets the actionable message (#2188).
-
-    INVALID_ARGUMENT / FAILED_PRECONDITION are the shapes that can plausibly
-    mean "wrong state", so the #1924 F15 enrichment must survive them — that is
-    the whole reason the catch was widened past ``ArtifactFeatureUnavailableError``.
-    """
-    art = Artifact(
-        id=_ART_FULL,
-        title="Podcast 1",
-        _artifact_type=ArtifactTypeCode.AUDIO.value,
-        status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-    )
-    mock_client.artifacts.retry_failed = AsyncMock(side_effect=RPCError("rejected", rpc_code=code))
-    mock_client.artifacts.lookup = AsyncMock(
-        return_value=ArtifactLookup(ArtifactLookupStatus.FOUND, artifact=art)
-    )
-
-    with pytest.raises(ToolError) as excinfo:
-        await mcp_call("studio_retry", {"notebook": NB_ID, "artifact": _ART_FULL})
-
-    msg = str(excinfo.value)
-    assert "completed" in msg
-    assert "studio_generate" in msg
 
 
 async def test_artifact_retry_refusal_on_failed_reraises_generic(mcp_call, mock_client) -> None:
@@ -2129,39 +1929,21 @@ async def test_artifact_retry_refusal_on_failed_reraises_generic(mcp_call, mock_
     mock_client.artifacts.retry_failed = AsyncMock(
         side_effect=ArtifactFeatureUnavailableError("retry")
     )
-    mock_client.artifacts.lookup = AsyncMock(
-        return_value=ArtifactLookup(ArtifactLookupStatus.FOUND, artifact=art)
-    )
+    mock_client.artifacts.get_or_none = AsyncMock(return_value=art)
     with pytest.raises(ToolError) as excinfo:
         await mcp_call("studio_retry", {"notebook": NB_ID, "artifact": _ART_FULL})
     assert "Retry generation is unavailable" in str(excinfo.value)
 
 
-async def test_artifact_retry_unconfirmed_error_bypasses_state_enrichment(
-    mcp_call, mock_client
-) -> None:
-    error = mark_unconfirmed(ArtifactFeatureUnavailableError("retry"))
-    mock_client.artifacts.retry_failed = AsyncMock(side_effect=error)
-    mock_client.artifacts.lookup = AsyncMock(side_effect=NetworkError("readback lost"))
-
-    with pytest.raises(ToolError) as excinfo:
-        await mcp_call("studio_retry", {"notebook": NB_ID, "artifact": _ART_FULL})
-
-    message = str(excinfo.value)
-    assert "unconfirmed=true" in message
-    assert "retriable=false" in message
-    mock_client.artifacts.lookup.assert_not_called()
-
-
 async def test_artifact_retry_happy_path_skips_state_check(mcp_call, mock_client) -> None:
-    """F15: the happy path must not pay for the extra lookup state read."""
+    """F15: the happy path must NOT pay for the extra ``get_or_none`` state read."""
     mock_client.artifacts.retry_failed = AsyncMock(
         return_value=FakeStatus(task_id=_ART_FULL, status=GenerationState.IN_PROGRESS, url=None)
     )
-    mock_client.artifacts.lookup = AsyncMock()
+    mock_client.artifacts.get_or_none = AsyncMock()
     result = await mcp_call("studio_retry", {"notebook": NB_ID, "artifact": _ART_FULL})
     assert result.structured_content["status"] == "in_progress"
-    mock_client.artifacts.lookup.assert_not_called()
+    mock_client.artifacts.get_or_none.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2190,28 +1972,6 @@ async def test_studio_delete_confirm_false_preview_shape(mcp_call, mock_client) 
     }
     mock_client.artifacts.delete.assert_not_called()
     mock_client.notes.delete.assert_not_called()
-
-
-async def test_studio_delete_preview_canonical_target_survives_title_replacement(
-    mcp_call, mock_client
-) -> None:
-    original = _completed_artifact(_ART_FULL, "Podcast")
-    replacement = _completed_artifact("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Podcast")
-    mock_client.notes.list = AsyncMock(return_value=[])
-    mock_client.artifacts.list = AsyncMock(return_value=[original])
-    mock_client.mind_maps.list_note_backed = AsyncMock(return_value=[])
-    mock_client.artifacts.delete = AsyncMock()
-
-    preview = await mcp_call("studio_delete", {"notebook": NB_ID, "item": "Podcast"})
-    assert preview.structured_content["preview"]["item_id"] == _ART_FULL
-    mock_client.artifacts.list.return_value = [replacement]
-
-    confirmed = await mcp_call(
-        "studio_delete", {"notebook": NB_ID, "item": _ART_FULL, "confirm": True}
-    )
-    assert confirmed.structured_content["item_id"] == _ART_FULL
-    assert "deprecation" not in confirmed.structured_content
-    mock_client.artifacts.delete.assert_awaited_once_with(NB_ID, _ART_FULL)
 
 
 async def test_studio_delete_note_routes_to_note_delete(mcp_call, mock_client) -> None:
@@ -2254,11 +2014,6 @@ async def test_studio_delete_artifact_routes_to_artifact_delete(mcp_call, mock_c
         "item_id": _ART_FULL,
         "type": "audio",
         "was_note_backed": False,
-        "deprecation": (
-            "Using a name or partial id on a confirmed MCP mutation is deprecated; "
-            "pass the canonical notebook and target ids returned by the confirmation preview. "
-            "Confirmed calls using names or partial ids will be rejected in v1.0."
-        ),
     }
     mock_client.artifacts.delete.assert_awaited_once_with(NB_ID, _ART_FULL)
     mock_client.notes.delete.assert_not_called()
@@ -2406,20 +2161,6 @@ async def test_strict_studio_delete_title_rejected_without_listing(
     assert "NOTEBOOKLM_MCP_STRICT_IDS" in str(excinfo.value)
     mock_client.notes.list.assert_not_called()
     mock_client.artifacts.list.assert_not_called()
-
-
-async def test_strict_studio_delete_parent_name_rejected_before_item_lists(
-    _strict_ids, mcp_call, mock_client
-) -> None:
-    mock_client.artifacts.delete = AsyncMock()
-    with pytest.raises(ToolError, match="NOTEBOOKLM_MCP_STRICT_IDS"):
-        await mcp_call(
-            "studio_delete", {"notebook": "Notebook", "item": _ART_FULL, "confirm": True}
-        )
-    mock_client.notebooks.list.assert_not_called()
-    mock_client.notes.list.assert_not_called()
-    mock_client.artifacts.list.assert_not_called()
-    mock_client.artifacts.delete.assert_not_called()
 
 
 async def test_strict_studio_rename_title_rejected_without_listing(

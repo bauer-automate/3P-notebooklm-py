@@ -351,22 +351,17 @@ class TestAuthTokensFromStorage:
         html = '"SNlM0e":"csrf_token" "FdrFJe":"session_id"'
         httpx_mock.add_response(content=html.encode())
 
-        with pytest.warns(DeprecationWarning, match="AuthTokens.from_storage"):
-            tokens = await AuthTokens.from_storage(storage_file)
+        tokens = await AuthTokens.from_storage(storage_file)
 
         assert tokens.cookies[("SID", ".google.com", "/")] == "sid"
-        with pytest.warns(DeprecationWarning, match="flat_cookies"):
-            assert tokens.flat_cookies["SID"] == "sid"
+        assert tokens.flat_cookies["SID"] == "sid"
         assert tokens.csrf_token == "csrf_token"
         assert tokens.session_id == "session_id"
 
     @pytest.mark.asyncio
     async def test_from_storage_file_not_found(self, tmp_path):
         """Test raises error when storage file doesn't exist."""
-        with (
-            pytest.raises(FileNotFoundError),
-            pytest.warns(DeprecationWarning, match="AuthTokens.from_storage"),
-        ):
+        with pytest.raises(FileNotFoundError):
             await AuthTokens.from_storage(tmp_path / "nonexistent.json")
 
     @pytest.mark.asyncio
@@ -405,8 +400,7 @@ class TestAuthTokensFromStorage:
         html = '"SNlM0e":"csrf_token" "FdrFJe":"session_id"'
         httpx_mock.add_response(content=html.encode())
 
-        with pytest.warns(DeprecationWarning, match="AuthTokens.from_storage"):
-            tokens = await AuthTokens.from_storage(storage_file)
+        tokens = await AuthTokens.from_storage(storage_file)
 
         sid = next(c for c in tokens.cookie_jar.jar if c.name == "SID")
         assert sid.path == "/u/0/"
@@ -584,11 +578,9 @@ class TestLoaderFlatCookieParity:
         httpx_mock.add_response(content=html.encode())
 
         cli_cookies = load_auth_from_storage(storage_file)
-        with pytest.warns(DeprecationWarning, match="AuthTokens.from_storage"):
-            lib_tokens = await AuthTokens.from_storage(storage_file)
+        lib_tokens = await AuthTokens.from_storage(storage_file)
 
-        with pytest.warns(DeprecationWarning, match="flat_cookies"):
-            assert cli_cookies["OSID"] == lib_tokens.flat_cookies["OSID"]
+        assert cli_cookies["OSID"] == lib_tokens.flat_cookies["OSID"]
         assert cli_cookies["OSID"] == "from-notebooklm"
 
     @pytest.mark.asyncio
@@ -619,12 +611,10 @@ class TestLoaderFlatCookieParity:
         httpx_mock.add_response(content=html.encode())
 
         cli_cookies = load_auth_from_storage(storage_file)
-        with pytest.warns(DeprecationWarning, match="AuthTokens.from_storage"):
-            lib_tokens = await AuthTokens.from_storage(storage_file)
+        lib_tokens = await AuthTokens.from_storage(storage_file)
 
         assert cli_cookies["SID"] == "from-base"
-        with pytest.warns(DeprecationWarning, match="flat_cookies"):
-            assert lib_tokens.flat_cookies["SID"] == "from-base"
+        assert lib_tokens.flat_cookies["SID"] == "from-base"
 
 
 # =============================================================================

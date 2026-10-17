@@ -22,7 +22,7 @@ import json
 import math
 import sys
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,20 +37,12 @@ from notebooklm.notebooklm_cli import cli
 from notebooklm.rpc.types import ShareAccess, ShareViewLevel
 from notebooklm.types import (
     Artifact,
-    ArtifactCustomizationChoices,
     AskResult,
     Collection,
-    CopiedArtifact,
-    CopiedSource,
-    CustomizationChoice,
     Label,
-    NextStepSuggestion,
     Note,
     Notebook,
-    PlayBook,
     PromptSuggestion,
-    RelevantChunk,
-    ReportPreset,
     ResearchSource,
     ResearchStart,
     ResearchStatus,
@@ -58,12 +50,7 @@ from notebooklm.types import (
     ShareStatus,
     Source,
     SourceGuide,
-    UsageSummary,
-    UsageSummaryStatus,
-    UsageWindow,
-    UsageWindowKind,
 )
-from tests._helpers.downloads import configure_complete_artifact_listing
 
 
 def _research_task(spec: dict) -> ResearchTask:
@@ -234,7 +221,6 @@ def _make_client(extra_setup=None) -> MagicMock:
     )
     client.sources.list = AsyncMock(return_value=_stub_sources())
     client.artifacts.list = AsyncMock(return_value=_stub_artifacts())
-    configure_complete_artifact_listing(client)
     client.artifacts.suggest_reports = AsyncMock(return_value=[])
     client.notes.list = AsyncMock(return_value=_stub_notes())
     client.research.poll = AsyncMock(return_value=_research_task({"status": "no_research"}))
@@ -346,51 +332,6 @@ def _customize_suggest_prompts(client: MagicMock) -> None:
     )
 
 
-def _customize_suggest_next_steps(client: MagicMock) -> None:
-    client.notebooks.suggest_next_steps = AsyncMock(
-        return_value=[NextStepSuggestion(question="What is X?", type_code=9)]
-    )
-
-
-def _customize_artifact_choices(client: MagicMock) -> None:
-    client.artifacts.get_customization_choices = AsyncMock(
-        return_value=ArtifactCustomizationChoices(
-            audio=[CustomizationChoice(1, "Deep Dive", "Two hosts")],
-            reports=[ReportPreset("Briefing Doc", "Key insights", "Create a briefing.")],
-        )
-    )
-
-
-def _customize_artifact_copy(client: MagicMock) -> None:
-    client.artifacts.copy = AsyncMock(
-        return_value=[
-            CopiedArtifact(
-                original_id="art123def456ghi789jkl",
-                artifact=MagicMock(
-                    id="art_new",
-                    title="Copy",
-                    kind=MagicMock(value="quiz"),
-                    status_str="completed",
-                ),
-            )
-        ]
-    )
-
-
-def _customize_source_transfers(client: MagicMock) -> None:
-    source = MagicMock(
-        id="src_new",
-        title="Copy",
-        kind=MagicMock(value="url"),
-        status=MagicMock(value="ready"),
-    )
-    client.sources.add_urls_async = AsyncMock(return_value=[source])
-    client.sources.append_text = AsyncMock(return_value=None)
-    client.sources.copy = AsyncMock(
-        return_value=[CopiedSource(original_id="src123def456ghi789jkl", source=source)]
-    )
-
-
 def _customize_share_public(client: MagicMock) -> None:
     client.sharing.set_public = AsyncMock(return_value=_stub_share_status())
 
@@ -415,47 +356,9 @@ def _customize_source_fulltext(client: MagicMock) -> None:
     )
 
 
-def _customize_source_search(client: MagicMock) -> None:
-    client.sources.search = AsyncMock(
-        return_value=[
-            RelevantChunk(
-                source_id="src123def456ghi789jkl",
-                text="Ranked passage",
-                rank=1,
-                start=10,
-                end=24,
-            )
-        ]
-    )
-
-
 def _customize_source_guide(client: MagicMock) -> None:
     client.sources.get_guide = AsyncMock(
         return_value=SourceGuide(summary="a summary", keywords=["k1", "k2"])
-    )
-
-
-def _customize_source_books(client: MagicMock) -> None:
-    client.sources.list_play_books = AsyncMock(
-        return_value=[
-            PlayBook(
-                content_id="QhsZEAAAQBAJ",
-                title="The Art of War",
-                authors=("Sun Tzu",),
-                description_html="<p>…</p>",
-                cover_url="https://cover",
-                export_disabled=False,
-                reason=None,
-                field_type=4.6,
-                updated_at=None,
-            )
-        ]
-    )
-
-
-def _customize_source_add_book(client: MagicMock) -> None:
-    client.sources.add_play_book = AsyncMock(
-        return_value=Source(id="src_book", title="The Art of War", _type_code=20)
     )
 
 
@@ -467,20 +370,6 @@ def _customize_source_add_research(client: MagicMock) -> None:
             notebook_id="abc123def456ghi789jkl",
             query="",
             mode="fast",
-        )
-    )
-
-
-def _customize_research_discover(client: MagicMock) -> None:
-    client.research.discover = AsyncMock(
-        return_value=_research_task(
-            {
-                "status": "completed",
-                "query": "q",
-                "sources": [{"title": "Source 1", "url": "http://example.com/1"}],
-                "summary": "overview",
-                "task_id": "job_001",
-            }
         )
     )
 
@@ -500,41 +389,6 @@ def _customize_research_wait(client: MagicMock) -> None:
     )
 
 
-class _ImportedResearchSourcesStub(list):
-    """Mirrors ``notebooklm._research_import._ImportedResearchSources``: a ``list``
-    of newly-imported entries carrying the ``already_present`` side channel."""
-
-    def __init__(self, items, already_present=()):
-        super().__init__(items)
-        self.already_present = list(already_present)
-
-
-def _customize_research_import(client: MagicMock) -> None:
-    # `research import --json` polls once (resolving the bare "current run"
-    # from that same poll), then imports. A completed run with one source is
-    # the minimum that clears the importable-state ladder.
-    client.research.poll = AsyncMock(
-        return_value=_research_task(
-            {
-                "task_id": "run_789",
-                "status": "completed",
-                "sources": [{"url": "https://example.com/a", "title": "A"}],
-                "query": "q",
-                "report": "",
-            }
-        )
-    )
-    # A bare list is a shape the real client never returns — it hands back an
-    # ``_ImportedResearchSources`` (a list subclass carrying ``already_present``),
-    # so mirror that or the sweep never exercises the side channel.
-    client.research.import_sources_with_verification = AsyncMock(
-        return_value=_ImportedResearchSourcesStub(
-            [{"id": "src_1", "title": "A", "url": "https://example.com/a"}],
-            already_present=[{"id": "src_0", "title": "B", "url": "https://example.com/b"}],
-        )
-    )
-
-
 def _customize_research_cancel(client: MagicMock) -> None:
     # `research cancel <run_id> --json` is fire-and-forget: ``cancel`` returns
     # None and the command emits a fixed JSON acknowledgement.
@@ -549,17 +403,6 @@ def _customize_notebook_create(client: MagicMock) -> None:
             id="newxyz123abc456def789",
             title="My Notebook",
             created_at=datetime(2024, 1, 1),
-            is_owner=True,
-        )
-    )
-
-
-def _customize_notebook_copy(client: MagicMock) -> None:
-    client.notebooks.copy = AsyncMock(
-        return_value=Notebook(
-            id="copyxyz123abc456def789",
-            title="My Notebook Copy",
-            created_at=datetime(2024, 1, 2),
             is_owner=True,
         )
     )
@@ -590,7 +433,6 @@ def _setup_fs_doctor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
     monkeypatch.delenv("NOTEBOOKLM_PROFILE", raising=False)
     monkeypatch.delenv("NOTEBOOKLM_AUTH_JSON", raising=False)
-    monkeypatch.delenv("NOTEBOOKLM_BASE_URL", raising=False)
     paths_module.set_active_profile(None)
     paths_module._reset_config_cache()
     profile_dir = tmp_path / "profiles" / "default"
@@ -599,19 +441,7 @@ def _setup_fs_doctor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         profile_dir.chmod(0o700)
     storage = profile_dir / "storage_state.json"
     storage.write_text(
-        json.dumps(
-            {
-                "cookies": [
-                    {"name": "SID", "value": "x", "domain": ".google.com", "path": "/"},
-                    {
-                        "name": "__Secure-1PSIDTS",
-                        "value": "y",
-                        "domain": ".google.com",
-                        "path": "/",
-                    },
-                ]
-            }
-        ),
+        json.dumps({"cookies": [{"name": "SID", "value": "x"}]}),
         encoding="utf-8",
     )
     (tmp_path / "config.json").write_text(
@@ -641,28 +471,9 @@ _FS_SETUPS = {
 }
 
 
-def _customize_usage(client: MagicMock) -> None:
-    """Exercise ready usage JSON, including timezone-aware reset timestamps."""
-    client.settings.get_usage = AsyncMock(
-        return_value=UsageSummary(
-            status=UsageSummaryStatus.READY,
-            windows=tuple(
-                UsageWindow(kind, 25.0, 75.0, datetime(2026, 9, 5, tzinfo=timezone.utc))
-                for kind in (UsageWindowKind.FIVE_HOUR, UsageWindowKind.WEEKLY)
-            ),
-        )
-    )
-
-
 JSON_COMMANDS: list[tuple[str, list[str], object]] = [
-    ("usage", ["usage", "--json"], _customize_usage),
     # source group
     ("source_list", ["source", "list", "-n", "abc123def456ghi789jkl", "--json"], None),
-    (
-        "source_search",
-        ["source", "search", "ranked passage", "-n", "abc123def456ghi789jkl", "--json"],
-        _customize_source_search,
-    ),
     (
         "source_fulltext",
         [
@@ -700,19 +511,6 @@ JSON_COMMANDS: list[tuple[str, list[str], object]] = [
         ],
         _customize_source_add_research,
     ),
-    ("source_books", ["source", "books", "--json"], _customize_source_books),
-    (
-        "source_add_book",
-        [
-            "source",
-            "add-book",
-            "QhsZEAAAQBAJ",
-            "-n",
-            "abc123def456ghi789jkl",
-            "--json",
-        ],
-        _customize_source_add_book,
-    ),
     # artifact group
     ("artifact_list", ["artifact", "list", "-n", "abc123def456ghi789jkl", "--json"], None),
     (
@@ -723,19 +521,9 @@ JSON_COMMANDS: list[tuple[str, list[str], object]] = [
     # research group
     ("research_status", ["research", "status", "-n", "abc123def456ghi789jkl", "--json"], None),
     (
-        "research_discover",
-        ["research", "discover", "q", "-n", "abc123def456ghi789jkl", "--json"],
-        _customize_research_discover,
-    ),
-    (
         "research_wait",
         ["research", "wait", "-n", "abc123def456ghi789jkl", "--json"],
         _customize_research_wait,
-    ),
-    (
-        "research_import",
-        ["research", "import", "-n", "abc123def456ghi789jkl", "--json"],
-        _customize_research_import,
     ),
     (
         "research_cancel",
@@ -886,64 +674,7 @@ JSON_COMMANDS: list[tuple[str, list[str], object]] = [
         ["suggest-prompts", "-n", "abc123def456ghi789jkl", "--json"],
         _customize_suggest_prompts,
     ),
-    (
-        "suggest_next_steps_cmd",
-        ["suggest-next-steps", "-n", "abc123def456ghi789jkl", "--json"],
-        _customize_suggest_next_steps,
-    ),
-    # #2283 transfer family
-    (
-        "source_add_async",
-        ["source", "add-async", "https://example.com/", "-n", "abc123def456ghi789jkl", "--json"],
-        _customize_source_transfers,
-    ),
-    (
-        "source_append",
-        [
-            "source",
-            "append",
-            "src123def456ghi789jkl",
-            "more text",
-            "-n",
-            "abc123def456ghi789jkl",
-            "--json",
-        ],
-        _customize_source_transfers,
-    ),
-    (
-        "source_copy",
-        [
-            "source",
-            "copy",
-            "src123def456ghi789jkl",
-            "--to",
-            "abc123def456ghi789jkl",
-            "-n",
-            "abc123def456ghi789jkl",
-            "--json",
-        ],
-        _customize_source_transfers,
-    ),
-    (
-        "artifact_copy",
-        [
-            "artifact",
-            "copy",
-            "art123def456ghi789jkl",
-            "--to",
-            "abc123def456ghi789jkl",
-            "-n",
-            "abc123def456ghi789jkl",
-            "--json",
-        ],
-        _customize_artifact_copy,
-    ),
-    (
-        "artifact_choices",
-        ["artifact", "choices", "-n", "abc123def456ghi789jkl", "--json"],
-        _customize_artifact_choices,
-    ),
-    # doctor / profile / notebook create/copy coverage (meta-audit G9 + I7 + I9):
+    # doctor / profile / notebook-create coverage (meta-audit G9 + I7 + I9):
     # `doctor` and `profile list` read NOTEBOOKLM_HOME directly and don't
     # build a NotebookLMClient — the parametrized test dispatches on these
     # case_ids and uses the ``_setup_fs_<case>`` helpers above instead of
@@ -952,11 +683,6 @@ JSON_COMMANDS: list[tuple[str, list[str], object]] = [
     ("doctor", ["doctor", "--json"], None),
     ("profile_list", ["profile", "list", "--json"], None),
     ("notebook_create", ["create", "My Notebook", "--json"], _customize_notebook_create),
-    (
-        "notebook_copy",
-        ["copy", "My Notebook Copy", "-n", "abc123def456ghi789jkl", "--json"],
-        _customize_notebook_copy,
-    ),
 ]
 
 
@@ -1285,8 +1011,6 @@ JSON_ERROR_WAIVED: dict[tuple[str, ...], str] = {
     ("source", "add"): _MUTATION_RATIONALE_ERROR,
     ("source", "add-drive"): _MUTATION_RATIONALE_ERROR,
     ("source", "add-drive-file"): _MUTATION_RATIONALE_ERROR,
-    ("source", "add-book"): _MUTATION_RATIONALE_ERROR,
-    ("source", "books"): _INTROSPECTION_RATIONALE,
     ("source", "clean"): _MUTATION_RATIONALE_ERROR,
     ("source", "delete"): _MUTATION_RATIONALE_ERROR,
     ("source", "delete-by-title"): _MUTATION_RATIONALE_ERROR,

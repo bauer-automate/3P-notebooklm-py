@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from notebooklm._browser.browser_capture import (
+from notebooklm._auth.browser_capture import (
     BrowserCapturePlan,
     accepted_login_hosts,
     log_observed_navigations,
@@ -45,8 +45,8 @@ from notebooklm._browser.browser_capture import (
 # constants because the assertions they gate mean different things: TRACE_LOGGER
 # marks "emitted by the tracing helpers", CAPTURE_LOGGER "emitted by the capture
 # core around the wait".
-TRACE_LOGGER = "notebooklm._browser.browser_capture"
-CAPTURE_LOGGER = "notebooklm._browser.browser_capture"
+TRACE_LOGGER = "notebooklm._auth.browser_capture"
+CAPTURE_LOGGER = "notebooklm._auth.browser_capture"
 
 
 class _FakePage:
@@ -131,28 +131,10 @@ def test_either_personal_host_accepts_both(monkeypatch: pytest.MonkeyPatch, sele
     assert not url_matches_base_host("https://notebooklm.cloud.google.com/")
 
 
-@pytest.mark.parametrize("host", ["notebook.cloud.google.com", "notebooklm.cloud.google.com"])
-def test_enterprise_host_accepts_only_enterprise_aliases(
-    monkeypatch: pytest.MonkeyPatch, host: str
-) -> None:
-    monkeypatch.setenv("NOTEBOOKLM_BASE_URL", f"https://{host}")
+def test_enterprise_host_has_no_personal_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOTEBOOKLM_BASE_URL", "https://notebooklm.cloud.google.com")
 
-    assert set(accepted_login_hosts()) == {
-        "notebook.cloud.google.com",
-        "notebooklm.cloud.google.com",
-    }
-    assert accepted_login_hosts()[0] == host
-    for accepted in accepted_login_hosts():
-        assert url_matches_base_host(f"https://{accepted}/global/?project=123")
-    for rejected in (
-        "notebook.google.com",
-        "notebooklm.google.com",
-        "notebook.cloud.google",
-        "notebooklm.cloud.google",
-        "notebook.google",
-        "notebook.cloud.google.com.evil.test",
-    ):
-        assert not url_matches_base_host(f"https://{rejected}/")
+    assert accepted_login_hosts() == ("notebooklm.cloud.google.com",)
 
 
 @pytest.mark.parametrize(
@@ -556,7 +538,6 @@ def _run_fake_interactive_login(tmp_path: Path) -> Any:
         ],
         "origins": [],
     }
-    context.cookies.return_value = context.storage_state.return_value["cookies"]
     playwright = MagicMock()
     playwright.chromium.launch_persistent_context.return_value = context
 

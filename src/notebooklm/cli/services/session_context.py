@@ -25,7 +25,6 @@ adapter returns the typed neutral values only.
 from __future__ import annotations
 
 import shutil
-from functools import partial
 from typing import TYPE_CHECKING
 
 from ..._app.session import (
@@ -120,7 +119,8 @@ async def verify_and_set_notebook(
     return await _verify_and_set_notebook_core(
         client,
         partial_id,
-        resolve_notebook_id=partial(resolver, json_output=json_output),
+        json_output=json_output,
+        resolve_notebook_id=resolver,
     )
 
 

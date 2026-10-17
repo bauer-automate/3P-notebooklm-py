@@ -57,12 +57,12 @@ All commands use consistent exit codes:
 |------|---------|--------|
 | 0 | Success | Continue |
 | 1 | Error (not found, processing failed, validation, auth, rate limit) | Check stderr, see Error Handling |
-| 2 | `source wait` timeout, or unexpected/system error | Extend timeout, check status manually, or report a bug |
+| 2 | Timeout (wait commands) or unexpected/system error | Extend timeout, check status manually, or report a bug |
 | 130 | Cancelled by user (SIGINT / Ctrl-C) | `128 + signal 2`; the process was interrupted, not a failure |
 
 **Examples:**
 - `source wait` returns 1 if source not found or processing failed
-- `artifact wait` and `research wait` return 1 on timeout (`{"status": "timeout", ...}` envelope); `source wait` returns 2
+- `artifact wait` returns 2 if timeout reached before completion
 - `generate` returns 1 if rate limited (check stderr for details)
 - Pressing Ctrl-C during any command returns 130
 

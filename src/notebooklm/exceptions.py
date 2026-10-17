@@ -14,22 +14,56 @@ Example:
 
 from __future__ import annotations
 
+import os
 import re
 import reprlib
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
-from . import _logging
 from ._env import DEFAULT_BASE_URL, get_base_url
-from ._logging import _truncate_response_preview, scrub_secrets
+from ._logging import scrub_secrets
 
 if TYPE_CHECKING:
     from ._types.artifacts import GenerationStatus
-    from .outcomes import BatchOutcome, CommitState, OperationMetadata
 
 ArtifactStalledPhase = Literal["pending", "in_progress"]
-_PREVIEW_LIMIT = _logging._PREVIEW_LIMIT
-_PREVIEW_SCRUB_CAP = _logging._PREVIEW_SCRUB_CAP
+
+
+_PREVIEW_LIMIT = 80
+# Pre-slice cap for the truncated path: scrub at most this many chars before
+# cutting to ``_PREVIEW_LIMIT``. The 10x window gives a boundary-straddling
+# secret ample room to be neutralized before the 80-char cut (mirrors the
+# two-stage slice in ``AuthExtractionError`` below), while bounding the regex
+# sweep at O(800 chars) instead of O(len(raw)) for multi-MB error bodies.
+_PREVIEW_SCRUB_CAP = _PREVIEW_LIMIT * 10
+
+
+def _truncate_response_preview(raw: str | None) -> str | None:
+    """Truncate a raw RPC response preview for safe display in error contexts.
+
+    Default behavior keeps the preview compact (80 chars + ``"..."`` suffix) so
+    error logs and CLI output stay readable. Set ``NOTEBOOKLM_DEBUG=1`` to opt
+    into the full untruncated body for deep debugging.
+
+    Credential-shaped substrings (CSRF tokens, session cookies, etc.) are
+    scrubbed *before* truncation in both modes. ``raw_response`` is a public
+    attribute spliced into ``str()``/``repr()`` of RPC errors, so it escapes the
+    logging pipeline's ``RedactingFilter`` and must be sanitized at the source.
+
+    In the default (truncated) path the input is pre-sliced to
+    ``_PREVIEW_SCRUB_CAP`` before scrubbing so a multi-MB error body does not
+    pay for a full regex sweep just to discard all but the first 80 chars. The
+    ``NOTEBOOKLM_DEBUG=1`` path keeps the whole body, so it scrubs the full
+    string.
+    """
+    if raw is None:
+        return None
+    if os.environ.get("NOTEBOOKLM_DEBUG") == "1":
+        return scrub_secrets(raw)
+    scrubbed = scrub_secrets(raw[:_PREVIEW_SCRUB_CAP])
+    if len(scrubbed) > _PREVIEW_LIMIT:
+        return scrubbed[:_PREVIEW_LIMIT] + "..."
+    return scrubbed
 
 
 __all__ = [
@@ -38,11 +72,9 @@ __all__ = [
     # Cross-domain umbrellas
     "NotFoundError",
     "WaitTimeoutError",
-    "OperationTimeoutError",
     # Validation/Config
     "ValidationError",
     "ConfigurationError",
-    "UnsupportedOperationError",
     "MissingDependencyError",
     "LockUnavailableError",
     # Headless re-auth (layer-3 auth recovery)
@@ -73,7 +105,6 @@ __all__ = [
     "ChatResponseParseError",
     # Domain: Sources
     "SourceError",
-    "PlayBookNotExportableError",
     "SourceAddError",
     "SourceNotFoundError",
     "SourceProcessingError",
@@ -123,66 +154,6 @@ class NotebookLMError(Exception):
         except NotebookLMError as e:
             handle_error(e)
     """
-
-    @property
-    def operation_metadata(self) -> OperationMetadata | None:
-        """Immutable commit evidence attached by the operation owner, if any."""
-
-        return getattr(self, "_operation_metadata", None)
-
-    @property
-    def commit_state(self) -> CommitState | None:
-        """Compatibility projection of :attr:`operation_metadata`."""
-
-        metadata = self.operation_metadata
-        return None if metadata is None else metadata.commit_state
-
-    @property
-    def batch_outcome(self) -> BatchOutcome | None:
-        """Ordered partial batch settlement, when this error ended a batch."""
-
-        metadata = self.operation_metadata
-        return None if metadata is None else metadata.batch_outcome
-
-    @property
-    def unconfirmed(self) -> bool:
-        """Whether recovery requires inspection instead of blind replay."""
-
-        from .outcomes import CommitState, RecoveryAction
-
-        metadata = self.operation_metadata
-        return metadata is not None and (
-            metadata.commit_state is CommitState.UNKNOWN
-            or metadata.recovery_action is RecoveryAction.INSPECT_AND_RECONCILE
-        )
-
-    @property
-    def source_id(self) -> str | None:
-        metadata = self.operation_metadata
-        return None if metadata is None else metadata.source_id
-
-    @source_id.setter
-    def source_id(self, value: str | None) -> None:
-        from dataclasses import replace
-
-        from .outcomes import OperationMetadata
-
-        metadata = self.operation_metadata or OperationMetadata()
-        self._operation_metadata = replace(metadata, source_id=value)
-
-    @property
-    def stage(self) -> str | None:
-        metadata = self.operation_metadata
-        return None if metadata is None else metadata.stage
-
-    @stage.setter
-    def stage(self, value: str | None) -> None:
-        from dataclasses import replace
-
-        from .outcomes import OperationMetadata
-
-        metadata = self.operation_metadata or OperationMetadata()
-        self._operation_metadata = replace(metadata, stage=value)
 
 
 # =============================================================================
@@ -269,22 +240,6 @@ class WaitTimeoutError(NotebookLMError, TimeoutError):
     """
 
 
-class OperationTimeoutError(WaitTimeoutError):
-    """An opt-in whole-operation deadline expired.
-
-    Unlike feature-owned polling and RPC timeout subclasses, this error covers
-    the complete admitted workflow: queueing, auth, retry sleeps, transport,
-    reconciliation, polling, and required settlement. Mutation evidence remains
-    available through :attr:`NotebookLMError.operation_metadata`.
-    """
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}({str(self)!r})"
-
-
 # =============================================================================
 # Validation/Configuration
 # =============================================================================
@@ -296,10 +251,6 @@ class ValidationError(NotebookLMError):
 
 class ConfigurationError(NotebookLMError):
     """Missing or invalid configuration (auth, storage)."""
-
-
-class UnsupportedOperationError(ConfigurationError):
-    """The selected backend cannot implement an established operation safely."""
 
 
 class MissingDependencyError(ConfigurationError):
@@ -343,7 +294,7 @@ class HeadlessReauthError(NotebookLMError):
     """Base for layer-3 headless re-auth (silent browser re-mint) failures.
 
     Raised by the headless arm of the browser-capture core and the
-    :mod:`notebooklm._browser.headless_reauth` decision layer. Distinct from
+    :mod:`notebooklm._auth.headless_reauth` decision layer. Distinct from
     :class:`AuthError` (an RPC-protocol auth failure) because L3 is a *recovery*
     step that drives a real browser, not a decoded batchexecute error.
     """
@@ -804,7 +755,7 @@ class IdempotencyVariantError(NotebookLMError):
 
     Methods that only have a ``(method, None)`` entry tolerate any variant
     name (the variant table is effectively empty, so there is no typo to
-    catch). See :func:`notebooklm._web.policy.IdempotencyRegistry.get_entry`.
+    catch). See :func:`notebooklm._idempotency.IdempotencyRegistry.get_entry`.
     """
 
 
@@ -835,12 +786,6 @@ class NotebookNotFoundError(NotFoundError, RPCError, NotebookError):
         method_id: The RPC method ID (inherited from :class:`RPCError`).
         raw_response: First 80 chars of the raw response, if any
             (``NOTEBOOKLM_DEBUG=1`` preserves the full body).
-        rpc_code / found_ids: Wire diagnostics, when the absence came from a
-            typed rejection rather than a degenerate payload (both inherited
-            from :class:`RPCError`).
-        detail: Appended to the message. A status-5 miss can mean "belongs to
-            another signed-in account" and adapters render only ``str(exc)``
-            (#114 / #294); callers pass text their layer already scrubbed.
     """
 
     def __init__(
@@ -849,17 +794,12 @@ class NotebookNotFoundError(NotFoundError, RPCError, NotebookError):
         *,
         method_id: str | None = None,
         raw_response: str | None = None,
-        rpc_code: str | int | None = None,
-        found_ids: list[str] | None = None,
-        detail: str | None = None,
     ):
         self.notebook_id = notebook_id
         super().__init__(
-            f"Notebook not found: {notebook_id}" + (f" — {detail}" if detail else ""),
+            f"Notebook not found: {notebook_id}",
             method_id=method_id,
             raw_response=raw_response,
-            rpc_code=rpc_code,
-            found_ids=found_ids,
         )
 
 
@@ -934,7 +874,7 @@ class ChatError(NotebookLMError):
 class ChatResponseParseError(ChatError):
     """The streaming chat response yielded no parseable chunks.
 
-    Raised when :func:`notebooklm._web.rows.chat_stream.parse_streaming_chat_response`
+    Raised when :func:`notebooklm._chat.wire.parse_streaming_chat_response`
     iterates the streamed response and finds zero ``wrb.fr`` envelopes it
     could decode — that is, the wire protocol drifted or the response body
     was empty/malformed.
@@ -983,35 +923,6 @@ class SourceAddError(SourceError):
             "  - Rate limiting or quota exceeded"
         )
         super().__init__(msg)
-
-
-class PlayBookNotExportableError(SourceError):
-    """A Google Play Book cannot be added as a source (#2292).
-
-    Raised by ``client.sources.add_play_book`` when the requested title's
-    ``ListExpertIntelligenceContent`` row has ``export_disabled`` set — the
-    backend accepts the add but the source lands in ``error`` — so the refusal
-    happens client-side before any write.
-
-    Attributes:
-        content_id: The Play Books volume id that was refused.
-        reason: The :class:`~notebooklm.types.PlayBookExportReason` from the
-            library row, or ``None`` when the backend gave no reason.
-    """
-
-    def __init__(self, content_id: str, reason: Any | None = None):
-        self.content_id = content_id
-        self.reason = reason
-        # ``reason`` is normally a ``PlayBookExportReason`` but is typed ``Any``
-        # for callers that pass a raw wire value; read ``.value`` defensively so
-        # a non-enum reason degrades to its ``str`` rather than raising.
-        reason_label = getattr(reason, "value", reason) if reason is not None else None
-        detail = f" ({reason_label})" if reason_label is not None else ""
-        super().__init__(
-            f"Play Book {content_id!r} cannot be exported as a source{detail}. "
-            "The publisher, license, content type, or ownership disallows it; "
-            "pick an exportable title from client.sources.list_play_books()."
-        )
 
 
 class SourceNotFoundError(NotFoundError, RPCError, SourceError):
@@ -1232,8 +1143,7 @@ class ArtifactDownloadError(ArtifactError):
         details: Additional error details.
         cause: The underlying exception.
         status_code: HTTP status code from the failed response, when the
-            failure was an HTTP-level error (e.g. 404 or 500). Authentication
-            failures (401 or 403) raise :class:`AuthError` instead. ``None`` for
+            failure was an HTTP-level error (e.g. 401, 403, 500). ``None`` for
             transport-level failures (timeouts, DNS, connection resets) where
             no response was received.
     """

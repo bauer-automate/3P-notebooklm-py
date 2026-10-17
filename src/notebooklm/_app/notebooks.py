@@ -1,11 +1,11 @@
 """Transport-neutral notebook business logic.
 
 This is the Click-free core of ``cli/notebook_cmd.py``: it owns the
-``create`` / ``copy`` / ``delete`` / ``rename`` / ``describe`` (summary) /
-``metadata`` workflows and returns typed result dataclasses instead of an
-adapter-shaped envelope dict. Every transport adapter (the Click CLI today,
-the FastMCP server / future HTTP later) drives this core and renders the typed
-result into its own surface + exit-code policy.
+``create`` / ``delete`` / ``rename`` / ``describe`` (summary) / ``metadata``
+workflows and returns typed result dataclasses instead of an adapter-shaped
+envelope dict. Every transport adapter (the Click CLI today, the FastMCP
+server / future HTTP later) drives this core and renders the typed result into
+its own surface + exit-code policy.
 
 Two boundary-imposed seams are worth calling out:
 
@@ -30,8 +30,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
-
-from ..options import USE_DEFAULT
 
 if TYPE_CHECKING:
     from ..client import NotebookLMClient
@@ -99,23 +97,22 @@ async def execute_notebook_create(
     persisted active-notebook pointer), so it stays in the command layer; this
     core only creates the notebook and returns the typed result.
 
-    The returned notebook has its ``created_at`` / ``last_viewed_at`` backfilled
+    The returned notebook has its ``created_at`` / ``modified_at`` backfilled
     best-effort (see :func:`_backfill_create_timestamps`) so every adapter
     driving this core — CLI ``notebook create --json``, the REST create route,
     and the MCP ``notebook_create`` tool — surfaces populated timestamps on
     creation rather than ``null`` (#1705, lifting the MCP-only fix from #1699).
     """
-    async with client.operation(timeout=USE_DEFAULT):
-        notebook = await client.notebooks.create(title)
-        await _backfill_create_timestamps(client, notebook)
-        return NotebookCreateResult(notebook=notebook)
+    notebook = await client.notebooks.create(title)
+    await _backfill_create_timestamps(client, notebook)
+    return NotebookCreateResult(notebook=notebook)
 
 
 async def _backfill_create_timestamps(
     client: NotebookLMClient,
     notebook: Notebook,
 ) -> None:
-    """Best-effort: fill ``notebook``'s null ``created_at`` / ``last_viewed_at``.
+    """Best-effort: fill ``notebook``'s null ``created_at`` / ``modified_at``.
 
     ``CREATE_NOTEBOOK`` (``CCqFvf``) returns a notebook whose ``meta[5]`` /
     ``meta[8]`` timestamp slots are not yet populated, even though
@@ -137,7 +134,7 @@ async def _backfill_create_timestamps(
     """
     if not notebook.id:
         return
-    if notebook.created_at is not None and notebook.last_viewed_at is not None:
+    if notebook.created_at is not None and notebook.modified_at is not None:
         return
     try:
         fresh = await client.notebooks.get(notebook.id)
@@ -150,44 +147,8 @@ async def _backfill_create_timestamps(
         return
     if notebook.created_at is None and fresh.created_at is not None:
         notebook.created_at = fresh.created_at
-    if notebook.last_viewed_at is None and fresh.last_viewed_at is not None:
-        # ``Notebook.__setattr__`` mirrors the write into the deprecated
-        # ``modified_at`` alias, so this in-place fill keeps both names correct
-        # without a second assignment here (#2126).
-        notebook.last_viewed_at = fresh.last_viewed_at
-
-
-# ---------------------------------------------------------------------------
-# notebook copy
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class NotebookCopyResult:
-    """Outcome of ``notebook copy``."""
-
-    source_notebook_id: str
-    notebook: Notebook
-
-
-async def execute_notebook_copy(
-    client: NotebookLMClient,
-    notebook_id: str,
-    title: str,
-    *,
-    resolve_notebook_id: ResolveNotebookIdFn,
-) -> NotebookCopyResult:
-    """Resolve + copy a notebook, including its sources and Studio artifacts.
-
-    ``notebooks.copy`` deliberately does not retry an ambiguous transport
-    failure because the server may already have committed the copy. That
-    policy lives in the backend implementation; this workflow preserves it by
-    issuing exactly one copy call after resolution.
-    """
-    async with client.operation(timeout=USE_DEFAULT):
-        resolved_id = await resolve_notebook_id(client, notebook_id)
-        notebook = await client.notebooks.copy(resolved_id, title)
-        return NotebookCopyResult(source_notebook_id=resolved_id, notebook=notebook)
+    if notebook.modified_at is None and fresh.modified_at is not None:
+        notebook.modified_at = fresh.modified_at
 
 
 # ---------------------------------------------------------------------------
@@ -226,16 +187,16 @@ async def execute_notebook_rename(
     new_title: str,
     *,
     resolve_notebook_id: ResolveNotebookIdFn,
+    json_output: bool = False,
 ) -> NotebookRenameResult:
     """Resolve + rename a notebook.
 
     ``resolve_notebook_id`` is injected so this core stays free of the
     ``rich``-coupled resolver and the CLI's ``monkeypatch`` seam keeps landing.
     """
-    async with client.operation(timeout=USE_DEFAULT):
-        resolved_id = await resolve_notebook_id(client, notebook_id)
-        await client.notebooks.rename(resolved_id, new_title)
-        return NotebookRenameResult(notebook_id=resolved_id, new_title=new_title)
+    resolved_id = await resolve_notebook_id(client, notebook_id, json_output=json_output)
+    await client.notebooks.rename(resolved_id, new_title)
+    return NotebookRenameResult(notebook_id=resolved_id, new_title=new_title)
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +221,12 @@ async def execute_notebook_describe(
     notebook_id: str,
     *,
     resolve_notebook_id: ResolveNotebookIdFn,
+    json_output: bool = False,
 ) -> NotebookDescribeResult:
     """Resolve + fetch a notebook's AI-generated description."""
-    async with client.operation(timeout=USE_DEFAULT):
-        resolved_id = await resolve_notebook_id(client, notebook_id)
-        description = await client.notebooks.get_description(resolved_id)
-        return NotebookDescribeResult(notebook_id=resolved_id, description=description)
+    resolved_id = await resolve_notebook_id(client, notebook_id, json_output=json_output)
+    description = await client.notebooks.get_description(resolved_id)
+    return NotebookDescribeResult(notebook_id=resolved_id, description=description)
 
 
 # ---------------------------------------------------------------------------
@@ -290,16 +251,15 @@ async def execute_notebook_metadata(
     notebook_id: str,
     *,
     resolve_notebook_id: ResolveNotebookIdFn,
+    json_output: bool = False,
 ) -> NotebookMetadataResult:
     """Resolve + fetch a notebook's metadata (details + sources list)."""
-    async with client.operation(timeout=USE_DEFAULT):
-        resolved_id = await resolve_notebook_id(client, notebook_id)
-        metadata = await client.notebooks.get_metadata(resolved_id)
-        return NotebookMetadataResult(notebook_id=resolved_id, metadata=metadata)
+    resolved_id = await resolve_notebook_id(client, notebook_id, json_output=json_output)
+    metadata = await client.notebooks.get_metadata(resolved_id)
+    return NotebookMetadataResult(notebook_id=resolved_id, metadata=metadata)
 
 
 __all__ = [
-    "NotebookCopyResult",
     "NotebookCreateResult",
     "NotebookDescribeResult",
     "NotebookMetadataResult",
@@ -307,7 +267,6 @@ __all__ = [
     "ResolveNotebookIdFn",
     "SUGGEST_SURFACE_MAP",
     "SuggestSurface",
-    "execute_notebook_copy",
     "execute_notebook_create",
     "execute_notebook_delete",
     "execute_notebook_describe",

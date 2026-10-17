@@ -9,7 +9,7 @@ Why this exists
 gunzips the body), so 89/89 cassettes in ``tests/cassettes/`` carry NO
 encoding header and a plaintext body. That hid issue #769 — every RPC
 failed in production with ``Error -3 while decompressing data: incorrect
-header check`` because :func:`notebooklm._web.transport.streaming_post.stream_post_with_size_cap`
+header check`` because :func:`notebooklm._streaming_post.stream_post_with_size_cap`
 rebuilt the response with the upstream ``Content-Encoding: gzip`` header
 attached to *already-decoded* body bytes, triggering a second gzip-decode
 inside :class:`httpx.Response.__init__`. Cassettes that don't carry the
@@ -24,8 +24,8 @@ buffer we hand to vcrpy on replay).
 Run from the repo root::
 
     uv run python tests/scripts/inject_gzip_into_cassette.py \\
-        tests/cassettes/web/artifacts_revise_slide.yaml \\
-        tests/cassettes/web/gzip_coverage/artifacts_revise_slide_gzipped.yaml
+        tests/cassettes/artifacts_revise_slide.yaml \\
+        tests/cassettes/gzip_coverage/artifacts_revise_slide_gzipped.yaml
 
 Idempotent: re-running on a cassette that already advertises
 ``Content-Encoding: gzip`` rewrites it from scratch using the gzipped
@@ -132,16 +132,14 @@ def _inject_into_response(response: dict[str, Any]) -> bool:
                 "Response already advertises Content-Encoding but body is not valid gzip."
             ) from exc
 
-    # ``gzip.compress`` writes two header bytes that vary across Python
-    # releases: the OS field at offset 9 (3.10 picks an OS-dependent
-    # constant while 3.11+ pins it to ``0xff``, unknown) and the XFL field at
-    # offset 8 (``0x02``, "maximum compression", through 3.14; ``0x00`` on
-    # 3.15). Pin ``mtime=0`` and overwrite both so the same source cassette
-    # produces a byte-identical artifact under every Python in the CI matrix
-    # (``3.10`` – ``3.15``). Both values are valid per RFC 1952 §2.3.1 and
-    # round-trip through every gzip decoder.
+    # ``gzip.compress`` writes one byte that varies across Python releases
+    # (the OS field at offset 9): 3.10 picks an OS-dependent constant
+    # while 3.11+ pins it to ``0xff`` (unknown). Pin ``mtime=0`` and
+    # overwrite the OS field so the same source cassette produces a
+    # byte-identical artifact under every Python in the CI matrix
+    # (``3.10`` – ``3.14``). ``0xff`` is the documented "unknown" value
+    # from RFC 1952 §2.3.1 and round-trips through every gzip decoder.
     gzipped = bytearray(gzip.compress(body_bytes, mtime=0))
-    gzipped[8] = 0x02
     gzipped[9] = 0xFF
     body["string"] = bytes(gzipped)
 
@@ -162,7 +160,7 @@ def inject_gzip_into_cassette(cassette: dict[str, Any]) -> int:
 
     Only responses whose request is a POST to a path containing
     ``batchexecute`` are touched — those are the ones that flow through
-    :func:`notebooklm._web.transport.streaming_post.stream_post_with_size_cap` and
+    :func:`notebooklm._streaming_post.stream_post_with_size_cap` and
     exercise the rebuild step that bit #769. SPA-shell GET responses are
     left alone so the cassette diff stays focused.
 

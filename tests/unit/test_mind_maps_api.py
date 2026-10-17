@@ -6,23 +6,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from notebooklm._web.mind_maps import (
-    NoteBackedMindMapService,
-    WebMindMapsAPI,
-    extract_interactive_tree_leaf,
-)
-from notebooklm._web.notes import NoteRowKind, NoteService
+from notebooklm._mind_maps_api import MindMapsAPI, extract_interactive_tree_leaf
 from notebooklm.exceptions import (
     ArtifactError,
     ArtifactFeatureUnavailableError,
-    ArtifactNotReadyError,
     MindMapNotFoundError,
     NotFoundError,
     UnknownRPCMethodError,
 )
 from notebooklm.rpc.types import RPCMethod
-from notebooklm.types import Artifact, GenerationStatus, MindMapKind, MindMapResult
-from tests._fixtures.fake_core import make_fake_core
+from notebooklm.types import Artifact, MindMapKind, MindMapResult
 
 
 def _interactive_artifact(artifact_id: str, title: str = "INT") -> Artifact:
@@ -51,21 +44,10 @@ def _make_api(*, note_rows=None, interactive=None):
     artifacts.rename = AsyncMock()
     artifacts.delete = AsyncMock(return_value=True)
     artifacts.generate_mind_map = AsyncMock()
-    artifacts.wait_for_completion = AsyncMock(
-        return_value=GenerationStatus(task_id="new_int", status="completed")
-    )
+    artifacts.wait_for_completion = AsyncMock()
     notebooks = MagicMock()
     notebooks.get_source_ids = AsyncMock(return_value=["s1"])
-    notes = MagicMock()
-    notes.delete_mind_map = AsyncMock()
-    api = WebMindMapsAPI(
-        rpc=rpc,
-        supervisor=make_fake_core(),
-        mind_maps=mind_maps,
-        artifacts=artifacts,
-        notebooks=notebooks,
-        notes=notes,
-    )
+    api = MindMapsAPI(rpc=rpc, mind_maps=mind_maps, artifacts=artifacts, notebooks=notebooks)
     return api, rpc, mind_maps, artifacts, notebooks
 
 
@@ -139,64 +121,6 @@ async def test_rename_dispatches_by_kind():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("kind", "expected_fetches"),
-    [
-        pytest.param(MindMapKind.NOTE_BACKED, 1, id="explicit-kind"),
-        pytest.param(None, 2, id="auto-detect"),
-    ],
-)
-async def test_web_note_backed_rename_preserves_raw_content_and_call_count(
-    kind: MindMapKind | None,
-    expected_fetches: int,
-) -> None:
-    raw_content = r"""{
-  "z-last" : "雪だるま",
-  "children" : [  ],
-  "escaped" : "\u2603",
-  "a-first" : "slash\/value"
-}"""
-    target_row = ["note_mm", raw_content]
-    note_service = MagicMock(spec=NoteService)
-    note_service.fetch_note_rows = AsyncMock(return_value=[target_row])
-    note_service.classify_row = MagicMock(return_value=NoteRowKind.MIND_MAP)
-    note_service.extract_content = MagicMock(return_value=raw_content)
-    note_service.update_note = AsyncMock()
-    artifacts = MagicMock()
-    artifacts.list = AsyncMock()
-    artifacts.rename = AsyncMock()
-
-    api = WebMindMapsAPI(
-        rpc=MagicMock(),
-        supervisor=make_fake_core(),
-        mind_maps=NoteBackedMindMapService(note_service),
-        artifacts=artifacts,
-        notebooks=MagicMock(),
-        notes=MagicMock(),
-    )
-
-    assert (
-        await api.rename(
-            "nb",
-            "note_mm",
-            "Renamed",
-            kind=kind,
-            return_object=False,
-        )
-        is None
-    )
-
-    assert note_service.fetch_note_rows.await_count == expected_fetches
-    assert note_service.fetch_note_rows.await_args_list == [(("nb",), {})] * expected_fetches
-    assert note_service.extract_content.call_count == expected_fetches
-    note_service.extract_content.assert_called_with(target_row)
-    note_service.update_note.assert_awaited_once_with("nb", "note_mm", raw_content, "Renamed")
-    assert note_service.update_note.await_args.args[2].encode() == raw_content.encode()
-    artifacts.list.assert_not_awaited()
-    artifacts.rename.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_rename_returns_renamed_mind_map():
     # Note-backed: the post-rename list reflects the new title; rename returns it.
     # Current row shape carries the title in the inner envelope at row[1][4]
@@ -260,7 +184,7 @@ async def test_rename_explicit_kind_missing_raises_even_with_return_object_false
 async def test_delete_dispatches_by_kind():
     api, _, mind_maps, artifacts, _ = _make_api()
     assert await api.delete("nb", "note_mm", kind=MindMapKind.NOTE_BACKED) is None
-    api._notes.delete_mind_map.assert_awaited_once_with("nb", "note_mm")
+    mind_maps.delete_mind_map.assert_awaited_once_with("nb", "note_mm")
     assert await api.delete("nb", "int_mm", kind=MindMapKind.INTERACTIVE) is None
     artifacts.delete.assert_awaited_once_with("nb", "int_mm")
 
@@ -329,32 +253,6 @@ async def test_generate_interactive_wait_false_skips_tree():
     assert mm.tree is None  # pending; no tree fetched
     artifacts.wait_for_completion.assert_not_awaited()
     assert rpc.rpc_call.await_count == 1  # only CREATE_ARTIFACT, no get_tree
-
-
-@pytest.mark.asyncio
-async def test_generate_interactive_strict_policy_rejects_failed_terminal_before_hydration():
-    api, rpc, _, artifacts, _ = _make_api(interactive=[_interactive_artifact("new_int")])
-    rpc.configure_mock(rpc_call=AsyncMock(return_value=[["new_int", "T", 4]]))
-    artifacts.wait_for_completion = AsyncMock(
-        return_value=GenerationStatus(task_id="new_int", status="failed")
-    )
-
-    with pytest.raises(ArtifactNotReadyError):
-        await api.generate("nb", ["s1"], kind=MindMapKind.INTERACTIVE, failure_policy="raise")
-    assert rpc.rpc_call.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_web_legacy_policy_warns_before_continuing_failed_terminal_hydration():
-    api, rpc, _, artifacts, _ = _make_api(interactive=[_interactive_artifact("new_int")])
-    rpc.configure_mock(rpc_call=AsyncMock(side_effect=[[["new_int", "T", 4]], None]))
-    artifacts.wait_for_completion = AsyncMock(
-        return_value=GenerationStatus(task_id="new_int", status="removed")
-    )
-
-    with pytest.warns(DeprecationWarning, match="failure_policy='raise'"):
-        result = await api.generate("nb", ["s1"], kind=MindMapKind.INTERACTIVE)
-    assert result.id == "new_int"
 
 
 @pytest.mark.asyncio
@@ -715,7 +613,7 @@ async def test_delete_auto_detect_note_backed():
     # Decoy first row exercises the _detect_kind loop-continue branch.
     api, _, mind_maps, artifacts, _ = _make_api(note_rows=[["other_mm", "{}"], ["note_mm", "{}"]])
     await api.delete("nb", "note_mm")
-    api._notes.delete_mind_map.assert_awaited_once_with("nb", "note_mm")
+    mind_maps.delete_mind_map.assert_awaited_once_with("nb", "note_mm")
     artifacts.delete.assert_not_awaited()
 
 
@@ -724,7 +622,7 @@ async def test_delete_auto_detect_interactive():
     api, _, mind_maps, artifacts, _ = _make_api(interactive=[_interactive_artifact("int_mm")])
     await api.delete("nb", "int_mm")
     artifacts.delete.assert_awaited_once_with("nb", "int_mm")
-    api._notes.delete_mind_map.assert_not_awaited()
+    mind_maps.delete_mind_map.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -734,7 +632,7 @@ async def test_delete_auto_detect_missing_is_idempotent():
     # not a raise. Neither delete RPC family is dispatched.
     api, _, mind_maps, artifacts, _ = _make_api()
     assert await api.delete("nb", "ghost") is None
-    api._notes.delete_mind_map.assert_not_awaited()
+    mind_maps.delete_mind_map.assert_not_awaited()
     artifacts.delete.assert_not_awaited()
 
 
@@ -757,6 +655,6 @@ def test_new_artifact_id_degenerate_shapes(create_response, expected):
     ``None`` (never raises ``UnknownRPCMethodError``), and a well-formed
     ``[[id, ...]]`` yields the id. Pins the empty / non-list / non-str paths the
     two guarded ``safe_index`` descents must keep soft."""
-    from notebooklm._web.mind_maps import _new_artifact_id
+    from notebooklm._mind_maps_api import _new_artifact_id
 
     assert _new_artifact_id(create_response) == expected

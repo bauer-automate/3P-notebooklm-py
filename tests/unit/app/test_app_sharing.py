@@ -40,7 +40,7 @@ def _client() -> MagicMock:
     return client
 
 
-async def _resolve_nb(_client, nb_id):
+async def _resolve_nb(_client, nb_id, *, json_output=False):
     return f"full_{nb_id}"
 
 

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from notebooklm._web.artifacts import WebArtifactsAPI
+from notebooklm._artifacts import ArtifactsAPI
 from notebooklm.exceptions import UnknownRPCMethodError
 from notebooklm.rpc import RPCMethod
 
@@ -32,14 +32,15 @@ from notebooklm.rpc import RPCMethod
 @pytest.fixture
 def artifacts_api():
     """Build a minimal ArtifactsAPI for direct parser invocation."""
-    from notebooklm._web.mind_maps import NoteBackedMindMapService
-    from notebooklm._web.notes import NoteService
+    from notebooklm._mind_map import NoteBackedMindMapService
+    from notebooklm._note_service import NoteService
     from tests._fixtures.fake_core import make_fake_core
 
     mock_core = make_fake_core(rpc_call=AsyncMock())
-    return WebArtifactsAPI(
+    return ArtifactsAPI(
         rpc=mock_core,
-        supervisor=mock_core,
+        drain=mock_core,
+        lifecycle=mock_core,
         notebooks=MagicMock(),
         mind_maps=MagicMock(spec=NoteBackedMindMapService),
         note_service=MagicMock(spec=NoteService),
@@ -55,11 +56,7 @@ class TestParseGenerationResultHappyPath:
     """Real response shape parses successfully when ``method_id`` is supplied."""
 
     def test_create_artifact_real_shape(self, artifacts_api):
-        """CREATE_ARTIFACT response: [[task_id, title, type_code, None, status]].
-
-        The captured status is code 1 (``ARTIFACT_STATUS_INITIALIZED``) — the
-        row exists but the worker has not started, i.e. ``"pending"`` (#2127).
-        """
+        """CREATE_ARTIFACT response: [[task_id, title, type_code, None, status]]."""
         result = [["task_abc", "Audio Overview", 1, None, 1]]
 
         status = artifacts_api._parse_generation_result(
@@ -67,7 +64,7 @@ class TestParseGenerationResultHappyPath:
         )
 
         assert status.task_id == "task_abc"
-        assert status.status == "pending"
+        assert status.status == "in_progress"
         assert status.error is None
 
     def test_revise_slide_real_shape(self, artifacts_api):

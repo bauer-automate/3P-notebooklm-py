@@ -1,26 +1,28 @@
 """Command-layer IO seam + wrappers for the Playwright login flow (#1391).
 
-:mod:`notebooklm._app.login_browser` owns transport-neutral validation, path
-preparation, call order, and account repair. The
-:mod:`notebooklm.cli.services.playwright_login` adapter owns Chromium preflight
-and rendering without importing the command layer's presentation modules.
-This module supplies the concrete sink plus the thin wrappers driven by
-``session_cmd``:
+:mod:`notebooklm.cli.services.playwright_login` is a pure service: it owns the
+browser-automation logic but no longer imports the command layer's
+presentation (``..rendering``), exit-policy (``..error_handler``), or
+async-runner (``..runtime``) modules. This module sits on the *command* side of
+the ADR-0008 boundary and supplies the concrete sink the service's
+``LoginIO`` Protocol describes, plus the thin orchestration wrappers that drive
+the service from ``session_cmd``:
 
 * :class:`PlaywrightLoginIO` (+ :func:`make_login_io`) — the concrete
   ``console.print`` / ``exit_with_code`` / ``run_async`` sink.
-* :func:`validate_flags_or_exit` — render-and-exit wrapper over the app's
-  typed ``LoginFlagConflict`` result.
+* :func:`validate_flags_or_exit` — render-and-exit wrapper over
+  ``validate_login_flag_conflicts`` (which now returns a typed ``Conflict``).
 * :func:`prepare_paths_or_exit` — render-and-exit wrapper over
-  app-owned ``prepare_login_paths`` (which returns a typed
-  ``PreparedLoginPaths | LoginPathError``); preserves the legacy
+  ``prepare_login_paths`` (which now returns a typed
+  ``PreparedPaths | PathError``); preserves the legacy
   ``(storage_path, browser_profile)`` 2-tuple contract.
 * :func:`run_login` — drives ``run_playwright_login`` with the concrete sink.
 * :func:`refresh_stored_session` — orchestrates the file-backed ``auth refresh``
   keepalive and optional passive verification.
 
-Keeping the sink + wrappers here (not in ``session_cmd``) keeps Click/Rich exit
-and rendering policy outside the app layer.
+Keeping the sink + wrappers here (not in ``session_cmd``) lets the command
+module collapse its five Playwright import blocks into one and keeps the
+orchestration that the service shed from re-inflating the handler.
 """
 
 from __future__ import annotations
@@ -31,12 +33,6 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
-from .._app.login_browser import (
-    BrowserLoginPlan,
-    LoginPathError,
-    prepare_login_paths,
-    validate_login_flag_conflicts,
-)
 from .._app.profile import observe_profile_account
 from .error_handler import exit_with_code
 from .rendering import console, json_error_response
@@ -44,15 +40,18 @@ from .runtime import run_async
 from .services.auth_refresh import bootstrap_missing_storage_from_master_token
 from .services.login.io_seam import set_default_login_io_factory
 from .services.playwright_login import (
-    LoginIO,
-    login_flag_conflict_message,
-    login_path_error_message,
+    PathError,
+    PlaywrightLoginPlan,
+    prepare_login_paths,
     repair_playwright_account_metadata,
     run_playwright_login,
+    validate_login_flag_conflicts,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from .services.playwright_login import LoginIO
 
 
 @dataclass(frozen=True)
@@ -106,7 +105,7 @@ def validate_flags_or_exit(
 ) -> None:
     """Validate ``login`` flag mutual-exclusion, emitting + exiting 1 on conflict.
 
-    Thin command-layer wrapper: the app returns a typed conflict (or
+    Thin command-layer wrapper: the service returns a typed ``Conflict`` (or
     ``None``); here we render its message and exit, preserving the historical
     rendered contract.
     """
@@ -119,7 +118,7 @@ def validate_flags_or_exit(
         storage=storage,
     )
     if conflict is not None:
-        console.print(login_flag_conflict_message(conflict))
+        console.print(conflict.message)
         exit_with_code(1)
 
 
@@ -128,15 +127,15 @@ def prepare_paths_or_exit(
 ) -> tuple[Path, Path]:
     """Resolve login paths, emitting the ``--fresh`` notice / exiting 1 on failure.
 
-    Wraps the app's ``prepare_login_paths`` (returning a typed
+    Wraps the service's ``prepare_login_paths`` (now returning a typed
     ``PreparedPaths | PathError``): on a ``--fresh`` wipe it emits the
     cleared-session line; on an OSError it emits the error block and exits 1.
     Returns the legacy ``(storage_path, browser_profile)`` 2-tuple so the
     command handler is unchanged.
     """
     outcome = prepare_login_paths(profile, storage, fresh)
-    if isinstance(outcome, LoginPathError):
-        console.print(login_path_error_message(outcome))
+    if isinstance(outcome, PathError):
+        console.print(outcome.message)
         exit_with_code(1)
     else:
         # ``outcome`` is narrowed to ``PreparedPaths`` here. The ``else`` is
@@ -147,7 +146,7 @@ def prepare_paths_or_exit(
         return outcome.storage_path, outcome.browser_profile
 
 
-def run_login(plan: BrowserLoginPlan) -> None:
+def run_login(plan: PlaywrightLoginPlan) -> None:
     """Drive ``run_playwright_login`` with the concrete command-layer sink."""
     run_playwright_login(plan, make_login_io())
 

@@ -33,7 +33,7 @@ REFERENCES_DIR = SKILL_DIR / "references"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 NLM_LAUNCHER = SCRIPTS_DIR / "nlm"
 
-MAX_SKILL_MD_LINES = 340
+MAX_SKILL_MD_LINES = 300
 
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")  # http:, https:, mailto:, ...

@@ -124,7 +124,7 @@ from tests.vcr_config import notebooklm_vcr
 pytestmark = [pytest.mark.vcr, skip_no_cassettes]
 
 CASSETTE_NAME = "research_deep_poll_long.yaml"
-CASSETTE_PATH = Path(__file__).parent.parent / "cassettes" / "web" / CASSETTE_NAME
+CASSETTE_PATH = Path(__file__).parent.parent / "cassettes" / CASSETTE_NAME
 
 # Minimum POLL_RESEARCH interactions the cassette must contain to be
 # meaningful. A full-lifecycle recording reaches ``completed`` after several
@@ -502,7 +502,7 @@ class TestDeepResearchPollReplay:
         """
         # Imported here (not at module top) to keep the decode/parse
         # dependency local to this cassette-inspection helper.
-        from notebooklm._web.rows.research_task import parse_research_task_models
+        from notebooklm._research_task_parser import parse_research_task_models
         from notebooklm.rpc import decode_response
 
         assert CASSETTE_PATH.exists(), (
@@ -565,16 +565,6 @@ class TestDeepResearchPollReplay:
             f"COMPLETED; the cassette does not reach the completed terminal "
             "state. Re-record with NOTEBOOKLM_VCR_RECORD=1."
         )
-
-        # The recorded terminal payload carries the report in src[6]'s typed
-        # content block (kind 3), followed by web rows whose kind-1/2 blocks
-        # contain snippets. Only the report row may supply report markdown.
-        final_task = tasks[0]
-        report_sources = [source for source in final_task.sources if source.report_markdown]
-        assert final_task.report
-        assert len(report_sources) == 1
-        assert report_sources[0].is_report
-        assert report_sources[0].report_markdown == final_task.report
 
 
 @pytest.mark.allow_no_vcr

@@ -12,18 +12,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from contextlib import asynccontextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
-from notebooklm._android.artifact_creation import CREATE_ARTIFACT_METHOD
-from notebooklm._idempotency import mark_unconfirmed
-from notebooklm.exceptions import ChatError, RateLimitError, RPCError
-from notebooklm.types import GrpcStatusCode
-from tests._helpers.operation import ClientStub
+from notebooklm.exceptions import RateLimitError
 
 CONFTEST_PATH = Path(__file__).resolve().parents[1] / "e2e" / "conftest.py"
 pytest_plugins = ["pytester"]
@@ -120,37 +114,6 @@ class TestProfileOptionLifecycle:
         conftest.pytest_configure(config)
         conftest.pytest_unconfigure(config)
         assert "NOTEBOOKLM_PROFILE" not in os.environ
-
-
-class TestResetCurrentChatConversation:
-    async def test_deletes_the_current_server_conversation(self) -> None:
-        conftest = _load_e2e_conftest()
-        chat = SimpleNamespace(
-            get_conversation_id=AsyncMock(return_value="conversation-1"),
-            delete_conversation=AsyncMock(),
-        )
-
-        await conftest.reset_current_chat_conversation(
-            SimpleNamespace(chat=chat),
-            "notebook-1",
-        )
-
-        chat.get_conversation_id.assert_awaited_once_with("notebook-1")
-        chat.delete_conversation.assert_awaited_once_with("notebook-1", "conversation-1")
-
-    async def test_does_not_delete_when_no_conversation_exists(self) -> None:
-        conftest = _load_e2e_conftest()
-        chat = SimpleNamespace(
-            get_conversation_id=AsyncMock(return_value=None),
-            delete_conversation=AsyncMock(),
-        )
-
-        await conftest.reset_current_chat_conversation(
-            SimpleNamespace(chat=chat),
-            "notebook-1",
-        )
-
-        chat.delete_conversation.assert_not_awaited()
 
 
 class TestArgvProfile:
@@ -339,7 +302,7 @@ class TestRateLimitSkipSummary:
 
         assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
         assert any(
-            call[0] == "sep" and call[1][1] == "live chat execution floor failed"
+            call[0] == "sep" and call[1][1] == "live chat coverage floor failed"
             for call in tr._writes
         )
         assert capsys.readouterr().out == ""
@@ -358,7 +321,7 @@ class TestRateLimitSkipSummary:
 
         assert session.exitstatus == pytest.ExitCode.OK
         assert not any(
-            call[0] == "sep" and call[1][1] == "live chat execution floor failed"
+            call[0] == "sep" and call[1][1] == "live chat coverage floor failed"
             for call in tr._writes
         )
 
@@ -420,7 +383,7 @@ class TestRateLimitSkipSummary:
 
         assert session.exitstatus == pytest.ExitCode.USAGE_ERROR
         assert not any(
-            call[0] == "sep" and call[1][1] == "live chat execution floor failed"
+            call[0] == "sep" and call[1][1] == "live chat coverage floor failed"
             for call in tr._writes
         )
 
@@ -570,7 +533,6 @@ class TestRateLimitSkipSummary:
         pytester.makepyprojecttoml(
             """
             [tool.pytest.ini_options]
-            asyncio_default_fixture_loop_scope = "function"
             markers = [
                 "live_chat_ask: chat ask floor marker",
             ]
@@ -587,7 +549,7 @@ class TestRateLimitSkipSummary:
 
             def pytest_terminal_summary(terminalreporter, exitstatus, config):
                 if exitstatus == pytest.ExitCode.OK and terminalreporter.stats.get("skipped"):
-                    terminalreporter.write_sep("=", "live chat execution floor failed")
+                    terminalreporter.write_sep("=", "live chat coverage floor failed")
             """
         )
         pytester.makepyfile(
@@ -603,81 +565,16 @@ class TestRateLimitSkipSummary:
         result = pytester.runpytest_subprocess("-q")
 
         assert result.ret == pytest.ExitCode.TESTS_FAILED
-        result.stdout.fnmatch_lines(["*live chat execution floor failed*"])
-
-
-class TestAndroidArtifactOptionReadBack:
-    """Live helper reads the server-stored pair from the Android protobuf."""
-
-    @pytest.mark.parametrize(
-        ("family", "quantity", "difficulty"),
-        [
-            ("quiz", 4, 2),
-            ("flashcards", 6, 3),
-        ],
-    )
-    async def test_reads_named_generation_option_fields(
-        self,
-        family: str,
-        quantity: int,
-        difficulty: int,
-    ) -> None:
-        from notebooklm._android.proto.google.internal.labs.tailwind.orchestration.v1 import (
-            artifacts_pb2,
-        )
-
-        artifact = artifacts_pb2.Artifact(artifact_id="artifact-1")
-        options = artifact.app.generation_options
-        if family == "quiz":
-            options.quiz_generation_options.question_quantity = quantity
-            options.quiz_generation_options.quiz_difficulty = difficulty
-        else:
-            options.flashcards_generation_options.card_quantity = quantity
-            options.flashcards_generation_options.flashcards_difficulty = difficulty
-
-        @asynccontextmanager
-        async def operation_scope(_operation: str):
-            yield SimpleNamespace(epoch=7)
-
-        class FakeArtifacts:
-            _transport = SimpleNamespace(operation_scope=operation_scope)
-
-            async def _get_raw_studio_artifact(
-                self,
-                notebook_id: str,
-                artifact_id: str,
-                *,
-                expected_epoch: int,
-            ):
-                assert notebook_id == "notebook-1"
-                assert artifact_id == "artifact-1"
-                assert expected_epoch == 7
-                return artifact
-
-        client = ClientStub(
-            backends={"artifacts": "android"},
-            artifacts=FakeArtifacts(),
-        )
-
-        stored = await _load_e2e_conftest().read_back_option_pair(
-            client,
-            "notebook-1",
-            "artifact-1",
-            family=family,
-        )
-
-        assert (stored.quantity, stored.difficulty) == (quantity, difficulty)
+        result.stdout.fnmatch_lines(["*live chat coverage floor failed*"])
 
 
 class TestGenerationRateLimitSkip:
-    """_install_generation_rate_limit_skip turns exact quota evidence into skips.
+    """_install_generation_rate_limit_skip turns typed RateLimitError into skips.
 
     The RPC layer raises RateLimitError from generate_* before any
     GenerationStatus exists, so assert_generation_started's is_rate_limited
-    path never runs. Android's non-replay-safe CreateArtifact path preserves
-    status 8 on a marked generic RPCError instead. Only those exact shapes may
-    skip; every other exception must propagate (no-xfail-live-service-errors
-    policy).
+    path never runs. Only the typed RateLimitError may skip; every other
+    exception must propagate (no-xfail-live-service-errors policy).
     """
 
     @staticmethod
@@ -721,108 +618,6 @@ class TestGenerationRateLimitSkip:
         # surfaces the skip in the rate-limit section + GH annotations.
         reason = str(excinfo.value).lower()
         assert any(phrase in reason for phrase in conftest._RATE_LIMIT_PHRASES)
-        assert getattr(excinfo.value, conftest._TYPED_RATE_LIMIT_ATTR) is True
-
-    async def test_unconfirmed_android_create_artifact_status_8_becomes_skip(self):
-        conftest = _load_e2e_conftest()
-        client = self._make_client()
-        error = mark_unconfirmed(
-            RPCError(
-                "UNRESOLVED — CreateArtifact outcome is unknown",
-                method_id=CREATE_ARTIFACT_METHOD,
-                rpc_code=GrpcStatusCode.RESOURCE_EXHAUSTED.value,
-            )
-        )
-
-        async def android_quota(notebook_id):
-            del notebook_id
-            raise error
-
-        client.artifacts.generate_audio = android_quota
-        conftest._install_generation_rate_limit_skip(client)
-
-        with pytest.raises(pytest.skip.Exception, match="Rate limit") as excinfo:
-            await client.artifacts.generate_audio("nb-1")
-
-        assert getattr(excinfo.value, conftest._RATE_LIMIT_METHOD_ATTR) == CREATE_ARTIFACT_METHOD
-
-    @pytest.mark.parametrize(
-        "error",
-        [
-            pytest.param(
-                RPCError(
-                    "unmarked quota",
-                    method_id=CREATE_ARTIFACT_METHOD,
-                    rpc_code=GrpcStatusCode.RESOURCE_EXHAUSTED.value,
-                ),
-                id="unmarked-status-8",
-            ),
-            pytest.param(
-                mark_unconfirmed(
-                    RPCError(
-                        "different method",
-                        method_id="/example.Service/OtherCreate",
-                        rpc_code=GrpcStatusCode.RESOURCE_EXHAUSTED.value,
-                    )
-                ),
-                id="different-method",
-            ),
-            pytest.param(
-                mark_unconfirmed(
-                    RPCError(
-                        "server unavailable",
-                        method_id=CREATE_ARTIFACT_METHOD,
-                        rpc_code=GrpcStatusCode.UNAVAILABLE.value,
-                    )
-                ),
-                id="different-status",
-            ),
-        ],
-    )
-    async def test_other_generic_rpc_errors_propagate(self, error: RPCError):
-        conftest = _load_e2e_conftest()
-        client = self._make_client()
-
-        async def failed_create(notebook_id):
-            del notebook_id
-            raise error
-
-        client.artifacts.generate_audio = failed_create
-        conftest._install_generation_rate_limit_skip(client)
-
-        with pytest.raises(RPCError) as excinfo:
-            await client.artifacts.generate_audio("nb-1")
-        assert excinfo.value is error
-
-    async def test_mcp_generation_restores_the_machine_marked_quota_skip(self):
-        pytest.importorskip("fastmcp")
-        from tests.e2e._mcp_live_helpers import call_tool
-
-        conftest = _load_e2e_conftest()
-
-        class FakeArtifacts:
-            async def generate_report(self, *args, **kwargs):
-                del args, kwargs
-                raise mark_unconfirmed(
-                    RPCError(
-                        "UNRESOLVED — CreateArtifact outcome is unknown",
-                        method_id=CREATE_ARTIFACT_METHOD,
-                        rpc_code=GrpcStatusCode.RESOURCE_EXHAUSTED.value,
-                    )
-                )
-
-        client = ClientStub(artifacts=FakeArtifacts())
-        conftest._install_generation_rate_limit_skip(client)
-
-        with pytest.raises(pytest.skip.Exception, match="Rate limit"):
-            await call_tool(
-                client,
-                "studio_generate",
-                {
-                    "notebook": "11111111-1111-1111-1111-111111111111",
-                    "artifact_type": "report",
-                },
-            )
 
     async def test_other_exceptions_propagate(self):
         conftest = _load_e2e_conftest()
@@ -831,154 +626,6 @@ class TestGenerationRateLimitSkip:
 
         with pytest.raises(ValueError, match="not a rate limit"):
             await client.artifacts.revise_slide("nb-1")
-
-    async def test_string_only_rate_limit_message_is_not_typed_evidence(self):
-        conftest = _load_e2e_conftest()
-        client = self._make_client()
-
-        async def ambiguous(notebook_id):
-            del notebook_id
-            raise RuntimeError("rate limit 429 after response decoding")
-
-        client.artifacts.generate_audio = ambiguous
-        conftest._install_generation_rate_limit_skip(client)
-        with pytest.raises(RuntimeError, match="429"):
-            await client.artifacts.generate_audio("nb-1")
-
-    async def test_journal_records_only_typed_quota_uncertainty(self):
-        conftest = _load_e2e_conftest()
-        recorded: list[str] = []
-
-        class Operation:
-            def accepted(self, resource_id):
-                recorded.append("accepted")
-
-            def rate_limited_rejected(self):
-                recorded.append("rate_limited_rejected")
-
-            def quota_response_unconfirmed(self):
-                recorded.append("quota_response_unconfirmed")
-
-        class Journal:
-            notebook_id = "generation-role"
-            surface = "client"
-
-            def operation(self, **kwargs):
-                recorded.append("started")
-                return Operation()
-
-        async def harmless(*args, **kwargs):
-            return SimpleNamespace(task_id="task-id", is_rate_limited=False)
-
-        artifacts = SimpleNamespace(**dict.fromkeys(conftest._JOURNALED_STUDIO_METHODS, harmless))
-        client = ClientStub(artifacts=artifacts)
-
-        async def generate_audio(notebook_id):
-            return await artifacts._send_create_artifact(SimpleNamespace(notebook_id=notebook_id))
-
-        async def ambiguous(request):
-            raise RuntimeError("rate limit 429 in arbitrary text")
-
-        artifacts.generate_audio = generate_audio
-        artifacts._send_create_artifact = ambiguous
-        conftest._install_generation_journal(client, Journal())
-        with pytest.raises(RuntimeError, match="arbitrary"):
-            await artifacts.generate_audio("generation-role")
-        assert recorded == ["started"]
-
-        recorded.clear()
-
-        async def typed(request):
-            raise RateLimitError("quota")
-
-        artifacts._send_create_artifact = typed
-        conftest._install_generation_journal(client, Journal())
-        with pytest.raises(RateLimitError):
-            await artifacts.generate_audio("generation-role")
-        assert recorded == ["started", "quota_response_unconfirmed"]
-
-    async def test_journal_records_delegated_generation_only_once(self):
-        conftest = _load_e2e_conftest()
-        recorded: list[tuple[str, str]] = []
-
-        class Operation:
-            def __init__(self, family):
-                self.family = family
-
-            def accepted(self, resource_id):
-                recorded.append(("accepted", self.family))
-
-            def rate_limited_rejected(self):
-                recorded.append(("rate_limited_rejected", self.family))
-
-        class Journal:
-            notebook_id = "generation-role"
-            surface = "client"
-
-            def operation(self, **kwargs):
-                recorded.append(("started", kwargs["family"]))
-                return Operation(kwargs["family"])
-
-        async def harmless(*args, **kwargs):
-            return SimpleNamespace(task_id="task-id", is_rate_limited=False)
-
-        artifacts = SimpleNamespace(**dict.fromkeys(conftest._JOURNALED_STUDIO_METHODS, harmless))
-        client = ClientStub(artifacts=artifacts)
-
-        async def generate_report(notebook_id):
-            return await artifacts._send_create_artifact(SimpleNamespace(notebook_id=notebook_id))
-
-        async def send(request):
-            return SimpleNamespace(task_id="shared-task-id", is_rate_limited=False)
-
-        async def generate_study_guide(notebook_id):
-            return await artifacts.generate_report(notebook_id)
-
-        artifacts.generate_report = generate_report
-        artifacts.generate_study_guide = generate_study_guide
-        artifacts._send_create_artifact = send
-        conftest._install_generation_journal(client, Journal())
-
-        result = await artifacts.generate_study_guide("generation-role")
-
-        assert result.task_id == "shared-task-id"
-        assert recorded == [("started", "study_guide"), ("accepted", "study_guide")]
-
-    async def test_wrapped_rate_limit_error_becomes_skip(self):
-        conftest = _load_e2e_conftest()
-        client = self._make_client()
-
-        async def wrapped_quota(notebook_id):
-            del notebook_id
-            try:
-                raise RateLimitError("Resource exhausted", rpc_code=8)
-            except RateLimitError as cause:
-                raise RuntimeError("unconfirmed write") from cause
-
-        client.artifacts.generate_audio = wrapped_quota
-        conftest._install_generation_rate_limit_skip(client)
-
-        with pytest.raises(pytest.skip.Exception, match="Rate limit"):
-            await client.artifacts.generate_audio("nb-1")
-
-    async def test_implicit_rate_limit_context_does_not_hide_unrelated_failure(self):
-        conftest = _load_e2e_conftest()
-        client = self._make_client()
-
-        async def unrelated_failure(notebook_id):
-            del notebook_id
-            try:
-                raise RateLimitError("earlier quota response", rpc_code=8)
-            except RateLimitError:
-                # No ``from``: this is implicit ambient context, not evidence
-                # that the decoder failure represents a quota rejection.
-                raise ValueError("generation response decoder broke")  # noqa: B904
-
-        client.artifacts.generate_audio = unrelated_failure
-        conftest._install_generation_rate_limit_skip(client)
-
-        with pytest.raises(ValueError, match="decoder broke"):
-            await client.artifacts.generate_audio("nb-1")
 
     async def test_successful_calls_pass_through_per_method(self):
         # Closure safety: each wrapped name must bind its own original.
@@ -1024,44 +671,6 @@ class TestGenerationRateLimitSkip:
 
         with pytest.raises(pytest.skip.Exception):
             await client.artifacts.retry_failed("nb-1", "art-1")
-
-
-class TestChatRateLimitSkip:
-    """The live chat wrapper recognizes each backend's quota exception."""
-
-    @staticmethod
-    def _make_client(error: Exception):
-        class FakeChat:
-            async def ask(self, notebook_id):
-                raise error
-
-        return SimpleNamespace(chat=FakeChat())
-
-    @pytest.mark.parametrize(
-        "error",
-        [
-            ChatError("chat.ask rate-limited (HTTP 429)"),
-            RateLimitError("Resource exhausted", rpc_code=8),
-        ],
-    )
-    async def test_backend_rate_limit_becomes_skip(self, error):
-        conftest = _load_e2e_conftest()
-        client = self._make_client(error)
-        conftest._install_chat_rate_limit_skip(client)
-
-        with pytest.raises(pytest.skip.Exception) as excinfo:
-            await client.chat.ask("nb-1")
-
-        assert any(phrase in str(excinfo.value).lower() for phrase in conftest._RATE_LIMIT_PHRASES)
-
-    async def test_non_quota_chat_error_propagates(self):
-        conftest = _load_e2e_conftest()
-        error = ChatError("wire format changed")
-        client = self._make_client(error)
-        conftest._install_chat_rate_limit_skip(client)
-
-        with pytest.raises(ChatError, match="wire format changed"):
-            await client.chat.ask("nb-1")
 
 
 class TestGenerationSkipRegistryCoverage:

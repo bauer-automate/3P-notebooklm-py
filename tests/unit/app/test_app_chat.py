@@ -3,7 +3,7 @@
 ``_app/chat.py`` had **zero** direct coverage before this file — it was
 exercised only through ``CliRunner`` in ``tests/unit/cli/test_chat.py``. These
 tests pin the Click-free chat business logic at the ``_app`` boundary with a
-``MagicMock`` client and a tiny in-memory :class:`ChatEventSink`, independent of
+``MagicMock`` client and a tiny in-memory :class:`ProgressSink`, independent of
 the Click adapter / exit-code policy:
 
 * the conversation-id selection ladder (:func:`determine_conversation_id`) and
@@ -26,9 +26,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from notebooklm._app.chat import (
-    ChatEvent,
-    ChatEventSink,
-    ChatValidationError,
     ClearCacheResult,
     ConfigureResult,
     HistoryFetch,
@@ -43,29 +40,34 @@ from notebooklm._app.chat import (
     save_answer_as_note,
     validate_ask_flags,
 )
+from notebooklm._app.events import ProgressEvent, ProgressSink
 from notebooklm.exceptions import ValidationError
 from notebooklm.rpc.types import ChatGoal, ChatResponseLength
 from notebooklm.types import AskResult, ChatMode, ChatSettings, Note
 
 
 class _RecordingSink:
-    """In-memory :class:`ChatEventSink` that records semantic events."""
+    """In-memory :class:`ProgressSink` that records emitted messages."""
 
     def __init__(self) -> None:
-        self.events: list[ChatEvent] = []
+        self.events: list[ProgressEvent] = []
 
-    def emit(self, event: ChatEvent) -> None:
+    def emit(self, event: ProgressEvent) -> None:
         self.events.append(event)
 
+    @property
+    def messages(self) -> list[str]:
+        return [e.message for e in self.events]
 
-def test_recording_sink_conforms_to_chat_event_sink_protocol() -> None:
-    """The test double honors the real (runtime-checkable) ChatEventSink seam.
 
-    Guards against drift: if ``ChatEventSink.emit`` ever changes shape, the
+def test_recording_sink_conforms_to_progress_sink_protocol() -> None:
+    """The test double honors the real (runtime-checkable) ProgressSink seam.
+
+    Guards against drift: if ``ProgressSink.emit`` ever changes shape, the
     status-emission assertions below would silently exercise a non-conforming
     double otherwise.
     """
-    assert isinstance(_RecordingSink(), ChatEventSink)
+    assert isinstance(_RecordingSink(), ProgressSink)
 
 
 def _client() -> MagicMock:
@@ -88,12 +90,10 @@ def test_validate_ask_flags_allows_each_alone() -> None:
 
 
 def test_validate_ask_flags_rejects_new_with_conversation_id() -> None:
-    with pytest.raises(ChatValidationError) as exc:
+    with pytest.raises(ValidationError) as exc:
         validate_ask_flags(new_conversation=True, conversation_id="conv_1")
-    assert exc.value.code == "NEW_WITH_CONVERSATION_ID"
-    assert exc.value.conversation_id == "conv_1"
-    assert "--new" not in str(exc.value)
-    assert "--conversation-id" not in str(exc.value)
+    assert "--new" in str(exc.value)
+    assert "--conversation-id" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ def test_determine_conversation_notebook_switch_starts_fresh() -> None:
         progress=sink,
     )
     assert result is None
-    assert sink.events == [ChatEvent("NOTEBOOK_CHANGED")]
+    assert any("new conversation" in m for m in sink.messages)
 
 
 def test_determine_conversation_falls_back_to_cached() -> None:
@@ -172,7 +172,7 @@ def test_determine_conversation_explicit_notebook_but_no_cached_falls_through() 
         progress=sink,
     )
     assert result == "conv_cached"
-    assert sink.events == []
+    assert sink.messages == []
 
 
 def test_determine_conversation_no_explicit_notebook_skips_notebook_read() -> None:
@@ -201,7 +201,7 @@ async def test_get_latest_conversation_returns_server_id() -> None:
     sink = _RecordingSink()
     result = await get_latest_conversation_from_server(client, "nb_1", progress=sink)
     assert result == "conv-server-abc"
-    assert sink.events == [ChatEvent("HISTORY_CONTINUING", conversation_id="conv-server-abc")]
+    assert any("Continuing conversation" in m for m in sink.messages)
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_get_latest_conversation_swallows_fetch_error() -> None:
     sink = _RecordingSink()
     result = await get_latest_conversation_from_server(client, "nb_1", progress=sink)
     assert result is None
-    assert sink.events == [ChatEvent("HISTORY_UNAVAILABLE")]
+    assert any("history unavailable" in m for m in sink.messages)
 
 
 # ---------------------------------------------------------------------------
@@ -554,19 +554,16 @@ def _ask_result(*, answer: str, references: list | None = None) -> AskResult:
 @pytest.mark.asyncio
 async def test_save_answer_no_answer_returns_error_outcome() -> None:
     client = _client()
-    sink = _RecordingSink()
     outcome = await save_answer_as_note(
         client,
         "nb_1",
         _ask_result(answer=""),
         note_title=None,
         question="Q?",
-        progress=sink,
     )
     assert isinstance(outcome, SaveNoteOutcome)
     assert outcome.note is None
     assert outcome.error == "No answer to save as note"
-    assert sink.events == [ChatEvent("NOTE_NO_ANSWER")]
 
 
 @pytest.mark.asyncio
@@ -575,7 +572,6 @@ async def test_save_answer_citation_rich_uses_chat_save_path() -> None:
     note = Note(id="note_abc123", notebook_id="nb_1", title="My title", content="A")
     client.chat.save_answer_as_note = AsyncMock(return_value=note)
     result = _ask_result(answer="The answer.", references=[object()])
-    sink = _RecordingSink()
 
     outcome = await save_answer_as_note(
         client,
@@ -583,7 +579,6 @@ async def test_save_answer_citation_rich_uses_chat_save_path() -> None:
         result,
         note_title="My title",
         question="Q?",
-        progress=sink,
     )
 
     assert outcome.error is None
@@ -591,7 +586,6 @@ async def test_save_answer_citation_rich_uses_chat_save_path() -> None:
     assert outcome.note == {"id": "note_abc123", "title": "My title"}
     client.chat.save_answer_as_note.assert_awaited_once_with("nb_1", result, title="My title")
     client.notes.create.assert_not_called()
-    assert sink.events == [ChatEvent("NOTE_SAVED", note_id="note_abc123", note_title="My title")]
 
 
 @pytest.mark.asyncio
@@ -613,10 +607,7 @@ async def test_save_answer_without_citations_falls_back_to_plain_text() -> None:
     assert outcome.plain_text_fallback is True
     assert outcome.note == {"id": "note_def456", "title": "Chat: Q?"}
     client.notes.create.assert_awaited_once()
-    assert sink.events == [
-        ChatEvent("NOTE_PLAIN_TEXT_FALLBACK"),
-        ChatEvent("NOTE_SAVED", note_id="note_def456", note_title="Chat: Q?"),
-    ]
+    assert any("plain-text note" in m for m in sink.messages)
 
 
 @pytest.mark.asyncio
@@ -624,7 +615,6 @@ async def test_save_answer_folds_exception_into_error_outcome() -> None:
     """A save failure is non-fatal: the error is returned, not raised."""
     client = _client()
     client.chat.save_answer_as_note = AsyncMock(side_effect=RuntimeError("save boom"))
-    sink = _RecordingSink()
 
     outcome = await save_answer_as_note(
         client,
@@ -632,12 +622,10 @@ async def test_save_answer_folds_exception_into_error_outcome() -> None:
         _ask_result(answer="The answer.", references=[object()]),
         note_title="T",
         question="Q?",
-        progress=sink,
     )
 
     assert outcome.note is None
     assert outcome.error == "save boom"
-    assert sink.events == [ChatEvent("NOTE_SAVE_FAILED", detail="save boom")]
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,8 @@ from typing import Any
 from ..._app import artifacts as artifact_core
 from ..._app import generate as generate_core
 from ..._app.serialize import to_jsonable
-from ...types import MindMap, MindMapResult
+from ..._types.mind_maps import MindMap
+from ..._types.research import MindMapResult
 
 __all__ = [
     "_artifact_rename_payload",

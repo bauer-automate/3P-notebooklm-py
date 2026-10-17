@@ -32,7 +32,7 @@ def _filter() -> Any:
     The helper does not exist yet in red phase; pytest's collection still
     succeeds because the import is deferred to call time.
     """
-    from notebooklm.auth import (
+    from notebooklm.cli.services.playwright_login import (
         filter_storage_state_cookies_by_domain_policy as _filter_storage_state_cookies_by_domain_policy,
     )
 
@@ -66,8 +66,7 @@ def test_keeps_required_google_com_cookies() -> None:
     assert _names(out) == {"SID", "__Secure-1PSID", "OSID"}
 
 
-@pytest.mark.parametrize("enterprise", ["notebook.cloud.google.com", "notebooklm.cloud.google.com"])
-def test_keeps_notebooklm_host_cookies(enterprise: str) -> None:
+def test_keeps_notebooklm_host_cookies() -> None:
     state = _state(
         [
             {
@@ -79,7 +78,7 @@ def test_keeps_notebooklm_host_cookies(enterprise: str) -> None:
             {
                 "name": "Secure-LM",
                 "value": "v2",
-                "domain": f".{enterprise}",
+                "domain": ".notebooklm.cloud.google.com",
                 "path": "/",
             },
         ]
@@ -260,7 +259,7 @@ def test_non_google_optional_domains_rejected_by_default(domain: str) -> None:
 # (the flat loaders rank by ``_auth_domain_priority``).
 # ---------------------------------------------------------------------------
 
-_FILTER_LOGGER = "notebooklm._browser.browser_capture"
+_FILTER_LOGGER = "notebooklm._auth.browser_capture"
 
 
 def test_non_dict_cookie_entry_skipped(caplog: pytest.LogCaptureFixture) -> None:

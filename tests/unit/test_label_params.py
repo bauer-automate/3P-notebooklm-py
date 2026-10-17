@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from notebooklm._web.params.labels import (
+from notebooklm._label.params import (
     _opts,
     build_create_label_params,
     build_delete_labels_params,
@@ -25,21 +25,15 @@ def test_opts_is_fresh_each_call() -> None:
 
 
 def test_generate_default_scope_is_unlabeled() -> None:
-    assert build_generate_labels_params(NB) == [OPTS, NB, None, None, [False]]
+    assert build_generate_labels_params(NB) == [OPTS, NB, None, None, [0]]
 
 
 def test_generate_scope_all_is_destructive_empty_slot() -> None:
-    assert build_generate_labels_params(NB, scope="all") == [OPTS, NB, None, None, [True]]
+    assert build_generate_labels_params(NB, scope="all") == [OPTS, NB, None, None, []]
 
 
 def test_generate_scope_unlabeled_explicit() -> None:
-    assert build_generate_labels_params(NB, scope="unlabeled") == [
-        OPTS,
-        NB,
-        None,
-        None,
-        [False],
-    ]
+    assert build_generate_labels_params(NB, scope="unlabeled") == [OPTS, NB, None, None, [0]]
 
 
 def test_create_label_with_emoji() -> None:

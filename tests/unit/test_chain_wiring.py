@@ -1,6 +1,6 @@
 """Integration tests for the authed-post middleware chain.
 
-:func:`notebooklm._web.transport.middleware.core.build_chain` is wired by
+:func:`notebooklm._middleware.core.build_chain` is wired by
 :func:`compose_client_internals` against the chain leaf on
 :class:`MiddlewareChainHost`
 (:meth:`MiddlewareChainHost._authed_post_chain_terminal`), which
@@ -26,21 +26,20 @@ ADR-0009 §"RpcRequest.context keys":
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
-from notebooklm._web.transport.errors import TransportServerError
-from notebooklm._web.transport.middleware.core import (
+from notebooklm._middleware.core import (
     Middleware,
     NextCall,
     RpcRequest,
     RpcResponse,
     build_chain,
 )
+from notebooklm._transport_errors import TransportServerError
 from notebooklm.client import NotebookLMClient
 from tests._helpers.client_factory import build_client_shell_for_tests
 
@@ -81,10 +80,8 @@ class FakeKernelPost:
         headers: Any,
         body: bytes,
         read_timeout: float | None = None,
-        expected_epoch: int | None = None,
         max_response_bytes: int | None | object = _UNSET,
     ) -> httpx.Response:
-        del expected_epoch
         call = {"url": url, "headers": headers, "body": body, "read_timeout": read_timeout}
         if max_response_bytes is not _UNSET:
             call["max_response_bytes"] = max_response_bytes
@@ -93,18 +90,7 @@ class FakeKernelPost:
 
 
 def _swap_kernel_post(core: NotebookLMClient, fake: FakeKernelPost) -> None:
-    core._web_runtime.kernel.post = fake.post  # type: ignore[method-assign]
-
-
-def _activate_supervisor(core: NotebookLMClient) -> None:
-    """Commit admission without opening HTTP for terminal-wiring tests."""
-    supervisor = core._collaborators.call_supervisor
-    supervisor.set_bound_loop(asyncio.get_running_loop())
-    supervisor.reset_after_open()
-    supervisor.prepare_generation(1)
-    supervisor.start_accepting(1)
-    core._web_runtime.kernel.activate(1)
-    core._web_runtime.auth_coord.activate_epoch(1)
+    core._collaborators.kernel.post = fake.post  # type: ignore[method-assign]
 
 
 @pytest.mark.asyncio
@@ -112,19 +98,18 @@ async def test_chain_routes_perform_authed_post_to_transport() -> None:
     """``RuntimeTransport.perform_authed_post`` flows through the chain.
 
     Covers direct callers of ``RuntimeTransport.perform_authed_post``: the chat
-    path in :func:`notebooklm._web.transport.chat.chat_aware_authed_post` and any
-    first-party caller via ``client._web_runtime.composed.transport.perform_authed_post``.
+    path in :func:`notebooklm._chat.transport.chat_aware_authed_post` and any
+    first-party caller via ``client._composed.transport.perform_authed_post``.
     """
     expected_response = httpx.Response(status_code=200, content=b"chain-routed")
     fake = FakeKernelPost(response=expected_response)
     core = _make_core()
     _swap_kernel_post(core, fake)
-    _activate_supervisor(core)
 
     def build_request(snapshot: Any) -> tuple[str, bytes, dict[str, str] | None]:
         return ("https://fake/url", b"body", None)
 
-    response = await core._web_runtime.composed.transport.perform_authed_post(
+    response = await core._composed.transport.perform_authed_post(
         build_request=build_request,
         log_label="test-log-label",
         disable_internal_retries=False,
@@ -163,12 +148,11 @@ async def test_chain_routes_rpc_executor_path_to_transport() -> None:
     fake = FakeKernelPost(response=expected_response)
     core = _make_core()
     _swap_kernel_post(core, fake)
-    _activate_supervisor(core)
 
     def build_request(snapshot: Any) -> tuple[str, bytes, dict[str, str] | None]:
         return ("https://fake/rpc", b"rpc-body", {"X-Goog-AuthUser": "0"})
 
-    response = await core._web_runtime.composed.transport.perform_authed_post(
+    response = await core._composed.transport.perform_authed_post(
         build_request=build_request,
         log_label="RPC LIST_NOTEBOOKS",
         disable_internal_retries=True,
@@ -209,7 +193,7 @@ async def test_chain_terminal_reads_context_keys() -> None:
         },
     )
 
-    result = await core._web_runtime.composed.chain_host._authed_post_chain_terminal(request)
+    result = await core._composed.chain_host._authed_post_chain_terminal(request)
 
     assert isinstance(result, RpcResponse)
     assert result.response is expected_response
@@ -248,7 +232,7 @@ async def test_chain_terminal_disable_internal_retries_defaults_false() -> None:
         },
     )
 
-    await core._web_runtime.composed.chain_host._authed_post_chain_terminal(request)
+    await core._composed.chain_host._authed_post_chain_terminal(request)
 
     assert fake.call_count == 1
     assert fake.calls[0]["url"] == "https://fake/no-retry-flag"
@@ -265,14 +249,12 @@ async def test_chain_terminal_log_label_defaults_for_direct_calls() -> None:
         headers: Any,
         body: bytes,
         read_timeout: float | None = None,
-        expected_epoch: int | None = None,
         max_response_bytes: int | None | object = _UNSET,
     ) -> httpx.Response:
-        del expected_epoch
         request = httpx.Request("POST", url, headers=dict(headers), content=body)
         raise httpx.RequestError("boom", request=request)
 
-    core._web_runtime.kernel.post = raise_network_error  # type: ignore[method-assign]
+    core._collaborators.kernel.post = raise_network_error  # type: ignore[method-assign]
     request = RpcRequest(
         url="https://fake/no-log-label",
         headers={},
@@ -281,29 +263,54 @@ async def test_chain_terminal_log_label_defaults_for_direct_calls() -> None:
     )
 
     with pytest.raises(TransportServerError, match="<unknown-chain-call> network error"):
-        await core._web_runtime.composed.chain_host._authed_post_chain_terminal(request)
+        await core._composed.chain_host._authed_post_chain_terminal(request)
 
 
 @pytest.mark.asyncio
 async def test_chain_seeded_with_final_adr_009_ordering() -> None:
-    """The web-only chain retains the final four B0 wire middlewares.
+    """``NotebookLMClient.__init__`` seeds the chain with the FINAL ADR-0009 ordering.
 
-    CallSupervisor now owns drain, metrics, and semaphore policy outside this
-    chain. The remaining order is ``Retry -> AuthRefresh -> ErrorInjection ->
-    Tracing -> HTTP terminal`` so retries and refresh remain orthogonal,
-    injected failures exercise both, and tracing observes physical attempts.
+    PR 12.3 landed ``TracingMiddleware`` at the innermost position; PR 12.4
+    prepended ``MetricsMiddleware``; PR 12.5 prepended ``DrainMiddleware``
+    outermost; PR 12.6 inserted ``ErrorInjectionMiddleware`` between
+    Metrics and Tracing; PR 12.7 inserted ``RetryMiddleware`` between
+    Metrics and ErrorInjection; PR 12.8 inserted ``AuthRefreshMiddleware``
+    between Retry and ErrorInjection; PR 12.9 inserted
+    ``SemaphoreMiddleware`` between Metrics and Retry (codex catch — see
+    ADR-0009 close-out notes). The list now reads the final ADR-0009
+    ordering
+    ``[Drain, Metrics, Semaphore, Retry, AuthRefresh, ErrorInjection, Tracing]``
+    (outermost → innermost).
+
+    Order rationale (per ADR-0009):
+    - Drain outermost — every in-flight call counts toward shutdown wait
+    - Metrics outside Semaphore — latency includes queue wait
+    - Semaphore outside Retry — retry attempts stay in one slot
+    - Retry outside AuthRefresh — orthogonal failure modes
+    - AuthRefresh outside ErrorInjection — test-injected 401s exercise refresh
+    - ErrorInjection inside Retry — synthetic transient failures trigger retry
+    - Tracing innermost — logs actual HTTP attempts including retries
+
+    The list is exposed as ``self._middlewares`` so the cleanup audit can
+    verify ordering by inspecting the production attribute directly.
     """
-    from notebooklm._web.transport.middleware.auth_refresh import AuthRefreshMiddleware
-    from notebooklm._web.transport.middleware.error_injection import ErrorInjectionMiddleware
-    from notebooklm._web.transport.middleware.retry import RetryMiddleware
-    from notebooklm._web.transport.middleware.tracing import TracingMiddleware
+    from notebooklm._middleware.auth_refresh import AuthRefreshMiddleware
+    from notebooklm._middleware.drain import DrainMiddleware
+    from notebooklm._middleware.error_injection import ErrorInjectionMiddleware
+    from notebooklm._middleware.metrics import MetricsMiddleware
+    from notebooklm._middleware.retry import RetryMiddleware
+    from notebooklm._middleware.semaphore import SemaphoreMiddleware
+    from notebooklm._middleware.tracing import TracingMiddleware
 
     core = _make_core()
-    assert len(core._web_runtime.composed.middlewares) == 4
-    assert isinstance(core._web_runtime.composed.middlewares[0], RetryMiddleware)
-    assert isinstance(core._web_runtime.composed.middlewares[1], AuthRefreshMiddleware)
-    assert isinstance(core._web_runtime.composed.middlewares[2], ErrorInjectionMiddleware)
-    assert isinstance(core._web_runtime.composed.middlewares[3], TracingMiddleware)
+    assert len(core._composed.middlewares) == 7
+    assert isinstance(core._composed.middlewares[0], DrainMiddleware)
+    assert isinstance(core._composed.middlewares[1], MetricsMiddleware)
+    assert isinstance(core._composed.middlewares[2], SemaphoreMiddleware)
+    assert isinstance(core._composed.middlewares[3], RetryMiddleware)
+    assert isinstance(core._composed.middlewares[4], AuthRefreshMiddleware)
+    assert isinstance(core._composed.middlewares[5], ErrorInjectionMiddleware)
+    assert isinstance(core._composed.middlewares[6], TracingMiddleware)
 
 
 @pytest.mark.asyncio
@@ -315,7 +322,7 @@ async def test_chain_with_test_middleware_observes_request_and_response() -> Non
     saw both the inbound request and the outbound response. This is the wire-up
     smoke test for middleware composition.
 
-    Builds the chain locally (rather than mutating ``core._web_runtime.composed.middlewares``
+    Builds the chain locally (rather than mutating ``core._composed.middlewares``
     in-place) because production code does not yet support hot-swapping
     the chain — that's a PR 12.3 concern when ``TracingMiddleware`` lands.
     """
@@ -336,9 +343,7 @@ async def test_chain_with_test_middleware_observes_request_and_response() -> Non
     # terminal. This per-test composition validates the leaf's contract
     # against ``build_chain`` without mutating ``NotebookLMClient.__init__``'s
     # production chain.
-    chain: NextCall = build_chain(
-        [observer], core._web_runtime.composed.chain_host._authed_post_chain_terminal
-    )
+    chain: NextCall = build_chain([observer], core._composed.chain_host._authed_post_chain_terminal)
 
     request = RpcRequest(
         url="https://fake/observe",
@@ -378,7 +383,7 @@ async def test_chain_terminal_forwards_read_timeout_context() -> None:
         },
     )
 
-    result = await core._web_runtime.composed.chain_host._authed_post_chain_terminal(request)
+    result = await core._composed.chain_host._authed_post_chain_terminal(request)
 
     assert result.response is expected_response
     assert fake.calls[0].get("read_timeout") == 123.0
@@ -402,7 +407,7 @@ async def test_chain_terminal_forwards_max_response_bytes_context() -> None:
         },
     )
 
-    result = await core._web_runtime.composed.chain_host._authed_post_chain_terminal(request)
+    result = await core._composed.chain_host._authed_post_chain_terminal(request)
 
     assert result.response is expected_response
     assert fake.calls[0].get("max_response_bytes") == 123
@@ -443,7 +448,7 @@ def test_perform_authed_post_signature_unchanged() -> None:
     """
     import inspect
 
-    from notebooklm._web.transport.runtime import RuntimeTransport
+    from notebooklm._runtime.transport import RuntimeTransport
 
     sig = inspect.signature(RuntimeTransport.perform_authed_post)
     params = sig.parameters

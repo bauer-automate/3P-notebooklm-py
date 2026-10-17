@@ -8,19 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from urllib.parse import urlsplit
 
 import pytest
 
 from notebooklm._app import source_add as cli_source_add
-from notebooklm._idempotency import (
-    bound_operation_journal_entries,
-    mark_commit_state,
-)
-from notebooklm._sources import SourcesAPI, _validate_add_text_idempotency
-from notebooklm._web.rows.source_models import decode_source
-from notebooklm._web.sources import WebSourcesAPI
-from notebooklm._web.sources.add import SourceAddService
+from notebooklm._source.add import SourceAddService
+from notebooklm._sources import SourcesAPI
 from notebooklm.exceptions import (
     AuthError,
     NetworkError,
@@ -29,7 +22,6 @@ from notebooklm.exceptions import (
     ServerError,
     SourceAddError,
 )
-from notebooklm.outcomes import CommitState
 from notebooklm.rpc import RPCError, RPCMethod
 from notebooklm.types import Source
 
@@ -50,8 +42,6 @@ class RecordingRpc:
         disable_internal_retries: bool = False,
         operation_variant: str | None = None,
     ) -> Any:
-        for journal_entry in bound_operation_journal_entries():
-            journal_entry.mark_dispatched()
         self.calls.append(
             {
                 "method": method,
@@ -63,16 +53,6 @@ class RecordingRpc:
             }
         )
         return self.response
-
-
-def dispatched_response(response: Any) -> AsyncMock:
-    async def _respond(
-        _notebook_id: str,
-        _value: str,
-    ) -> Any:
-        return response
-
-    return AsyncMock(side_effect=_respond)
 
 
 @pytest.fixture
@@ -89,105 +69,12 @@ def source_response(source_id: str, title: str = "Source") -> list[Any]:
     return [[[["src_" + source_id], title, [None, 0], [None, 2]]]]
 
 
-async def _call_add_kind(
-    service: SourceAddService,
-    logger: logging.Logger,
-    kind: str,
-    *,
-    response: Any = None,
-    failure: Exception | None = None,
-) -> Source:
-    responder = (
-        AsyncMock(side_effect=failure) if failure is not None else AsyncMock(return_value=response)
-    )
-    if kind == "url":
-        return await service.add_url(
-            "nb_1",
-            "https://example.com",
-            add_youtube_source=AsyncMock(),
-            add_url_source=responder,
-            list_sources=AsyncMock(),
-            wait_until_ready=AsyncMock(),
-            extract_youtube_video_id=MagicMock(return_value=None),
-            is_youtube_url=MagicMock(return_value=False),
-            logger=logger,
-        )
-    if kind == "text":
-        return await service.add_text(
-            "nb_1",
-            "Title",
-            "content",
-            rpc=SimpleNamespace(rpc_call=responder),
-            wait_until_ready=AsyncMock(),
-            logger=logger,
-        )
-    return await service.add_drive(
-        "nb_1",
-        "drive-file",
-        "Drive title",
-        rpc=SimpleNamespace(rpc_call=responder),
-        list_sources=AsyncMock(),
-        wait_until_ready=AsyncMock(),
-        logger=logger,
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["url", "text", "drive"])
-@pytest.mark.parametrize("state", [CommitState.REJECTED, CommitState.NOT_SENT])
-async def test_add_wrappers_preserve_positive_commit_evidence(
-    service: SourceAddService,
-    logger: logging.Logger,
-    kind: str,
-    state: CommitState,
-) -> None:
-    cause = mark_commit_state(
-        RPCError("producer evidence"),
-        state,
-        operation="wire.add_source",
-    )
-
-    with pytest.raises(SourceAddError) as captured:
-        await _call_add_kind(service, logger, kind, failure=cause)
-
-    error = captured.value
-    assert error.cause is cause
-    assert error.commit_state is state
-    assert error.operation == "wire.add_source"
-    assert getattr(error, "unconfirmed", False) is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("kind", "response", "operation"),
-    [
-        pytest.param("url", None, "sources.add_url", id="url-null"),
-        pytest.param("text", object(), "sources.add_text", id="text-decode"),
-        pytest.param("drive", None, "sources.add_drive", id="drive-null"),
-    ],
-)
-async def test_add_wrappers_mark_post_dispatch_null_or_decode_unknown(
-    service: SourceAddService,
-    logger: logging.Logger,
-    kind: str,
-    response: Any,
-    operation: str,
-) -> None:
-    with pytest.raises(SourceAddError) as captured:
-        await _call_add_kind(service, logger, kind, response=response)
-
-    error = captured.value
-    assert error.commit_state is CommitState.UNKNOWN
-    assert error.unconfirmed is True
-    assert error.operation == operation
-
-
 @pytest.mark.asyncio
 async def test_add_url_routes_youtube_through_late_bound_hook(
     service: SourceAddService,
     logger: logging.Logger,
 ) -> None:
-    add_youtube_source = dispatched_response(source_response("yt", "Video"))
+    add_youtube_source = AsyncMock(return_value=source_response("yt", "Video"))
     add_url_source = AsyncMock()
 
     source = await service.add_url(
@@ -203,68 +90,32 @@ async def test_add_url_routes_youtube_through_late_bound_hook(
     )
 
     assert source.id == "src_yt"
-    assert add_youtube_source.await_args.args == ("nb_1", "https://youtu.be/video")
+    add_youtube_source.assert_awaited_once_with("nb_1", "https://youtu.be/video")
     add_url_source.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_add_url_transport_loss_is_not_replayed_or_attributed(
+async def test_add_url_probe_returns_existing_after_transport_error(
     service: SourceAddService,
     logger: logging.Logger,
 ) -> None:
-    error = NetworkError("temporary network failure")
-    add_url_source = AsyncMock(side_effect=error)
-    list_sources = AsyncMock(return_value=[Source(id="foreign", url="https://example.com")])
-
-    with pytest.raises(NetworkError) as raised:
-        await service.add_url(
-            "nb_1",
-            "https://example.com",
-            add_youtube_source=AsyncMock(),
-            add_url_source=add_url_source,
-            list_sources=list_sources,
-            wait_until_ready=AsyncMock(),
-            extract_youtube_video_id=MagicMock(return_value=None),
-            is_youtube_url=MagicMock(return_value=False),
-            logger=logger,
-        )
-
-    assert raised.value is error
-    assert getattr(error, "unconfirmed", False) is True
-    add_url_source.assert_awaited_once()
-    list_sources.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_add_url_baseline_failure_does_not_break_a_successful_add(
-    service: SourceAddService,
-    logger: logging.Logger,
-) -> None:
-    """A failed baseline degrades the probe; it must not fail the add (#2204).
-
-    The baseline is best-effort by design: it exists to disambiguate a *retry*,
-    so a transient notebook read must not turn an otherwise perfectly good
-    ``add_url`` into an error. Pins the resilience half of the swallow — the
-    regression this catches is someone narrowing that ``except Exception`` to
-    mirror the probe's transport re-raise, which would fail every add whenever
-    the notebook read blips.
-    """
-    add_url_source = dispatched_response(source_response("ok", "Example"))
+    existing = Source(id="src_existing", url="https://example.com")
+    add_url_source = AsyncMock(side_effect=NetworkError("temporary network failure"))
 
     source = await service.add_url(
         "nb_1",
-        "https://example.com",
+        existing.url,
         add_youtube_source=AsyncMock(),
         add_url_source=add_url_source,
-        list_sources=AsyncMock(side_effect=ServerError("baseline 503")),
+        list_sources=AsyncMock(return_value=[existing]),
         wait_until_ready=AsyncMock(),
         extract_youtube_video_id=MagicMock(return_value=None),
         is_youtube_url=MagicMock(return_value=False),
         logger=logger,
     )
 
-    assert source.id == "src_ok"
-    assert add_url_source.await_count == 1, "the add must not be retried"
+    assert source is existing
+    add_url_source.assert_awaited_once_with("nb_1", existing.url)
 
 
 @pytest.mark.asyncio
@@ -390,9 +241,21 @@ async def test_add_text_wraps_generic_rpc_error(
     assert "Failed to add text source 'Title'" in str(exc_info.value)
 
 
-def test_add_text_refuses_idempotent_flag_before_service_admission() -> None:
+@pytest.mark.asyncio
+async def test_add_text_refuses_idempotent_flag(
+    service: SourceAddService,
+    logger: logging.Logger,
+) -> None:
     with pytest.raises(NonIdempotentRetryError):
-        _validate_add_text_idempotency(True)
+        await service.add_text(
+            "nb_1",
+            "Title",
+            "content",
+            idempotent=True,
+            rpc=SimpleNamespace(rpc_call=AsyncMock()),
+            wait_until_ready=AsyncMock(),
+            logger=logger,
+        )
 
 
 @pytest.mark.asyncio
@@ -418,8 +281,10 @@ async def test_add_drive_uses_exact_rpc_shape_and_wait_hook(
     )
 
     assert result is ready
-    # Drive create is one-send: the registry forces inner retries off and
-    # the service does not own a probe/replay loop.
+    # add_drive now wraps with idempotent_create, which requires
+    # disable_internal_retries=True at the RPC layer (the wrapper owns
+    # probe-then-retry recovery). operation_variant="drive" routes the
+    # call through the registry's PROBE_THEN_CREATE entry.
     assert rpc.calls == [
         {
             "method": RPCMethod.ADD_SOURCE,
@@ -484,8 +349,9 @@ async def test_add_drive_preserves_rpc_error_propagation(
     service: SourceAddService,
     logger: logging.Logger,
 ) -> None:
-    # A non-transport RPCError (e.g. validation) becomes SourceAddError,
-    # while its original cause remains available to callers.
+    # A non-transport RPCError (e.g. validation) must propagate through
+    # idempotent_create as a SourceAddError, just like add_url does. The
+    # cause chain preserves the original RPCError for callers that need it.
     rpc_error = RPCError("drive add failed")
 
     with pytest.raises(SourceAddError) as exc_info:
@@ -567,9 +433,9 @@ async def test_raw_url_helpers_disable_internal_retries(service: SourceAddServic
 @pytest.mark.asyncio
 async def test_sources_api_add_url_uses_late_bound_facade_hooks() -> None:
     core = MagicMock()
-    api = WebSourcesAPI(core, supervisor=core, uploader=MagicMock())
+    api = SourcesAPI(core, uploader=MagicMock())
     api._extract_youtube_video_id = MagicMock(return_value="video")  # type: ignore[method-assign]
-    api._add_youtube_source = dispatched_response(source_response("yt", "Video"))  # type: ignore[method-assign]
+    api._add_youtube_source = AsyncMock(return_value=source_response("yt", "Video"))  # type: ignore[method-assign]
     api._add_url_source = AsyncMock()  # type: ignore[method-assign]
     api.list = AsyncMock(return_value=[])  # type: ignore[method-assign]
     api.wait_until_ready = AsyncMock(return_value=Source(id="ready"))  # type: ignore[method-assign]
@@ -577,7 +443,7 @@ async def test_sources_api_add_url_uses_late_bound_facade_hooks() -> None:
     result = await api.add_url("nb_1", "https://youtu.be/video", wait=True, wait_timeout=3.0)
 
     assert result.id == "ready"
-    assert api._add_youtube_source.await_args.args == ("nb_1", "https://youtu.be/video")
+    api._add_youtube_source.assert_awaited_once_with("nb_1", "https://youtu.be/video")
     api._add_url_source.assert_not_awaited()
     api.wait_until_ready.assert_awaited_once_with("nb_1", "src_yt", timeout=3.0)
 
@@ -589,7 +455,7 @@ async def test_sources_api_add_url_uses_late_bound_facade_hooks() -> None:
 
 
 def _sources_api_with_mocked_adder() -> SourcesAPI:
-    api = WebSourcesAPI(MagicMock(), supervisor=MagicMock(), uploader=MagicMock())
+    api = SourcesAPI(MagicMock(), uploader=MagicMock())
     api._adder = MagicMock()  # type: ignore[assignment]
     return api
 
@@ -730,9 +596,9 @@ class TestValidateUrlScheme:
         with pytest.raises(cli_source_add.SourceAddValidationError) as exc_info:
             cli_source_add.validate_url(url, allow_internal=False)
 
-        assert exc_info.value.reason == "unsupported_url_scheme"
-        assert exc_info.value.url == url
-        assert exc_info.value.scheme == urlsplit(url).scheme
+        msg = str(exc_info.value)
+        assert "scheme" in msg.lower()
+        assert "http and https" in msg.lower()
 
     @pytest.mark.parametrize(
         "url",
@@ -751,9 +617,7 @@ class TestValidateUrlScheme:
         with pytest.raises(cli_source_add.SourceAddValidationError) as exc_info:
             cli_source_add.validate_url(url, allow_internal=True)
 
-        assert exc_info.value.reason == "unsupported_url_scheme"
-        assert exc_info.value.url == url
-        assert exc_info.value.scheme == urlsplit(url).scheme
+        assert "scheme" in str(exc_info.value).lower()
 
     @pytest.mark.parametrize(
         "url",
@@ -770,20 +634,14 @@ class TestValidateUrlScheme:
         cli_source_add.validate_url(url, allow_internal=False)
 
     def test_empty_url_is_rejected(self) -> None:
-        with pytest.raises(cli_source_add.SourceAddValidationError) as exc_info:
+        with pytest.raises(cli_source_add.SourceAddValidationError):
             cli_source_add.validate_url("", allow_internal=False)
-
-        assert exc_info.value.reason == "unsupported_url_scheme"
-        assert exc_info.value.url == ""
-        assert exc_info.value.scheme == ""
 
     def test_url_without_host_is_rejected(self) -> None:
         with pytest.raises(cli_source_add.SourceAddValidationError) as exc_info:
             cli_source_add.validate_url("http:///path", allow_internal=False)
 
-        assert exc_info.value.reason == "url_missing_host"
-        assert exc_info.value.url == "http:///path"
-        assert exc_info.value.host is None
+        assert "no host" in str(exc_info.value).lower()
 
 
 class TestValidateUrlInternalHost:
@@ -828,12 +686,9 @@ class TestValidateUrlInternalHost:
         with pytest.raises(cli_source_add.SourceAddValidationError) as exc_info:
             cli_source_add.validate_url(url, allow_internal=False)
 
-        expected_reason = (
-            "local_host_disallowed" if "localhost" in url.lower() else "internal_ip_disallowed"
-        )
-        assert exc_info.value.reason == expected_reason
-        assert exc_info.value.url == url
-        assert exc_info.value.host == urlsplit(url).hostname
+        msg = str(exc_info.value).lower()
+        assert "internal" in msg or "local" in msg
+        assert "--allow-internal" in str(exc_info.value)
 
     @pytest.mark.parametrize(
         "url",
@@ -1024,34 +879,3 @@ class TestBuildSourceAddPlanUrlRouting:
             looks_path_shaped=self._make_looks_path(),
         )
         assert plan.detected_type == "youtube"
-
-
-def _drive_source(source_id: str, file_id: str, title: str = "Drive Doc") -> Source:
-    """A Drive-backed row, built from the captured wire shape.
-
-    Copied from the live ``GET_NOTEBOOK`` capture in
-    ``tests/cassettes/web/sources_check_freshness_drive.yaml`` (the same shape
-    the Drive source row fixtures
-    uses): the Drive block sits at ``metadata[0]`` and **no** URL slot is
-    populated — which is exactly why the pre-#2113 URL-based probe could never
-    match one. Decoding a real row rather than setting the property keeps this
-    honest: if the ``documentId`` slot ever moves, these tests notice.
-    """
-    metadata: list = [
-        [file_id, "SCRUBBED_AONS", 12],
-        911,
-        [1769105469, 316769000],
-        ["d4325602-2399-44c2-b45b-9df8f433189f", [1769105982, 178269000]],
-        1,  # SourceType.GOOGLE_DOCS
-        None,
-        1,
-    ]
-    source = decode_source(
-        Source,
-        [[source_id], title, metadata, [None, 2]],
-        method_id=RPCMethod.GET_NOTEBOOK.value,
-    )
-    # Guard the fixture itself: a silently non-matching row would make the
-    # probe return None and the test would fail for the wrong reason.
-    assert source.drive_document_id == file_id, "fixture no longer decodes as a Drive row"
-    return source

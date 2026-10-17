@@ -15,29 +15,25 @@ than failing the whole call).
 
 The absolute on-disk storage path is deliberately **not** returned — it leaks the
 server-host OS username / filesystem layout to the caller while telling it nothing
-actionable (the MCP surface scrubs it identically). In single-profile mode the
-info reflects the one lifespan client/startup state; in multi-profile mode it
-reflects the profile selected by ``X-NotebookLM-Profile`` (Android credential
-health, or Web file-only health including ``session_conflict``).
+actionable (the MCP surface scrubs it identically). This is a single-tenant
+server, so the info reflects the one lifespan client/startup state.
 
 This module imports NO ``click`` / ``rich`` / ``cli``.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
 
-from ..._adapter_support import redact
 from ..._app.auth_check import AuthCheckPlan, run_auth_check
-from ..._app.master_token import inspect_master_token_status
+from ..._redact import redact
 from ..._version_info import version_string
 from ...client import NotebookLMClient
-from ...exceptions import AuthError, NotebookLMError, ServerError
+from ...exceptions import NotebookLMError
 from ...paths import get_storage_path, resolve_profile
-from .._context import get_client, get_client_error, get_state
+from .._context import get_client, get_client_error
 from .._errors import error_item
 
 __all__ = ["router"]
@@ -130,13 +126,8 @@ async def server_info(
     """
     # Report the *resolved* profile (never ``None``): this names the profile the
     # auth probe actually ran against (#1790, #1791).
-    state = get_state(request)
-    profile = state.profile or resolve_profile()
-    storage_path = state.storage_path or get_storage_path(profile)
-    if state.web_profiles is not None:
-        return await _web_profile_info(request, include_account=include_account)
-    if state.isolated:
-        return await _android_info(request, include_account=include_account)
+    profile = resolve_profile()
+    storage_path = get_storage_path(profile)
     plan = AuthCheckPlan(
         storage_path=storage_path,
         profile=profile,
@@ -144,32 +135,10 @@ async def server_info(
         has_home_env=False,
         auth_source_label=f"file ({storage_path})",
         test_fetch=False,
+        json_output=True,
     )
-    account_client: NotebookLMClient | None = None
-    if include_account:
-        try:
-            account_client = await get_client(request)
-        except AuthError:
-            # A concurrent request can bind successfully immediately after
-            # this request loses an auth generation; re-check state below.
-            pass
-        except Exception:
-            # Degrade only failures that the loader recorded for diagnostics.
-            # Unrecorded exceptions still identify a route/programming error
-            # and must retain the normal server error path.
-            if get_client_error(request) is None:
-                raise
-    startup_error = get_client_error(request)
-    if include_account and account_client is None and startup_error is None:
-        # The first lookup can fail just before a concurrent request finishes
-        # binding the singleton client and clears ``client_error``. Re-read the
-        # now-bound client instead of treating that narrow race as an invariant
-        # violation below.
-        account_client = await get_client(request)
-    # Probe after any lazy bind: that bind can succeed because storage was
-    # repaired after this request started, and the response must describe the
-    # newly bound session rather than an earlier stale disk snapshot.
     result = await run_auth_check(plan, read_env_auth_json=_no_env_auth_json)
+    startup_error = get_client_error(request)
     startup_error_item = error_item(startup_error) if startup_error is not None else None
     authenticated = result.all_passed and startup_error is None
     auth: dict[str, Any] = {
@@ -195,100 +164,5 @@ async def server_info(
                 "reason": startup_error_item["message"],
             }
         else:
-            if account_client is None:  # pragma: no cover - guarded above
-                raise RuntimeError("account diagnostics require a bound client")
-            info["account"] = await _account_block(account_client, authenticated=authenticated)
-    return info
-
-
-async def _android_info(request: Request, *, include_account: bool) -> dict[str, Any]:
-    """Diagnose the selected Android profile without probing Web credentials."""
-    state = get_state(request)
-    if include_account:
-        try:
-            await get_client(request)
-        except Exception:
-            if get_client_error(request) is None:
-                raise
-    status = None
-    if state.storage_path is not None:
-        try:
-            status = await asyncio.to_thread(
-                inspect_master_token_status, state.storage_path, has_env_auth=False
-            )
-        except (OSError, ValueError):
-            pass
-    valid = status is not None and status.present and status.unreadable_error_type is None
-    ready = state.client is not None and state.client_error is None
-    auth: dict[str, Any] = {
-        "backend": "android",
-        "profile": state.profile,
-        "master_token_present": status is not None and status.present,
-        "master_token_valid": valid,
-        "authenticated": ready and valid,
-        "ready": ready,
-    }
-    if state.client_error is not None:
-        startup_error = state.client_error
-        if not isinstance(startup_error, AuthError):
-            startup_error = ServerError(str(startup_error), status_code=503)
-        auth["startup_error"] = error_item(startup_error)
-        auth["startup_error"]["code"] = "profile_unavailable"
-    info: dict[str, Any] = {"server": SERVER_NAME, "version": version_string(), "auth": auth}
-    if include_account:
-        if state.client is None:
-            info["account"] = {
-                "available": False,
-                "email": status.account if status else None,
-                "reason": "Selected Android profile is unavailable",
-            }
-        else:
-            info["account"] = await _account_block(state.client, authenticated=ready)
-    return info
-
-
-async def _web_profile_info(request: Request, *, include_account: bool) -> dict[str, Any]:
-    """Diagnose the selected Web profile from local files; never return values."""
-    state = get_state(request)
-    web_profiles = state.web_profiles
-    if web_profiles is None or state.profile is None:  # pragma: no cover - dispatch guard
-        raise RuntimeError("Web profile diagnostics require a configured Web profile")
-    if include_account:
-        try:
-            await get_client(request)
-        except Exception:
-            if get_client_error(request) is None:
-                raise
-    health = await web_profiles.health(state.profile)
-    ready = state.client is not None and state.client_error is None
-    auth: dict[str, Any] = {
-        "backend": "web",
-        "profile": state.profile,
-        "storage_exists": health.storage_exists,
-        "json_valid": health.json_valid,
-        "cookies_present": health.cookies_present,
-        "sid_cookie": health.sid_cookie,
-        "master_token_present": health.master_token_present,
-        "session_conflict": health.session_conflict,
-        # A serving client owns its session; ``session_conflict`` reflects today's
-        # files (what a reopen would find) and is reported separately.
-        "authenticated": ready and health.local_checks_passed,
-        "ready": ready,
-    }
-    if state.client_error is not None:
-        startup_error = state.client_error
-        if not isinstance(startup_error, AuthError):
-            startup_error = ServerError(str(startup_error), status_code=503)
-        auth["startup_error"] = error_item(startup_error)
-        auth["startup_error"]["code"] = state.client_error_code or "profile_unavailable"
-    info: dict[str, Any] = {"server": SERVER_NAME, "version": version_string(), "auth": auth}
-    if include_account:
-        if state.client is None:
-            info["account"] = {
-                **_persisted_account_identity(health.account),
-                "available": False,
-                "reason": "Selected Web profile is unavailable",
-            }
-        else:
-            info["account"] = await _account_block(state.client, authenticated=ready)
+            info["account"] = await _account_block(get_client(request), authenticated=authenticated)
     return info

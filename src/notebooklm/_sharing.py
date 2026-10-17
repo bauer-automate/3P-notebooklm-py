@@ -1,41 +1,141 @@
-"""Backend-neutral sharing namespace contract."""
+"""Sharing operations API."""
 
-import contextlib
 import logging
-from abc import ABC, abstractmethod
 
-from ._runtime.call_supervisor import OperationLease
-from ._types.enums import SharePermission, ShareViewLevel
+from ._runtime.contracts import RpcCaller
+from .rpc import RPCMethod
+from .rpc.types import ShareAccess, SharePermission, ShareViewLevel
 from .types import ShareStatus
 
 logger = logging.getLogger(__name__)
 
 
-class SharingAPI(ABC):
-    """Operations for notebook sharing."""
+class SharingAPI:
+    """Operations for notebook sharing.
 
-    @abstractmethod
-    def _operation_scope(
-        self, label: str
-    ) -> contextlib.AbstractAsyncContextManager[OperationLease | None]:
-        """Return the backend's scope for one multi-call workflow."""
-        raise NotImplementedError
+    Provides methods for querying and modifying notebook sharing settings,
+    including public link access and user-specific sharing.
 
-    @abstractmethod
+    Usage:
+        async with NotebookLMClient.from_storage() as client:
+            # Get current status
+            status = await client.sharing.get_status(notebook_id)
+
+            # Enable public sharing
+            await client.sharing.set_public(notebook_id, True)
+
+            # Share with user
+            await client.sharing.add_user(
+                notebook_id,
+                "user@example.com",
+                SharePermission.VIEWER,
+                notify=True,
+                welcome_message="Welcome to my notebook!"
+            )
+    """
+
+    def __init__(self, rpc: RpcCaller):
+        """Initialize the sharing API.
+
+        Args:
+            rpc: RPC dispatch surface (typically the shared client session).
+        """
+        self._rpc = rpc
+
     async def get_status(self, notebook_id: str) -> ShareStatus:
-        """Get the current sharing configuration."""
+        """Get current sharing configuration.
 
-    @abstractmethod
-    async def set_public(self, notebook_id: str, public: bool) -> ShareStatus:
-        """Enable or disable public link sharing."""
+        Args:
+            notebook_id: The notebook ID.
 
-    @abstractmethod
+        Returns:
+            ShareStatus with current sharing state and user list.
+        """
+        logger.debug("Getting share status for notebook: %s", notebook_id)
+        params = [notebook_id, [2]]
+        result = await self._rpc.rpc_call(
+            RPCMethod.GET_SHARE_STATUS,
+            params,
+            source_path=f"/notebook/{notebook_id}",
+        )
+        return ShareStatus.from_api_response(result, notebook_id)
+
+    async def set_public(
+        self,
+        notebook_id: str,
+        public: bool,
+    ) -> ShareStatus:
+        """Enable or disable public link sharing.
+
+        Args:
+            notebook_id: The notebook ID.
+            public: True for anyone with link, False for restricted.
+
+        Returns:
+            Updated ShareStatus.
+
+        Note:
+            This method makes two sequential RPC calls. The returned status
+            reflects the state immediately after the operation but may not
+            include concurrent changes from other clients.
+        """
+        logger.debug("Setting notebook %s public=%s", notebook_id, public)
+        access = ShareAccess.ANYONE_WITH_LINK if public else ShareAccess.RESTRICTED
+        params = [
+            [[notebook_id, None, [access.value], [access.value, ""]]],
+            1,
+            None,
+            [2],
+        ]
+        await self._rpc.rpc_call(
+            RPCMethod.SHARE_NOTEBOOK,
+            params,
+            source_path=f"/notebook/{notebook_id}",
+            allow_null=True,
+        )
+        return await self.get_status(notebook_id)
+
     async def set_view_level(
         self,
         notebook_id: str,
         level: ShareViewLevel,
     ) -> ShareStatus:
-        """Set what viewers can access."""
+        """Set what viewers can access.
+
+        Args:
+            notebook_id: The notebook ID.
+            level: FULL_NOTEBOOK or CHAT_ONLY.
+
+        Returns:
+            Updated ShareStatus with the new view_level.
+
+        Note:
+            The GET_SHARE_STATUS API does not return view_level, so the
+            returned status includes the view_level we just set rather
+            than fetching it from the API.
+        """
+        logger.debug("Setting notebook %s view level to %s", notebook_id, level.name)
+        params = [
+            notebook_id,
+            [[None, None, None, None, None, None, None, None, [[level.value]]]],
+        ]
+        await self._rpc.rpc_call(
+            RPCMethod.RENAME_NOTEBOOK,
+            params,
+            source_path=f"/notebook/{notebook_id}",
+            allow_null=True,
+        )
+        # Fetch current status and override view_level with what we just set
+        # (GET_SHARE_STATUS doesn't return view_level)
+        status = await self.get_status(notebook_id)
+        return ShareStatus(
+            notebook_id=status.notebook_id,
+            is_public=status.is_public,
+            access=status.access,
+            view_level=level,
+            shared_users=status.shared_users,
+            share_url=status.share_url,
+        )
 
     async def add_user(
         self,
@@ -46,9 +146,6 @@ class SharingAPI(ABC):
         welcome_message: str = "",
     ) -> ShareStatus:
         """Share notebook with a user.
-
-        Intent wrapper over :meth:`set_users`. The underlying operation is an
-        upsert, so this also updates a user who already has access.
 
         Args:
             notebook_id: The notebook ID.
@@ -63,27 +160,41 @@ class SharingAPI(ABC):
         Raises:
             ValueError: If permission is OWNER or _REMOVE.
         """
-        return await self.set_users(
+        if permission == SharePermission.OWNER:
+            raise ValueError("Cannot assign OWNER permission")
+        if permission == SharePermission._REMOVE:
+            raise ValueError("Use remove_user() instead")
+
+        logger.debug(
+            "Adding user %s to notebook %s with permission %s",
+            email,
             notebook_id,
-            [(email, permission)],
-            notify=notify,
-            welcome_message=welcome_message,
+            permission.name,
         )
 
-    @abstractmethod
-    async def set_users(
-        self,
-        notebook_id: str,
-        grants: list[tuple[str, SharePermission]],
-        notify: bool = True,
-        welcome_message: str = "",
-    ) -> ShareStatus:
-        """Upsert several user permissions in one request.
+        message_flag = 0 if welcome_message else 1
+        notify_flag = 1 if notify else 0
 
-        Each grant is an ``(email, permission)`` pair with EDITOR or VIEWER
-        permission. Empty batches and duplicate emails are rejected. ``notify``
-        and ``welcome_message`` apply to every grant in the call.
-        """
+        params = [
+            [
+                [
+                    notebook_id,
+                    [[email, None, permission.value]],
+                    None,
+                    [message_flag, welcome_message],
+                ]
+            ],
+            notify_flag,
+            None,
+            [2],
+        ]
+        await self._rpc.rpc_call(
+            RPCMethod.SHARE_NOTEBOOK,
+            params,
+            source_path=f"/notebook/{notebook_id}",
+            allow_null=True,
+        )
+        return await self.get_status(notebook_id)
 
     async def update_user(
         self,
@@ -92,9 +203,6 @@ class SharingAPI(ABC):
         permission: SharePermission,
     ) -> ShareStatus:
         """Update a user's permission level.
-
-        Intent wrapper over :meth:`set_users`. The underlying operation is an
-        upsert, so this adds a user who does not have access yet.
 
         Args:
             notebook_id: The notebook ID.
@@ -110,11 +218,34 @@ class SharingAPI(ABC):
             permission.name,
             notebook_id,
         )
-        return await self.set_users(notebook_id, [(email, permission)], notify=False)
+        # Same RPC as add_user, just updates existing user
+        return await self.add_user(notebook_id, email, permission, notify=False)
 
-    @abstractmethod
-    async def remove_user(self, notebook_id: str, email: str) -> ShareStatus:
-        """Remove one user's access to a notebook."""
+    async def remove_user(
+        self,
+        notebook_id: str,
+        email: str,
+    ) -> ShareStatus:
+        """Remove a user's access to the notebook.
 
+        Args:
+            notebook_id: The notebook ID.
+            email: User's email address to remove.
 
-__all__ = ["SharingAPI"]
+        Returns:
+            Updated ShareStatus.
+        """
+        logger.debug("Removing user %s from notebook %s", email, notebook_id)
+        params = [
+            [[notebook_id, [[email, None, SharePermission._REMOVE.value]], None, [0, ""]]],
+            0,
+            None,
+            [2],
+        ]
+        await self._rpc.rpc_call(
+            RPCMethod.SHARE_NOTEBOOK,
+            params,
+            source_path=f"/notebook/{notebook_id}",
+            allow_null=True,
+        )
+        return await self.get_status(notebook_id)

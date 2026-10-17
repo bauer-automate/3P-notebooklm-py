@@ -1,9 +1,12 @@
 """Shrink-only ownership gate for bounded and blocking profile transactions.
 
 ADR-0034 PR6 moved the real transaction definition and mechanics into the
-path-owned ``ProfileStore``. Policy ownership is now derived into the ADR-0022
-baseline registry instead of being pinned in this module or in a test name.
-Cookie persistence deliberately uses the separate blocking primitive.
+path-owned ``ProfileStore``. PR7A moved two account policy bodies onto its
+bounded primitive; PR7B added browser/remint replacement there; PR7C adds the
+login/import replacement; PR7D adds minted-session replacement. PR11B moves the
+remaining credential write onto ``MasterTokenFile``. The frozen 2 raise / 1 skip /
+2 report outcomes remain exact. Cookie persistence deliberately uses the separate
+blocking primitive.
 """
 
 from __future__ import annotations
@@ -14,12 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from notebooklm._auth import profile_store, storage
+from notebooklm._auth import profile_store, storage, storage_transaction
 from notebooklm._auth.profile_store import ProfileStore
 from notebooklm._auth.storage_lock import LockState
 from notebooklm.exceptions import LockUnavailableError
-from tests._baselines.registry import baseline_by_name
-from tests._baselines.storage_transaction_policy import derive_storage_transaction_policy
 
 pytestmark = pytest.mark.repo_lint
 
@@ -29,6 +30,22 @@ STORE_PATH = AUTH_ROOT / "profile_store.py"
 TOKEN_FILE_PATH = AUTH_ROOT / "master_token_file.py"
 
 _UNCONVERTED: frozenset[str] = frozenset()
+
+_POLICY_CALLERS: dict[str, frozenset[str]] = {
+    "raise_on_lock_unavailable": frozenset(
+        {
+            "profile_store.ProfileStore.update_account",
+            "profile_store.ProfileStore.replace_minted_session",
+        }
+    ),
+    "skip_on_lock_unavailable": frozenset({"profile_store.ProfileStore.clear_account"}),
+    "report_on_lock_unavailable": frozenset(
+        {
+            "profile_store.ProfileStore.replace_from_login",
+            "profile_store.ProfileStore.replace_from_remint",
+        }
+    ),
+}
 
 _STORAGE_TRANSACTION_CALLERS: frozenset[str] = frozenset()
 
@@ -43,7 +60,6 @@ _DIRECT_ACQUIRE_OWNERS = frozenset(
 
 _BOUNDED_STORE_OWNERS = frozenset(
     {
-        "ProfileStore._update_account_if_document_unchanged",
         "ProfileStore.update_account",
         "ProfileStore.clear_account",
         "ProfileStore.replace_from_login",
@@ -87,7 +103,7 @@ def _called_members(node: ast.AST) -> list[str]:
     ]
 
 
-def test_transaction_definition_and_storage_aliases_are_exact() -> None:
+def test_transaction_definition_and_compatibility_identities_are_exact() -> None:
     definitions = {
         path.name
         for path in AUTH_ROOT.glob("*.py")
@@ -99,9 +115,15 @@ def test_transaction_definition_and_storage_aliases_are_exact() -> None:
     }
     assert definitions == {"profile_store.py"}
     assert storage.in_storage_transaction is profile_store.in_storage_transaction
+    assert storage_transaction.in_storage_transaction is profile_store.in_storage_transaction
     assert storage.raise_on_lock_unavailable is profile_store.raise_on_lock_unavailable
     assert storage.skip_on_lock_unavailable is profile_store.skip_on_lock_unavailable
     assert storage.report_on_lock_unavailable is profile_store.report_on_lock_unavailable
+    assert storage_transaction.raise_on_lock_unavailable is profile_store.raise_on_lock_unavailable
+    assert storage_transaction.skip_on_lock_unavailable is profile_store.skip_on_lock_unavailable
+    assert (
+        storage_transaction.report_on_lock_unavailable is profile_store.report_on_lock_unavailable
+    )
 
 
 def _top_level_callers(path: Path, target: str) -> set[str]:
@@ -118,13 +140,23 @@ def test_storage_policy_body_routes_through_the_template_exactly() -> None:
     assert frozenset() == _UNCONVERTED
 
 
-def test_lock_unavailable_policy_ownership_matches_registered_baseline() -> None:
-    committed = baseline_by_name("storage_transaction_policy").load()
-    assert derive_storage_transaction_policy() == committed, (
-        "Lock-unavailable policy ownership changed. Regenerate with "
-        "`python scripts/regen_baselines.py`; new callers additionally require "
-        "`--allow-growth`."
-    )
+def _qualified_callers(target: str) -> set[str]:
+    callers: set[str] = set()
+    for path in (STORE_PATH, STORAGE_PATH):
+        for owner, node in _owned_functions(path).items():
+            if target in _bare_calls(node):
+                callers.add(owner)
+    return callers
+
+
+def test_lock_unavailable_policy_ownership_is_exact_2_1_2() -> None:
+    actual = {policy: _qualified_callers(policy) for policy in _POLICY_CALLERS}
+    assert actual == {policy: set(callers) for policy, callers in _POLICY_CALLERS.items()}
+    assert {policy: len(callers) for policy, callers in actual.items()} == {
+        "raise_on_lock_unavailable": 2,
+        "skip_on_lock_unavailable": 1,
+        "report_on_lock_unavailable": 2,
+    }
 
 
 def _is_lock_request_call(node: ast.AST) -> bool:
@@ -269,7 +301,6 @@ def test_bounded_store_owners_are_exact_and_use_no_other_transaction() -> None:
     }
     assert actual == set(_BOUNDED_STORE_OWNERS)
     for name in (
-        "_update_account_if_document_unchanged",
         "update_account",
         "clear_account",
         "replace_from_remint",

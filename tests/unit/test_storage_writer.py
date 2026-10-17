@@ -19,11 +19,11 @@ import httpx
 import pytest
 
 from notebooklm._auth import master_token as mt_mod
-from notebooklm._auth import master_token_file, profile_store
+from notebooklm._auth import master_token_file, profile_store, storage_writer
 from notebooklm._auth import storage as storage_mod
-from notebooklm._auth.profile_account import DomainSelection
+from notebooklm._auth.profile_account import ClearAccount, DomainSelection, KeepAccount
 from notebooklm._auth.profile_document import ProfileDocument
-from notebooklm._auth.profile_store import ReplaceResult, ReplaceStatus
+from notebooklm._auth.profile_store import LoginWriteRequest, ReplaceResult, ReplaceStatus
 from notebooklm._auth.storage_lock import LockState
 
 
@@ -33,12 +33,18 @@ class _UnavailableLocks:
         yield LockState.UNAVAILABLE
 
 
-def _make_lock_unavailable(path: Path) -> None:
-    """Make the real lock manager see an unusable sentinel under ``tmp_path``."""
-    lock_path = path.with_name(f".{path.name}.lock")
-    if lock_path.is_file():
-        lock_path.unlink()
-    lock_path.mkdir(parents=True, exist_ok=True)
+def _patch_lock_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force bounded writer transactions to see infrastructure failure."""
+    monkeypatch.setattr(profile_store, "_STORAGE_LOCKS", _UnavailableLocks())
+
+
+def _patch_master_token_lock_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the path-owned token writer to use an unavailable manager."""
+    monkeypatch.setattr(
+        master_token_file.StorageLockManager,
+        "process_default",
+        lambda: _UnavailableLocks(),
+    )
 
 
 # --- value-free outcome contract -------------------------------------------
@@ -112,10 +118,12 @@ def test_update_account_metadata_only_if_absent_writes_when_empty(tmp_path: Path
     assert data["notebooklm"]["account"] == {"authuser": 3, "email": "x@example.com"}
 
 
-def test_update_account_metadata_fails_closed_on_lock_unavailable(tmp_path: Path) -> None:
+def test_update_account_metadata_fails_closed_on_lock_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "storage_state.json"
     path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
-    _make_lock_unavailable(path)
+    _patch_lock_unavailable(monkeypatch)
     with pytest.raises(storage_mod.LockUnavailableError):
         storage_mod.update_account_metadata(path, authuser=1, email="a@example.com")
     # Fail-closed: the file must be untouched (no partial account write).
@@ -125,10 +133,12 @@ def test_update_account_metadata_fails_closed_on_lock_unavailable(tmp_path: Path
 # --- clear_in_band_account: best-effort, swallows lock unavailability -------
 
 
-def test_clear_in_band_account_swallows_lock_unavailable(tmp_path: Path) -> None:
+def test_clear_in_band_account_swallows_lock_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "storage_state.json"
     storage_mod.update_account_metadata(path, authuser=1, email="a@example.com")  # seed a record
-    _make_lock_unavailable(path)
+    _patch_lock_unavailable(monkeypatch)
     # Best-effort: no raise, and the record is left intact.
     storage_mod.clear_in_band_account(path)
     assert "notebooklm" in json.loads(path.read_text(encoding="utf-8"))
@@ -191,18 +201,17 @@ def test_replace_from_remint_no_carry_drops_stale_binding(tmp_path: Path) -> Non
     assert outcome.ok
     data = json.loads(path.read_text(encoding="utf-8"))
     assert {c["name"] for c in data["cookies"]} == {"SID", "SAPISID"}
-    assert data["notebooklm"] == {
-        "version": 1,
-        "account_route_cleared": True,
-    }  # stale binding dropped and cannot be resurrected from legacy context
+    assert "notebooklm" not in data  # stale binding dropped
 
 
-def test_replace_from_remint_takes_storage_lock(tmp_path: Path) -> None:
+def test_replace_from_remint_takes_storage_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """[capture-2] lock-contract: the re-mint write serializes on the storage
     lock and **fails closed** (no write) when the lock is unavailable, instead of
     racing a concurrent keepalive with a lockless write."""
     path = tmp_path / "storage_state.json"
-    _make_lock_unavailable(path)
+    _patch_lock_unavailable(monkeypatch)
     outcome = storage_mod.replace_from_remint(path, _captured_state(), carry_account=True)
     assert outcome.lock_unavailable
     assert not path.exists()  # nothing written without the lock
@@ -240,7 +249,7 @@ def test_replace_from_remint_filters_domains_but_keeps_trusted_subdomains(
         (ReplaceStatus.LOCK_UNAVAILABLE, storage_mod.WriteStatus.LOCK_UNAVAILABLE),
     ],
 )
-def test_replace_from_remint_is_one_typed_store_delegation_and_exact_legacy_result(
+def test_replace_from_remint_is_one_typed_store_delegation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     typed_status: ReplaceStatus,
@@ -254,7 +263,7 @@ def test_replace_from_remint_is_one_typed_store_delegation_and_exact_legacy_resu
         def __init__(self, actual_path: Path) -> None:
             seen.append(actual_path)
 
-        def replace_from_remint(self, request: object) -> ReplaceResult:
+        def replace_from_remint(self, request):  # type: ignore[no-untyped-def]
             seen.append(request)
             return ReplaceResult(typed_status)
 
@@ -265,36 +274,14 @@ def test_replace_from_remint_is_one_typed_store_delegation_and_exact_legacy_resu
         carry_account="truthy",  # type: ignore[arg-type]
         include_domains={"mail"},
     )
-
-    assert set(storage_mod._REMINT_RESULT_PROJECTORS) == set(ReplaceStatus)
-    assert type(outcome) is storage_mod.WriteOutcome
-    assert outcome == storage_mod.WriteOutcome(compatibility_status)
+    assert outcome.status is compatibility_status
     assert seen[0] is path
     request = seen[1]
     assert isinstance(request.source, ProfileDocument)
     assert request.source.to_json() == state
     assert request.carry_account == "truthy"
     assert request.domain_selection == DomainSelection(frozenset({"mail"}), False)
-
-
-def test_replace_from_remint_impossible_status_uses_named_contract_violation() -> None:
-    result = ReplaceResult(
-        ReplaceStatus.REQUIRED_COOKIES_DROPPED,
-        missing_required=("SID",),
-    )
-    with pytest.raises(AssertionError, match="impossible required-cookie status"):
-        storage_mod._REMINT_RESULT_PROJECTORS[result.status](result)
-
-
-def test_native_projection_maps_cover_every_status_and_cookie_disposition_exactly() -> None:
-    assert set(storage_mod._REMINT_RESULT_PROJECTORS) == set(ReplaceStatus)
-    assert set(storage_mod._LOGIN_RESULT_PROJECTORS) == set(ReplaceStatus)
-    assert storage_mod._COOKIE_MERGE_OK_BY_DISPOSITION == {
-        profile_store.CookieMergeDisposition.APPLIED: True,
-        profile_store.CookieMergeDisposition.NO_CHANGE: True,
-        profile_store.CookieMergeDisposition.CONFLICT: False,
-        profile_store.CookieMergeDisposition.HARD_FAILURE: False,
-    }
+    assert storage_writer.replace_from_remint is storage_mod.replace_from_remint
 
 
 # --- replace_from_login: CLI login / import full-replace (b-PR3) -----------
@@ -376,10 +363,8 @@ def test_replace_from_login_default_drops_youtube_keeps_trusted_roots(tmp_path: 
     names = {c["name"] for c in data["cookies"]}
     assert "YT" not in names
     assert {"SID", "MEDIA"} <= names
-    assert data["notebooklm"] == {
-        "version": 1,
-        "account_route_cleared": True,
-    }
+    # CLEAR + no opt-ins => no notebooklm namespace at all.
+    assert "notebooklm" not in data
 
 
 def test_replace_from_login_required_dropped_writes_nothing(tmp_path: Path) -> None:
@@ -494,9 +479,11 @@ def test_replace_from_login_import_backup_inside_lock(tmp_path: Path) -> None:
     assert json.loads(path.read_text())["notebooklm"]["include_optional"] is True
 
 
-def test_replace_from_login_fails_closed_on_lock_unavailable(tmp_path: Path) -> None:
+def test_replace_from_login_fails_closed_on_lock_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "storage_state.json"
-    _make_lock_unavailable(path)
+    _patch_lock_unavailable(monkeypatch)
     outcome = storage_mod.replace_from_login(path, _login_state(), include_domains=None)
     assert outcome.lock_unavailable
     assert not path.exists()  # nothing written without the lock
@@ -530,87 +517,109 @@ def test_replace_from_login_fails_closed_on_lock_unavailable(tmp_path: Path) -> 
         ),
     ],
 )
-@pytest.mark.parametrize(
-    ("account", "mode", "authuser", "email"),
-    [
-        (storage_mod.KEEP_ACCOUNT, "keep", None, None),
-        (storage_mod.CLEAR_ACCOUNT, "clear", None, None),
-        (storage_mod.AccountRecord(7, "user@example.com"), "set", 7, "user@example.com"),
-    ],
-)
-def test_replace_from_login_is_one_typed_delegation_and_exhaustive_projection(
+def test_replace_from_login_is_one_typed_store_delegation_and_exhaustive_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     result: ReplaceResult,
     expected: storage_mod.LoginWriteOutcome,
-    account: storage_mod.AccountArg,
-    mode: str,
-    authuser: int | None,
-    email: str | None,
 ) -> None:
     path = tmp_path / "custom.json"
     state = _login_state()
-    calls: list[tuple[object, ...]] = []
+    seen: list[object] = []
 
-    def native(*args: object, **kwargs: object) -> ReplaceResult:
-        calls.append((*args, kwargs))
-        return result
+    class FakeStore:
+        def __init__(self, actual_path: Path) -> None:
+            seen.append(actual_path)
 
-    monkeypatch.setattr(storage_mod, "replace_profile_from_login", native)
+        def replace_from_login(self, request: LoginWriteRequest) -> ReplaceResult:
+            seen.append(request)
+            return result
+
+    class FakeMigrator:
+        def scrub(self, store: FakeStore) -> None:
+            assert isinstance(store, FakeStore)
+            seen.append("scrub")
+
+    monkeypatch.setattr(storage_mod, "ProfileStore", FakeStore)
+    monkeypatch.setattr(storage_mod, "LegacyAccountMigrator", FakeMigrator)
 
     outcome = storage_mod.replace_from_login(
         path,
         state,
         include_domains={"mail"},
         include_optional="truthy",  # type: ignore[arg-type]
-        account=account,
+        account=storage_mod.CLEAR_ACCOUNT,
         backup="truthy",  # type: ignore[arg-type]
         io_policy=object(),
     )
-    default_outcome = storage_mod.replace_from_login(
-        path,
-        state,
-        include_domains=None,
-        account=account,
-    )
 
     assert outcome == expected
-    assert default_outcome == expected
-    assert calls == [
-        (
-            path,
-            state,
-            {
-                "include_domains": {"mail"},
-                "include_optional": "truthy",
-                "account_mode": mode,
-                "account_authuser": authuser,
-                "account_email": email,
-                "backup": "truthy",
-            },
-        ),
-        (
-            path,
-            state,
-            {
-                "include_domains": None,
-                "include_optional": False,
-                "account_mode": mode,
-                "account_authuser": authuser,
-                "account_email": email,
-                "backup": False,
-            },
-        ),
-    ]
+    assert seen[0] is path
+    request = seen[1]
+    assert isinstance(request, LoginWriteRequest)
+    assert request.source.to_json() == state
+    assert request.domain_selection == DomainSelection(frozenset({"mail"}), "truthy")
+    assert isinstance(request.account, ClearAccount)
+    assert request.backup == "truthy"
+    if result.status is ReplaceStatus.APPLIED:
+        assert seen[2:] == ["scrub"]
+    else:
+        assert seen[2:] == []
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        {"account": {}},
+        {"account": None},
+        {"account": "odd"},
+        {"account": {"unknown": "only"}},
+    ],
+)
+def test_replace_from_login_keep_uses_literal_raw_account_key_for_legacy_scrub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    namespace: dict[str, object],
+) -> None:
+    events: list[str] = []
+
+    class FakeStore:
+        def __init__(self, path: Path) -> None:
+            pass
+
+        def replace_from_login(self, request: LoginWriteRequest) -> ReplaceResult:
+            assert isinstance(request.account, KeepAccount)
+            events.append("store")
+            return ReplaceResult(ReplaceStatus.APPLIED)
+
+    class FakeMigrator:
+        def promote(self, store: FakeStore) -> None:
+            events.append("promote")
+
+        def scrub(self, store: FakeStore) -> None:
+            events.append("scrub")
+
+    monkeypatch.setattr(storage_mod, "ProfileStore", FakeStore)
+    monkeypatch.setattr(storage_mod, "LegacyAccountMigrator", FakeMigrator)
+    state = {**_login_state(), "notebooklm": namespace}
+
+    assert storage_mod.replace_from_login(tmp_path / "A.json", state, include_domains=None).ok
+    assert events == ["store", "scrub"]
 
 
 def test_replace_from_login_account_copy_failure_precedes_store_and_parent_creation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FailsCopy:
         def __deepcopy__(self, memo: dict[int, object]) -> object:
             raise RuntimeError("bounded account copy failure")
 
+    monkeypatch.setattr(
+        storage_mod,
+        "ProfileStore",
+        lambda path: pytest.fail("store must not be constructed"),
+    )
     path = tmp_path / "missing" / "A.json"
     with pytest.raises(RuntimeError, match="bounded account copy failure"):
         storage_mod.replace_from_login(
@@ -623,6 +632,10 @@ def test_replace_from_login_account_copy_failure_precedes_store_and_parent_creat
 
 
 # --- persist_minted_jar: full replace, fails CLOSED ------------------------
+
+
+def test_persist_minted_jar_storage_writer_identity_is_unchanged() -> None:
+    assert storage_writer.persist_minted_jar is storage_mod.persist_minted_jar
 
 
 def _minted_jar() -> httpx.Cookies:
@@ -785,9 +798,11 @@ def test_persist_minted_jar_refuse_unknown_owner_false_still_refuses_different_o
         )
 
 
-def test_persist_minted_jar_fails_closed_on_lock_unavailable(tmp_path: Path) -> None:
+def test_persist_minted_jar_fails_closed_on_lock_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "storage_state.json"
-    _make_lock_unavailable(path)
+    _patch_lock_unavailable(monkeypatch)
     with pytest.raises(storage_mod.LockUnavailableError):
         storage_mod.persist_minted_jar(path, _minted_jar(), email="minted@example.com")
 
@@ -843,11 +858,7 @@ def test_write_master_token_fails_closed_on_lock_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "master_token.json"
-    monkeypatch.setattr(
-        master_token_file.StorageLockManager,
-        "process_default",
-        lambda: _UnavailableLocks(),
-    )
+    _patch_master_token_lock_unavailable(monkeypatch)
     with pytest.raises(storage_mod.LockUnavailableError):
         storage_mod.write_master_token(
             path, email="e@x.com", master_token="aas_et/M", android_id="abc"
@@ -910,7 +921,9 @@ def test_writer_intent_retightens_loose_parent_dir(tmp_path: Path) -> None:
     assert (parent.stat().st_mode & 0o777) == 0o700
 
 
-def test_replace_from_login_failed_write_leaves_legacy_account_untouched(tmp_path: Path) -> None:
+def test_replace_from_login_failed_write_leaves_legacy_account_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A write that did nothing must not reach the legacy-account scrub.
 
     Before the transaction conversion this was STRUCTURAL: both non-OK returns
@@ -942,14 +955,15 @@ def test_replace_from_login_failed_write_leaves_legacy_account_untouched(tmp_pat
         context_path = path.with_name("context.json")
         context_path.write_text(json.dumps(legacy), encoding="utf-8")
 
-        if label == "lock_unavailable":
-            _make_lock_unavailable(path)
-            state = _login_state()
-        else:
-            state = dropped_state
-        outcome = storage_mod.replace_from_login(
-            path, state, include_domains=None, account=storage_mod.CLEAR_ACCOUNT
-        )
+        with monkeypatch.context() as patch:
+            if label == "lock_unavailable":
+                _patch_lock_unavailable(patch)
+                state = _login_state()
+            else:
+                state = dropped_state
+            outcome = storage_mod.replace_from_login(
+                path, state, include_domains=None, account=storage_mod.CLEAR_ACCOUNT
+            )
 
         assert outcome.status is not storage_mod.LoginWriteStatus.OK, label
         # The legacy record — and the file itself — must survive a no-op write.

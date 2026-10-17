@@ -10,8 +10,7 @@ import httpx
 import pytest
 
 import notebooklm._artifact.downloads as _downloads
-from notebooklm._web.artifacts import WebArtifactsAPI
-from notebooklm._web.wire.decoder import RPCError
+from notebooklm._artifacts import ArtifactsAPI
 from notebooklm.exceptions import (
     ArtifactInProgressTimeoutError,
     ArtifactPendingTimeoutError,
@@ -19,6 +18,7 @@ from notebooklm.exceptions import (
     UnknownRPCMethodError,
     ValidationError,
 )
+from notebooklm.rpc.decoder import RPCError
 from notebooklm.rpc.types import VideoFormat, VideoStyle
 from notebooklm.types import ArtifactDownloadError, GenerationStatus
 
@@ -35,17 +35,18 @@ def mock_artifacts_api():
     )
     # ``ArtifactsAPI`` constructs its own ``PollRegistry`` internally; the fake
     # core does not need to provide one.
-    from notebooklm._web.mind_maps import NoteBackedMindMapService
-    from notebooklm._web.notes import NoteService
+    from notebooklm._mind_map import NoteBackedMindMapService
+    from notebooklm._note_service import NoteService
 
     mind_maps = MagicMock(spec=NoteBackedMindMapService)
     mind_maps.list_mind_maps = AsyncMock(return_value=[])
     note_service = MagicMock(spec=NoteService)
     mock_notebooks = MagicMock()
     mock_notebooks.get_source_ids = AsyncMock(return_value=[])
-    api = WebArtifactsAPI(
+    api = ArtifactsAPI(
         rpc=mock_core,
-        supervisor=mock_core,
+        drain=mock_core,
+        lifecycle=mock_core,
         notebooks=mock_notebooks,
         mind_maps=mind_maps,
         note_service=note_service,
@@ -245,7 +246,7 @@ class TestWaitForCompletion:
                     "Title",
                     2,  # REPORT type (no URL check needed)
                     None,
-                    2,  # PROCESSING status -> "in_progress"
+                    1,  # PROCESSING status
                 ]
             ]
         ]
@@ -262,44 +263,9 @@ class TestWaitForCompletion:
         with (
             patch.object(loop, "time", mock_time),
             patch("asyncio.sleep", new_callable=AsyncMock),
-            pytest.raises(ArtifactInProgressTimeoutError, match="timed out") as exc_info,
+            pytest.raises(ArtifactInProgressTimeoutError, match="timed out"),
         ):
             await api.wait_for_completion("nb_123", "task_123", timeout=1.5)
-        # Pin the phase fields to the same depth as the wire-code-1 companion
-        # below: ``_artifact_timeout_error`` classifies off the literal
-        # "in_progress" string, so ``stalled_phase`` is the load-bearing output,
-        # not just the exception class.
-        assert exc_info.value.last_status == "in_progress"
-        assert exc_info.value.stalled_phase == "in_progress"
-
-    @pytest.mark.asyncio
-    async def test_timeout_on_wire_code_1_is_classified_pending(self, mock_artifacts_api):
-        """Wire code 1 (INITIALIZED) stalls are a *pending* timeout, not in-progress.
-
-        The companion of ``test_timeout_raises_error`` (wire code 2). Together
-        they pin that the timeout classification follows the corrected codes:
-        before #2127 the two exception types were selected off each other's
-        wire code.
-        """
-        api, mock_core = mock_artifacts_api
-        mock_core.rpc_executor.rpc_call.return_value = [[["task_123", "Title", 2, None, 1]]]
-        loop = asyncio.get_running_loop()
-        time_values = iter([0, 0.1, 0.2, 0.5, 1.0, 2.0])
-
-        def mock_time():
-            try:
-                return next(time_values)
-            except StopIteration:
-                return 10.0  # Exceed timeout
-
-        with (
-            patch.object(loop, "time", mock_time),
-            patch("asyncio.sleep", new_callable=AsyncMock),
-            pytest.raises(ArtifactPendingTimeoutError) as exc_info,
-        ):
-            await api.wait_for_completion("nb_123", "task_123", timeout=1.5)
-        assert exc_info.value.last_status == "pending"
-        assert exc_info.value.stalled_phase == "pending"
 
     @pytest.mark.asyncio
     async def test_pending_timeout_raises_structured_artifact_timeout(self, mock_artifacts_api):
@@ -396,7 +362,7 @@ class TestWaitForCompletion:
         api, mock_core = mock_artifacts_api
         # Return completed on second poll via LIST_ARTIFACTS format
         mock_core.rpc_executor.rpc_call.side_effect = [
-            # First poll - still queued (code 1 = INITIALIZED -> "pending")
+            # First poll - in_progress
             [
                 [
                     [
@@ -404,7 +370,7 @@ class TestWaitForCompletion:
                         "Title",
                         2,  # REPORT type (no URL check needed)
                         None,
-                        1,  # PENDING status
+                        1,  # PROCESSING status
                     ]
                 ]
             ],
@@ -473,20 +439,12 @@ class TestParseGenerationResult:
         with pytest.raises(UnknownRPCMethodError):
             api._parse_generation_result([], method_id="R7cb6c")
 
-    def test_parse_valid_pending(self, mock_artifacts_api):
-        """A fresh CREATE_ARTIFACT row carries code 1 (INITIALIZED) -> "pending"."""
+    def test_parse_valid_in_progress(self, mock_artifacts_api):
+        """Test parsing valid in_progress status (code 1)."""
         api, _ = mock_artifacts_api
+        # Valid result with status code 1 (in_progress)
         result = api._parse_generation_result(
             [["artifact_001", "Title", 1, None, 1]], method_id="R7cb6c"
-        )
-        assert result.task_id == "artifact_001"
-        assert result.status == "pending"
-
-    def test_parse_valid_in_progress(self, mock_artifacts_api):
-        """Code 2 (PROCESSING) — the state a live artifact reports while generating."""
-        api, _ = mock_artifacts_api
-        result = api._parse_generation_result(
-            [["artifact_001", "Title", 1, None, 2]], method_id="R7cb6c"
         )
         assert result.task_id == "artifact_001"
         assert result.status == "in_progress"
@@ -999,7 +957,7 @@ class TestPollStatusMediaReadiness:
                     "Audio Overview",
                     1,  # AUDIO
                     None,
-                    2,  # PROCESSING (not COMPLETED)
+                    1,  # PROCESSING (not COMPLETED)
                     None,
                     [None, None, None, None, None, []],
                 ]
@@ -1008,36 +966,6 @@ class TestPollStatusMediaReadiness:
         status = await api.poll_status("nb_123", "task_123")
         # Should remain in_progress (original status)
         assert status.status == "in_progress"
-
-    @pytest.mark.asyncio
-    async def test_poll_status_ignores_malformed_optional_data_on_unrelated_row(
-        self, mock_artifacts_api
-    ):
-        """Polling id-matches before decoding optional fields on another artifact."""
-        api, mock_core = mock_artifacts_api
-        mock_core.rpc_executor.rpc_call.return_value = [
-            [
-                [
-                    "unrelated",
-                    "Broken quiz",
-                    4,
-                    None,
-                    3,
-                    None,
-                    None,
-                    None,
-                    None,
-                    [],  # Incomplete variant envelope would fail full decoding.
-                ],
-                ["task_123", "Report", 2, None, 3],
-            ]
-        ]
-
-        status = await api.poll_status("nb_123", "task_123")
-
-        assert status.status == "completed"
-        assert status.url is None
-        mock_core.rpc_executor.rpc_call.assert_awaited_once()
 
 
 # =============================================================================
