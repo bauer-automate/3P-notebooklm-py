@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +25,9 @@ from notebooklm._app.research import (
     ResearchWaitPlan,
     ResearchWaitResult,
     cancel_research,
+    classify_research_task,
+    discover_and_classify,
+    execute_research_import,
     execute_research_wait,
     poll_and_classify,
     poll_importable_research,
@@ -31,7 +35,7 @@ from notebooklm._app.research import (
     validate_research_wait_flags,
 )
 from notebooklm.exceptions import ValidationError
-from notebooklm.types import ResearchSource, ResearchStatus, ResearchTask
+from notebooklm.types import DiscoveryMode, ResearchSource, ResearchStatus, ResearchTask
 
 
 def _task(
@@ -44,6 +48,9 @@ def _task(
     report: str = "",
     status_code: int | None = None,
     source_type: int | None = None,
+    discovery_mode: DiscoveryMode | None = None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> ResearchTask:
     coerced = tuple(ResearchSource.from_public_dict(s) for s in (sources or []))
     return ResearchTask(
@@ -55,6 +62,9 @@ def _task(
         report=report,
         status_code=status_code,
         source_type=source_type,
+        discovery_mode=discovery_mode,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
@@ -80,7 +90,8 @@ async def _resolve_passthrough(client: Any, nb_id: str, *, json_output: bool = F
 def test_validate_flags_cited_only_requires_import_all() -> None:
     with pytest.raises(ValidationError) as caught:
         validate_research_wait_flags(import_all=False, cited_only=True)
-    assert "--cited-only requires --import-all" in str(caught.value)
+    assert caught.value.reason == "cited_requires_import"
+    assert "--" not in str(caught.value)
 
 
 def test_validate_flags_cited_only_with_import_all_ok() -> None:
@@ -428,12 +439,31 @@ async def test_wait_timeout_outcome() -> None:
 async def test_wait_resolves_notebook_id_through_injected_resolver() -> None:
     client = _client(wait=_task(status=ResearchStatus.NO_RESEARCH))
     resolver = AsyncMock(return_value="nb_resolved")
-    plan = ResearchWaitPlan(notebook_id="nb_partial", timeout=300, interval=5, json_output=True)
+    plan = ResearchWaitPlan(notebook_id="nb_partial", timeout=300, interval=5)
 
     result = await execute_research_wait(plan, client=client, resolve_id=resolver)
 
-    resolver.assert_awaited_once_with(client, "nb_partial", json_output=True)
+    resolver.assert_awaited_once_with(client, "nb_partial")
     assert result.notebook_id == "nb_resolved"
+
+
+async def test_wait_threads_an_explicit_task_id_without_changing_default_calls() -> None:
+    client = _client(wait=_task(status=ResearchStatus.COMPLETED, task_id="task_exact"))
+    plan = ResearchWaitPlan(
+        notebook_id="nb_1",
+        timeout=300,
+        interval=5,
+        task_id="task_exact",
+    )
+
+    await execute_research_wait(plan, client=client, resolve_id=_resolve_passthrough)
+
+    client.research.wait_for_completion.assert_awaited_once_with(
+        "nb_1",
+        "task_exact",
+        timeout=300.0,
+        initial_interval=5.0,
+    )
 
 
 # ===========================================================================
@@ -470,12 +500,11 @@ async def test_wait_import_invoked_when_completed_with_sources_and_task_id() -> 
     assert awaited.args[2] == "task_1"
     assert awaited.kwargs["cited_only"] is False
     assert awaited.kwargs["max_elapsed"] == 300
-    # Text mode (json_output False) routes a status message rather than json_output.
-    assert awaited.kwargs["status_message"] == "Importing sources..."
+    assert "status_message" not in awaited.kwargs
     assert "json_output" not in awaited.kwargs
 
 
-async def test_wait_import_json_mode_passes_json_output_flag() -> None:
+async def test_wait_importer_receives_only_neutral_operation_inputs() -> None:
     completed = _task(
         status=ResearchStatus.COMPLETED,
         task_id="task_1",
@@ -483,9 +512,7 @@ async def test_wait_import_json_mode_passes_json_output_flag() -> None:
     )
     client = _client(wait=completed)
     importer = AsyncMock(return_value=MagicMock(imported=[], sources=[], cited_selection=None))
-    plan = ResearchWaitPlan(
-        notebook_id="nb_1", timeout=120, interval=5, import_all=True, json_output=True
-    )
+    plan = ResearchWaitPlan(notebook_id="nb_1", timeout=120, interval=5, import_all=True)
 
     await execute_research_wait(
         plan,
@@ -496,7 +523,7 @@ async def test_wait_import_json_mode_passes_json_output_flag() -> None:
 
     awaited = importer.await_args
     assert awaited is not None
-    assert awaited.kwargs["json_output"] is True
+    assert "json_output" not in awaited.kwargs
     assert "status_message" not in awaited.kwargs
 
 
@@ -639,3 +666,185 @@ async def test_import_research_sources_plain_list_return_has_empty_already_prese
     assert outcome.already_present == []
     _, kwargs = client.research.import_sources_with_verification.await_args
     assert kwargs == {"allow_duplicate": True}
+
+
+async def test_execute_research_import_oneshot_uses_import_sources() -> None:
+    client = _client(
+        poll=_task(
+            status=ResearchStatus.COMPLETED,
+            sources=[{"title": "S", "url": "http://example.com/1"}],
+        )
+    )
+    client.research.import_sources = AsyncMock(return_value=[{"id": "src_1", "title": "S"}])
+
+    execution = await execute_research_import(client, "nb_1", "run_1", oneshot=True)
+
+    assert execution.sources_found[0]["url"] == "http://example.com/1"
+    assert execution.imported == [{"id": "src_1", "title": "S"}]
+    client.research.import_sources.assert_awaited_once()
+    client.research.import_sources_with_verification.assert_not_called()
+
+
+async def test_execute_research_import_cited_only_then_max_sources() -> None:
+    client = _client(
+        poll=_task(
+            status=ResearchStatus.COMPLETED,
+            sources=[
+                {"title": "A", "url": "http://a"},
+                {"title": "B", "url": "http://b"},
+                {"title": "C", "url": "http://c"},
+            ],
+            report="See [A](http://a) and [B](http://b).",
+        )
+    )
+    client.research.import_sources_with_verification = AsyncMock(
+        return_value=[{"id": "src-a", "title": "A"}]
+    )
+
+    execution = await execute_research_import(
+        client, "nb_1", "run_1", cited_only=True, max_sources=1
+    )
+
+    imported_sources = client.research.import_sources_with_verification.await_args.args[2]
+    assert [src["url"] for src in imported_sources] == ["http://a"]
+    assert execution.sources_found[0]["url"] == "http://a"
+    assert len(execution.sources_selected) == 1
+    assert execution.cited_fallback is False
+
+
+# ===========================================================================
+# Run metadata carried onto the shared MCP/REST view (#2122)
+# ===========================================================================
+
+_CREATED = datetime(2026, 8, 13, 11, 12, 58, tzinfo=timezone.utc)
+_UPDATED = datetime(2026, 8, 13, 11, 13, 5, tzinfo=timezone.utc)
+
+
+async def test_poll_projects_run_metadata_for_the_transports() -> None:
+    client = _client(
+        poll=_task(
+            status=ResearchStatus.COMPLETED,
+            query="AI research",
+            discovery_mode=DiscoveryMode.DEEP_RESEARCH,
+            created_at=_CREATED,
+            updated_at=_UPDATED,
+        )
+    )
+    result = await poll_and_classify(client, "nb_1")
+
+    # The LABEL, not the raw 5 — an agent must not have to know the enum.
+    assert result.discovery_mode == "deep_research"
+    assert result.created_at == "2026-08-13T11:12:58+00:00"
+    assert result.updated_at == "2026-08-13T11:13:05+00:00"
+    assert result.duration_seconds == 7.0
+
+
+async def test_poll_reports_absent_run_metadata_as_none() -> None:
+    """Most of these are optional on the wire; absence must not fabricate."""
+    client = _client(poll=_task(status=ResearchStatus.IN_PROGRESS, query="q"))
+    result = await poll_and_classify(client, "nb_1")
+
+    assert result.discovery_mode is None
+    assert result.created_at is None
+    assert result.updated_at is None
+    assert result.duration_seconds is None
+
+
+async def test_run_metadata_stays_off_the_byte_stable_public_dict() -> None:
+    """``public_dict`` is the CLI ``--json`` payload emitted verbatim, so the
+    task-level additions deliberately do not appear there (matching
+    ``status_code`` / ``source_type``)."""
+    client = _client(
+        poll=_task(
+            status=ResearchStatus.COMPLETED,
+            discovery_mode=DiscoveryMode.DEFAULT_LLM_SEARCH,
+            created_at=_CREATED,
+            updated_at=_UPDATED,
+        )
+    )
+    result = await poll_and_classify(client, "nb_1")
+
+    assert "discovery_mode" not in result.public_dict
+    assert "created_at" not in result.public_dict
+    assert "updated_at" not in result.public_dict
+
+
+async def test_source_hint_does_reach_the_public_source_dicts() -> None:
+    """Unlike the task-level fields, the per-source hint rides the existing
+    conditional-key convention (``source_ordinal`` / ``report_markdown``), so
+    it reaches the CLI, MCP and REST source payloads alike."""
+    client = _client(
+        poll=_task(
+            status=ResearchStatus.COMPLETED,
+            sources=[
+                {"url": "http://example.com/1", "title": "S1", "hint": "why this one"},
+                {"url": "http://example.com/2", "title": "S2"},
+            ],
+        )
+    )
+    result = await poll_and_classify(client, "nb_1")
+
+    assert result.sources[0]["hint"] == "why this one"
+    assert "hint" not in result.sources[1]
+
+
+async def test_unmappable_discovery_mode_reaches_the_transports_as_unknown() -> None:
+    """The adapter's UNKNOWN-vs-None distinction has to survive projection.
+
+    ``None`` means "the poll made no mode claim"; ``"unknown"`` means "the
+    backend named a mode this client cannot read" — i.e. Google added a mode
+    and the enum needs updating. If both projected to ``null`` the drift signal
+    would die at the transport boundary, one layer short of the operator.
+    """
+    client = _client(
+        poll=_task(status=ResearchStatus.COMPLETED, discovery_mode=DiscoveryMode.UNKNOWN)
+    )
+    result = await poll_and_classify(client, "nb_1")
+    assert result.discovery_mode == "unknown"
+
+
+# ===========================================================================
+# discover_and_classify
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_discover_and_classify_projects_the_completed_task_like_a_poll() -> None:
+    task = _task(
+        status=ResearchStatus.COMPLETED,
+        task_id="job_001",
+        query="history of the transistor",
+        sources=[{"title": "Source 1", "url": "http://example.com/1", "hint": "why"}],
+        summary="An overview.",
+        status_code=2,
+        source_type=1,
+        discovery_mode=DiscoveryMode.RAW_SEARCH,
+    )
+    client = MagicMock()
+    client.research = MagicMock()
+    client.research.discover = AsyncMock(return_value=task)
+
+    result = await discover_and_classify(client, "nb_1", "history of the transistor", "raw")
+
+    client.research.discover.assert_awaited_once_with(
+        "nb_1", "history of the transistor", mode="raw"
+    )
+    assert result == classify_research_task(task)
+    assert result.kind == "completed" and result.task_id == "job_001"
+    assert result.summary == "An overview." and result.report == ""
+    assert result.sources == [
+        {"url": "http://example.com/1", "title": "Source 1", "result_type": 1, "hint": "why"}
+    ]
+    assert result.public_dict == task.to_public_dict()
+    assert result.status_code == 2 and result.discovery_mode == "raw_search"
+    assert result.termination_reason == "completed"
+    assert result.reason_message is None and result.hint is None
+
+
+@pytest.mark.asyncio
+async def test_discover_and_classify_defaults_to_the_default_mode() -> None:
+    client = MagicMock()
+    client.research = MagicMock()
+    client.research.discover = AsyncMock(return_value=_task(status=ResearchStatus.COMPLETED))
+    await discover_and_classify(client, "nb_1", "q")
+    client.research.discover.assert_awaited_once_with("nb_1", "q", mode="default")

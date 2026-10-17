@@ -5,7 +5,7 @@ in-memory FastMCP ``Client``, then pins:
 
 * the EXACT set of tool names — so a tool can't be silently added, removed, or
   renamed without updating this gate;
-* a tool-count ceiling (40): the current surface is 33 tools; the next tool
+* a tool-count ceiling (40): the current surface is 38 tools; the next tool
   stays under the ceiling, but an accidental explosion still trips the gate;
 * the ``destructiveHint`` annotation + a ``confirm`` parameter on every
   destructive (delete) tool; and
@@ -27,7 +27,7 @@ from notebooklm._app.download_specs import DOWNLOAD_FORMAT_NAMES, DOWNLOAD_SPECS
 pytest.importorskip("fastmcp")
 
 
-#: The complete, pinned tool surface. 33 tools across 8 domains. Adding or
+#: The complete, pinned tool surface. 38 tools across 8 domains. Adding or
 #: removing a tool MUST update this set (and the ceiling below if it grows).
 EXPECTED_TOOLS: frozenset[str] = frozenset(
     {
@@ -37,7 +37,7 @@ EXPECTED_TOOLS: frozenset[str] = frozenset(
         "notebook_describe",
         "notebook_rename",
         "notebook_delete",
-        # Sources (8)
+        # Sources (10)
         "source_list",
         "source_read",
         "source_rename",
@@ -45,9 +45,14 @@ EXPECTED_TOOLS: frozenset[str] = frozenset(
         "source_wait",
         "source_add",
         "source_add_drive_file",
+        "source_list_play_books",
+        "source_add_play_book",
         "await_upload",
-        # Chat (3)
+        # Chat (6)
         "chat_ask",
+        "chat_start",
+        "chat_status",
+        "chat_cancel",
         "chat_configure",
         "suggest_prompts",
         # Notes (1)
@@ -83,8 +88,10 @@ EXPECTED_TOOLS: frozenset[str] = frozenset(
 #: source-add composites (source_add_and_wait, source_upload_bytes) later re-grew it,
 #: then #1890 folded them BACK into source_add (wait= / bytes_base64=) for 34, and
 #: #1896 folded studio_get_prompt into studio_list (each artifact's generation_prompt
-#: rides the summary listing / the item= fetch) for 33. The ceiling has headroom, but
-#: an accidental explosion still trips the gate.
+#: rides the summary listing / the item= fetch) for 33; the detached-ask pair
+#: (chat_start/chat_status — the watchdog-safe long-generation path) took it to 35,
+#: #2292's Play Books tools took it to 37, and #2303's generation-cancel verb to 38.
+#: The ceiling has headroom, but an accidental explosion still trips the gate.
 TOOL_CEILING = 40
 
 #: The destructive tools — each carries ``destructiveHint`` AND a ``confirm``
@@ -108,12 +115,14 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "notebook_describe",
         "source_list",
         "source_read",
+        "source_list_play_books",
         "await_upload",
         "studio_list",
         "studio_status",
         "research_status",
         "share_status",
         "suggest_prompts",
+        "chat_status",
         "server_info",
     }
 )
@@ -196,6 +205,14 @@ async def test_share_set_user_notify_defaults_false(tools_by_name) -> None:
     notify = tools_by_name["share_set_user"].inputSchema.get("properties", {}).get("notify")
     assert notify is not None, "share_set_user must expose a 'notify' parameter"
     assert notify.get("default") is False, "share_set_user 'notify' must default to False"
+
+
+async def test_share_set_user_advertises_bounded_grants(tools_by_name) -> None:
+    """Schema consumers can discover the supported recipient subset before invoking it."""
+    grants = tools_by_name["share_set_user"].inputSchema["properties"]["grants"]
+    array = next(option for option in grants["anyOf"] if option.get("type") == "array")
+    assert array["minItems"] == 1
+    assert array["maxItems"] == 100
 
 
 async def test_confirm_gated_tools_disjoint_from_read_only_and_destructive() -> None:

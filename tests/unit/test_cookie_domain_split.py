@@ -100,31 +100,27 @@ class TestWriteTimeFilterParity:
 
     Before b-PR3 each rookiepy/Firefox writer imported its own module-level
     ``filter_storage_state_cookies_by_domain_policy`` binding and the pin asserted
-    those bindings were identical. Since b-PR3 the write-time filter + the
-    post-filter required-cookie revalidation are owned by
-    ``ProfileStore.replace_from_login`` behind the unchanged
-    ``storage.replace_from_login`` adapter; the three CLI writers
+    those bindings were identical. The write-time filter and post-filter
+    required-cookie revalidation are now owned by ``ProfileStore.replace_from_login``;
+    the three CLI writers
     (``cookie_writes._write_extracted_cookies``,
     ``refresh._login_with_browser_cookies``, ``_cookie_import._import_cookie_json``)
-    all call that ONE function via the ``notebooklm.auth`` facade. On-disk parity
+    all call the native path-shaped operation through the ``notebooklm.auth`` ledger. On-disk parity
     with the Playwright capture arms now follows from **writer-routing identity**
     (one writer, one filter) rather than from each module binding the same filter.
     """
 
     def test_all_login_paths_route_through_one_writer(self):
-        """Routing identity: every login/import writer calls the SAME
-        ``replace_from_login`` (the single auth-facade export)."""
+        """Routing identity: every login/import flow uses the native operation."""
         import notebooklm.auth as auth_module
-        from notebooklm._auth import storage
         from notebooklm.cli import _cookie_import
         from notebooklm.cli.services.login import cookie_writes, refresh
 
-        canonical = storage.replace_from_login
-        assert auth_module.replace_from_login is canonical
-        assert cookie_writes.replace_from_login is canonical
-        assert _cookie_import.replace_from_login is canonical
+        canonical = auth_module.replace_profile_from_login
+        assert cookie_writes.replace_profile_from_login is canonical
+        assert _cookie_import.replace_profile_from_login is canonical
         # The refresh driver reaches it through its injectable deps seam.
-        assert refresh.default_refresh_deps().replace_from_login is canonical
+        assert refresh.default_refresh_deps().replace_profile_from_login is canonical
 
     def test_writer_binds_the_playwright_filter(self):
         """Identity pin: the filter the writer applies IS the filter the
@@ -132,13 +128,12 @@ class TestWriteTimeFilterParity:
 
         Since ADR-0034 PR 7C the login owner is ``_auth/profile_store.py``, beside
         the path transaction; minted-session filtering remains in ``_auth/storage.py``.
-        This is write-time policy, not browser code. The old
-        ``_browser_cookie_filter`` leaf is a re-export shim (pinned by
-        ``test_consolidation_shims_are_identity_reexports``), so this asserts
-        against the canonical home.
+        This is write-time policy, not browser code, so this asserts against
+        the canonical home.
         """
-        from notebooklm._auth import _browser_cookie_filter, browser_capture, cookie_filter, storage
-        from notebooklm.cli.services.playwright_login import (
+        from notebooklm._auth import cookie_filter, storage
+        from notebooklm._browser import browser_capture
+        from notebooklm.auth import (
             filter_storage_state_cookies_by_domain_policy as playwright_filter,
         )
 
@@ -147,7 +142,6 @@ class TestWriteTimeFilterParity:
         assert browser_capture._safe_cookie_shape is storage._safe_cookie_shape
         assert storage.filter_storage_state_cookies_by_domain_policy is canonical
         assert browser_capture.filter_storage_state_cookies_by_domain_policy is canonical
-        assert _browser_cookie_filter.filter_storage_state_cookies_by_domain_policy is canonical
         assert playwright_filter is canonical
 
     @pytest.mark.parametrize("include_domains", [None, {"mail"}, {"all"}])
@@ -158,10 +152,10 @@ class TestWriteTimeFilterParity:
         Because all three CLI writers call this one function, proving parity for
         the writer proves it for every login/import path.
         """
-        from notebooklm.auth import replace_from_login
-        from notebooklm.cli.services.playwright_login import (
+        from notebooklm.auth import (
             filter_storage_state_cookies_by_domain_policy as playwright_filter,
         )
+        from notebooklm.auth import replace_from_login
 
         probe_domains = [
             ".google.com",

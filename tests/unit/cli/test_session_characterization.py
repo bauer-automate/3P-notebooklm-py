@@ -42,17 +42,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+import notebooklm._app.login_browser as login_browser_module
 import notebooklm.auth as auth_module
 import notebooklm.cli.context as context_module
 import notebooklm.cli.helpers as helpers_module
 import notebooklm.cli.resolve as resolve_module
 import notebooklm.cli.services.auth_source as auth_source_module
-import notebooklm.cli.services.playwright_login as playwright_login_module
 import notebooklm.cli.services.session_context as session_context_module
 import notebooklm.cli.session_cmd as session_cmd
 import notebooklm.paths as paths_module
 from notebooklm.notebooklm_cli import cli
-from notebooklm.types import Notebook
+from notebooklm.types import Notebook, SharePermission
 from tests._fixtures import patch_session_login_dual
 
 from .conftest import create_mock_client, inject_client
@@ -128,11 +128,7 @@ def char_storage_file(tmp_path, monkeypatch):
             return_value=storage_file,
             create=True,
         ),
-        patch.object(
-            playwright_login_module,
-            "get_storage_path",
-            return_value=storage_file,
-        ),
+        patch.object(login_browser_module, "get_storage_path", return_value=storage_file),
     ):
         yield storage_file
 
@@ -248,6 +244,7 @@ class TestUseCharacterization:
                 title="JSON Char Notebook",
                 created_at=datetime(2024, 2, 1),
                 is_owner=False,
+                role=SharePermission.VIEWER,
             )
         )
         with (
@@ -276,7 +273,9 @@ class TestUseCharacterization:
                 "id": "nb_json_001",
                 "title": "JSON Char Notebook",
                 "is_owner": False,
+                "role": "viewer",
                 "created_at": "2024-02-01T00:00:00",
+                "last_viewed_at": None,
                 "modified_at": None,
             },
         }
@@ -351,6 +350,7 @@ class TestStatusCharacterization:
                     "notebook_id": "nb_status_2",
                     "title": "Status Notebook 2",
                     "is_owner": False,
+                    "role": "viewer",
                     "created_at": "2024-04-05",
                     "conversation_id": "conv_xyz",
                 }
@@ -365,6 +365,7 @@ class TestStatusCharacterization:
                 "id": "nb_status_2",
                 "title": "Status Notebook 2",
                 "is_owner": False,
+                "role": "viewer",
             },
             "conversation_id": "conv_xyz",
         }

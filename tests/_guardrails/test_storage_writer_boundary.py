@@ -44,6 +44,7 @@ _PROFILE_COMMIT_CALLERS = frozenset(
         "_auth/profile_store.ProfileStore.replace_minted_session",
         "_auth/profile_store.ProfileStore.replace_from_remint",
         "_auth/profile_store.ProfileStore.clear_account",
+        "_auth/profile_store.ProfileStore._update_account_if_document_unchanged",
         "_auth/profile_store.ProfileStore.update_account",
     }
 )
@@ -358,7 +359,7 @@ def test_login_adapter_has_no_writer_transaction_read_or_filter_capability() -> 
             "chmod",
         }
     )
-    assert called_members.count("write") == 1
+    assert called_members.count("replace_profile_from_login") == 1
     assert "replace_from_login" not in called_members
     assert not any(
         isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store)
@@ -764,7 +765,8 @@ _SCHEDULER_STATE_NAMES = frozenset(
     {
         "_process_default_scheduler",
         "_registry_lock",
-        "_once_paths",
+        "_active_paths",
+        "_attempted_paths",
         "_workers",
         "_thread_factory",
         "_PROMOTION_EXIT_JOIN_SECONDS",

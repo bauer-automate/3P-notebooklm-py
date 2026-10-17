@@ -102,14 +102,58 @@ def get_skill_version(skill_dir: Path) -> str | None:
     lives in ``skill_dir / SKILL_ENTRY`` (see :func:`add_version_comment`).
     """
     entry_path = skill_dir / SKILL_ENTRY
-    if not entry_path.exists():
+    try:
+        installed = entry_path.exists()
+    except OSError:
+        return None
+    if not installed:
         return None
 
-    with open(entry_path, encoding="utf-8") as f:
-        content = f.read(500)  # Read first 500 chars
+    try:
+        with open(entry_path, encoding="utf-8") as f:
+            content = f.read(500)  # Read first 500 chars
+    except (OSError, UnicodeError):
+        # Status reporting treats an unreadable or undecodable header as an
+        # unknown version; content integrity is checked independently below.
+        return None
 
     match = re.search(r"notebooklm-py v([\d.]+)", content)
     return match.group(1) if match else None
+
+
+def get_skill_content_mismatch(skill_dir: Path, canonical_content: str | None) -> bool | None:
+    """Compare an installed skill's entry file with the canonical stamped content.
+
+    ``skill_dir`` is the install directory; only ``skill_dir / SKILL_ENTRY`` is
+    compared (``references/`` and ``scripts/`` are not hashed here).
+
+    ``None`` means the comparison is unavailable: the target is absent, the
+    packaged source could not be loaded, or the installed file could not be
+    read. Bytes are compared deliberately so invalid UTF-8 is reported as
+    drift instead of crashing status or being mistaken for an I/O failure.
+    """
+    if canonical_content is None:
+        return None
+    skill_path = skill_dir / SKILL_ENTRY
+    try:
+        installed = skill_path.exists()
+    except OSError:
+        return None
+    if not installed:
+        return None
+
+    try:
+        installed_content = skill_path.read_bytes()
+    except OSError:
+        return None
+
+    # ``atomic_write_text`` uses platform text-mode newline translation, and
+    # ``classify_target`` reads through universal-newline mode. Mirror that
+    # contract at the byte level so a clean Windows CRLF install equals its LF
+    # canonical source without decoding malformed installed content.
+    normalized_installed = installed_content.replace(b"\r\n", b"\n")
+    normalized_canonical = canonical_content.encode("utf-8").replace(b"\r\n", b"\n")
+    return normalized_installed != normalized_canonical
 
 
 def get_scope_root(scope: str) -> Path:
@@ -277,6 +321,7 @@ __all__ = [
     "get_installed_content",
     "get_package_version",
     "get_scope_root",
+    "get_skill_content_mismatch",
     "get_skill_path",
     "get_skill_version",
     "iter_targets",

@@ -1,6 +1,6 @@
 """Test-only Kernel helpers for installing or replacing the live HTTP client.
 
-The retired ``Kernel.http_client`` setter (``src/notebooklm/_kernel.py``; see
+The retired ``Kernel.http_client`` setter (``src/notebooklm/_web/transport/kernel.py``; see
 the constructor-DI notes in ``src/notebooklm/_runtime/init.py``) used to absorb
 every post-construction ``core._kernel.http_client = ...`` swap. Production code
 never used it; tests used it to substitute a ``MockTransport``-backed client
@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import httpx
 
-from notebooklm._kernel import Kernel
+from notebooklm._web.transport.kernel import Kernel
 
 
 def install_http_client_for_test(
@@ -49,7 +49,7 @@ def install_http_client_for_test(
     Args:
         kernel: The :class:`Kernel` instance whose live HTTP client is
             being replaced. Typically reached via
-            ``client._collaborators.kernel`` (or ``core._kernel`` in older
+            ``client._web_runtime.kernel`` (or ``core._kernel`` in older
             test fixtures).
         client: The replacement ``httpx.AsyncClient`` (or ``None`` to
             clear the live client and force the next operation to fail

@@ -32,6 +32,8 @@ class TestIsAllowedCookieDomain:
 
         assert _is_allowed_cookie_domain(".google.com") is True
         assert _is_allowed_cookie_domain("notebooklm.google.com") is True
+        assert _is_allowed_cookie_domain("notebook.cloud.google.com") is True
+        assert _is_allowed_cookie_domain(".notebook.cloud.google.com") is True
         assert _is_allowed_cookie_domain("notebooklm.cloud.google.com") is True
         assert _is_allowed_cookie_domain(".notebooklm.cloud.google.com") is True
         assert _is_allowed_cookie_domain(".googleusercontent.com") is True
@@ -344,9 +346,11 @@ class TestAuthDomainPriority:
             (".google.com", 4),
             (".notebooklm.google.com", 3),
             (".notebooklm.cloud.google.com", 3),
+            (".notebook.cloud.google.com", 3),
             (".notebook.google.com", 3),
             ("notebooklm.google.com", 2),
             ("notebooklm.cloud.google.com", 2),
+            ("notebook.cloud.google.com", 2),
             ("notebook.google.com", 2),
             (".google.de", 1),
             (".google.com.sg", 1),
@@ -426,11 +430,13 @@ class TestAuthDomainPriority:
             _auth_domain_priority(".notebooklm.google.com")
             == _auth_domain_priority(".notebook.google.com")
             == _auth_domain_priority(".notebooklm.cloud.google.com")
+            == _auth_domain_priority(".notebook.cloud.google.com")
         )
         assert (
             _auth_domain_priority("notebooklm.google.com")
             == _auth_domain_priority("notebook.google.com")
             == _auth_domain_priority("notebooklm.cloud.google.com")
+            == _auth_domain_priority("notebook.cloud.google.com")
         )
         # Tier 0 is a catch-all holding the sign-in host that the PSIDTS
         # rotation POST targets -- ranked below hosts it never reaches, which
@@ -1015,7 +1021,6 @@ class TestPathAwareCookieIdentity:
         """The legacy ``original_snapshot=None`` merge keys ``cookies_by_key`` /
         ``stored_keys`` on ``(name, domain, path)`` so a refreshed cookie at
         path ``/`` does not overwrite a sibling at ``/u/0/`` and vice versa."""
-        import warnings
 
         storage = tmp_path / "storage_state.json"
         storage.write_text(
@@ -1036,8 +1041,9 @@ class TestPathAwareCookieIdentity:
         jar.set("OSID", "root_new", domain="accounts.google.com", path="/")
         jar.set("OSID", "u0_new", domain="accounts.google.com", path="/u/0/")
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.warns(
+            RuntimeWarning, match="save_cookies_to_storage called without original_snapshot"
+        ):
             save_cookies_to_storage(jar, storage)
 
         reloaded = json.loads(storage.read_text())
@@ -1405,6 +1411,8 @@ class TestAllowedCookieDomains:
             "notebooklm.google.com",
             ".notebooklm.cloud.google.com",
             "notebooklm.cloud.google.com",
+            ".notebook.cloud.google.com",
+            "notebook.cloud.google.com",
             ".googleusercontent.com",
             "accounts.google.com",
             ".accounts.google.com",
@@ -1508,3 +1516,30 @@ class TestBindingDiagnosticsNameLsid:
 
         hint = missing_cookies_hint({"SID"}, browser_label="chrome")
         assert "LSID" in hint
+
+
+@pytest.mark.parametrize("dotted", [False, True])
+def test_enterprise_cookie_aliases_keep_original_routing(tmp_path, monkeypatch, dotted):
+    """Adding an enterprise alias must not copy one host's OSID to another."""
+    monkeypatch.delenv("NOTEBOOKLM_AUTH_JSON", raising=False)
+    domains = ["notebook.cloud.google.com", "notebooklm.cloud.google.com"]
+    entries = [
+        {"name": "SID", "value": "test_sid", "domain": ".google.com", "path": "/"},
+        {"name": "__Secure-1PSIDTS", "value": "test_ts", "domain": ".google.com", "path": "/"},
+    ]
+    for host in domains:
+        entries.append(
+            {"name": "OSID", "value": host, "domain": ("." if dotted else "") + host, "path": "/"}
+        )
+    storage = tmp_path / "storage.json"
+    storage.write_text(json.dumps({"cookies": entries}))
+    jar = load_httpx_cookies(path=storage)
+    for host in domains:
+        request = httpx.Request("GET", f"https://{host}/")
+        jar.set_cookie_header(request)
+        assert f"OSID={host}" in request.headers["cookie"].split("; ")
+        (other,) = [value for value in domains if value != host]
+        assert f"OSID={other}" not in request.headers["cookie"].split("; ")
+    request = httpx.Request("GET", "https://notebook.google.com/")
+    jar.set_cookie_header(request)
+    assert all(not item.startswith("OSID=") for item in request.headers["cookie"].split("; "))

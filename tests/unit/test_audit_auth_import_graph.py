@@ -57,6 +57,35 @@ def test_resolves_relative_absolute_aliased_and_package_imports(audit, tmp_path)
     assert result["modules"][0]["name"] == "__init__"
 
 
+def test_parameterized_package_records_external_notebooklm_edges(audit, tmp_path):
+    browser_dir = tmp_path / "src" / "notebooklm" / "_browser"
+    browser_dir.mkdir(parents=True)
+    (browser_dir / "capture.py").write_text(
+        "from . import errors\n"
+        "from .._auth import storage\n"
+        "from .._auth.cookie_policy import app_host_scope_note\n"
+        "from notebooklm import paths\n"
+        "def lazy():\n    from notebooklm.exceptions import AuthError\n",
+        encoding="utf-8",
+    )
+    (browser_dir / "errors.py").write_text("class Error(Exception):\n    pass\n", encoding="utf-8")
+
+    result = audit.build_projection(
+        browser_dir,
+        repo_root=tmp_path,
+        package_prefix="notebooklm._browser",
+        include_external=True,
+    )
+
+    assert result["edges"] == [
+        {"source": "capture", "target": "_auth.cookie_policy", "scope": "module"},
+        {"source": "capture", "target": "_auth.storage", "scope": "module"},
+        {"source": "capture", "target": "errors", "scope": "module"},
+        {"source": "capture", "target": "exceptions", "scope": "function"},
+        {"source": "capture", "target": "paths", "scope": "module"},
+    ]
+
+
 def test_scope_duplicate_self_and_scc_rules(audit, tmp_path):
     result = _project(
         audit,
@@ -89,26 +118,27 @@ def test_scope_duplicate_self_and_scc_rules(audit, tmp_path):
 
 
 def test_live_projection_is_the_frozen_scorecard(audit):
+    """The live auth inventory matches its reviewed size and import graph."""
     result = audit.build_projection()
     assert result["summary"] == {
-        "modules": 40,
-        "total_lines": 15265,
-        "unique_edges": 128,
-        "module_edges": 117,
-        "function_local_edges": 11,
+        "modules": 33,
+        "total_lines": 13894,
+        "unique_edges": 125,
+        "module_edges": 113,
+        "function_local_edges": 12,
     }
     assert result["sccs"] == {
         "module_level": [],
         "all_scopes": [],
     }
     edges = {(edge["source"], edge["target"], edge["scope"]) for edge in result["edges"]}
-    assert ("cookie_types", "cookies", "module") not in edges
     assert {
         ("cookie_types", "cookie_policy", "module"),
         ("cookie_types", "cookie_semantics", "module"),
         ("cookies", "cookie_types", "module"),
         ("cookies", "cookie_semantics", "module"),
     } <= edges
+    assert {edge for edge in edges if "cookie_pair" in edge[:2]} == set()
     assert {edge for edge in edges if "account_types" in edge[:2]} == {
         ("account", "account_types", "module"),
         ("account_repair", "account_types", "module"),
@@ -123,6 +153,7 @@ def test_live_projection_is_the_frozen_scorecard(audit):
         ("account_repair", "profile_store", "module"),
     }
     assert {edge for edge in edges if "profile_account" in edge[:2]} == {
+        ("account_email", "profile_account", "module"),
         ("account_repair", "profile_account", "module"),
         ("profile_account", "cookie_types", "module"),
         ("profile_document", "profile_account", "module"),
@@ -132,7 +163,9 @@ def test_live_projection_is_the_frozen_scorecard(audit):
         ("tokens", "profile_account", "module"),
     }
     assert {edge for edge in edges if "profile_document" in edge[:2]} == {
+        ("account_email", "profile_document", "module"),
         ("cookie_merge", "profile_document", "module"),
+        ("profile_migration", "profile_document", "module"),
         ("psidts_recovery", "profile_document", "module"),
         ("profile_document", "cookie_types", "module"),
         ("profile_document", "profile_account", "module"),
@@ -188,12 +221,15 @@ def test_live_projection_is_the_frozen_scorecard(audit):
         ("storage", "master_token_types", "module"),
     }
     assert {edge for edge in edges if "mint_service" in edge[:2]} == {
+        ("cookies", "mint_service", "module"),
         ("keepalive", "mint_service", "module"),
         ("master_token", "mint_service", "module"),
         ("master_token_bootstrap", "mint_service", "module"),
         ("mint_service", "master_token_types", "module"),
+        ("profile_store", "mint_service", "module"),
     }
     assert {edge for edge in edges if "profile_store" in edge[:2]} == {
+        ("account_email", "profile_store", "module"),
         ("account_repair", "profile_store", "module"),
         ("master_token", "profile_store", "module"),
         ("master_token_bootstrap", "profile_store", "module"),
@@ -206,6 +242,7 @@ def test_live_projection_is_the_frozen_scorecard(audit):
         ("profile_store", "credential_io", "module"),
         ("profile_store", "master_token_file", "module"),
         ("profile_store", "master_token_types", "module"),
+        ("profile_store", "mint_service", "module"),
         ("profile_store", "paths", "module"),
         ("profile_store", "profile_account", "module"),
         ("profile_store", "profile_document", "module"),
@@ -223,17 +260,23 @@ def test_live_projection_is_the_frozen_scorecard(audit):
         ("master_token_bootstrap", "profile_store", "module"),
     }
     assert {edge for edge in edges if "profile_migration" in edge[:2]} == {
+        ("account_email", "profile_migration", "module"),
         ("account_repair", "profile_migration", "module"),
+        ("profile_migration", "cookies", "module"),
         ("profile_migration", "profile_account", "module"),
+        ("profile_migration", "profile_document", "module"),
         ("profile_migration", "profile_store", "module"),
+        ("recovery", "profile_migration", "function"),
+        ("recovery", "profile_migration", "module"),
         ("storage", "profile_migration", "module"),
         ("tokens", "profile_migration", "module"),
     }
     assert {edge for edge in edges if "tokens" in edge[:2]} == {
-        ("session", "tokens", "module"),
+        ("account_email", "tokens", "module"),
         ("tokens", "account", "module"),
         ("tokens", "cookie_types", "module"),
         ("tokens", "cookies", "module"),
+        ("tokens", "extraction", "module"),
         ("tokens", "paths", "module"),
         ("tokens", "profile_account", "module"),
         ("tokens", "profile_document", "module"),
@@ -249,18 +292,20 @@ def test_live_projection_is_the_frozen_scorecard(audit):
         ("recovery", "cookies", "module"),
         ("recovery", "extraction", "function"),
         ("recovery", "extraction", "module"),
-        ("recovery", "headless_reauth", "function"),
+        ("recovery", "recovery_rungs", "function"),
         ("recovery", "master_token", "function"),
         ("recovery", "paths", "module"),
+        ("recovery", "profile_migration", "function"),
+        ("recovery", "profile_migration", "module"),
         ("recovery", "single_flight", "module"),
         ("recovery", "storage", "function"),
         ("recovery", "storage", "module"),
         ("refresh", "recovery", "module"),
-        ("session", "recovery", "module"),
+    }
+    assert {edge for edge in edges if "recovery_rungs" in edge[:2]} == {
+        ("recovery", "recovery_rungs", "function"),
     }
     assert {edge for edge in edges if "psidts_recovery" in edge[:2]} == {
-        ("browser_capture", "psidts_recovery", "module"),
-        ("browser_cookie_recovery", "psidts_recovery", "module"),
         ("cookies", "psidts_recovery", "function"),
         ("psidts_recovery", "cookie_merge", "module"),
         ("psidts_recovery", "cookie_policy", "module"),

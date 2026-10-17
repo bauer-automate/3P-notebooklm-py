@@ -23,7 +23,6 @@ import notebooklm.auth as auth
 from notebooklm import NotebookLMClient
 from notebooklm._auth import (
     account,
-    browser_capture,
     cookies,
     keepalive,
     master_token,
@@ -34,14 +33,13 @@ from notebooklm._auth import (
     recovery,
     refresh,
     storage,
-    storage_transaction,
-    storage_writer,
     tokens,
 )
 from notebooklm._auth.storage_lock import LockState, StorageLockManager
 from notebooklm._auth.tokens import AuthTokens
-from notebooklm._cookie_persistence import CookiePersistence
+from notebooklm._browser import browser_capture
 from notebooklm._runtime import lifecycle
+from notebooklm._web.transport.cookie_persistence import CookiePersistence
 
 pytestmark = pytest.mark.repo_lint
 
@@ -50,6 +48,60 @@ SRC_ROOT = REPO_ROOT / "src" / "notebooklm"
 REQUIRED = "<required>"
 ParameterDescriptor = tuple[str, str, str | None, str]
 SignatureDescriptor = tuple[tuple[ParameterDescriptor, ...], str | None]
+
+_LEGACY_RESULT_NAMES = frozenset(
+    {
+        "CookieSaveResult",
+        "LoginWriteOutcome",
+        "LoginWriteStatus",
+        "WriteOutcome",
+        "WriteStatus",
+    }
+)
+_EXPECTED_LEGACY_RESULT_DEPENDENCIES = {
+    "CookieSaveResult": frozenset(
+        {
+            "_auth/storage.py",
+            "_types/common.py",
+            "_web/transport/cookie_persistence.py",
+            "auth.py",
+        }
+    ),
+    "LoginWriteOutcome": frozenset({"_auth/storage.py", "auth.py"}),
+    "LoginWriteStatus": frozenset({"_auth/storage.py"}),
+    "WriteOutcome": frozenset({"_auth/storage.py"}),
+    "WriteStatus": frozenset({"_auth/storage.py"}),
+}
+
+
+def _legacy_result_dependency_paths(root: Path) -> dict[str, frozenset[str]]:
+    """Conservatively inventory code references to the v0.x result family.
+
+    Original import names are recorded even when locally aliased; qualified attributes,
+    annotations, exact dynamic strings, and star imports are also visible. The proof is
+    intentionally path-granular: these compatibility owners are reviewed as whole modules,
+    while any new first-party module immediately changes the equality-pinned exception set.
+    """
+    result: dict[str, set[str]] = {name: set() for name in _LEGACY_RESULT_NAMES}
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            referenced: set[str] = set()
+            if isinstance(node, ast.Name):
+                referenced.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                referenced.add(node.attr)
+            elif isinstance(node, ast.alias):
+                if node.name == "*":
+                    referenced.update(_LEGACY_RESULT_NAMES)
+                else:
+                    referenced.add(node.name.rsplit(".", 1)[-1])
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                referenced.add(node.value)
+            for name in referenced & _LEGACY_RESULT_NAMES:
+                result[name].add(relative)
+    return {name: frozenset(paths) for name, paths in sorted(result.items())}
 
 
 def _annotation(value: object) -> str | None:
@@ -278,7 +330,7 @@ EXPECTED_SIGNATURES: dict[str, SignatureDescriptor] = {
         ),
         "None",
     ),
-    "CookiePersistence.save": (
+    "CookiePersistence._save_v0_callback": (
         (
             ("self", P, None, R),
             ("jar", P, "httpx.Cookies", R),
@@ -305,8 +357,11 @@ EXPECTED_SIGNATURES: dict[str, SignatureDescriptor] = {
             ("on_rpc_event", P, "Callable[[RpcTelemetryEvent], object] | None", "None"),
             ("cookie_saver", P, "CookieSaver | None", "None"),
             ("cookie_rotator", P, "CookieRotator | None", "None"),
-            ("chat_timeout", P, "float | None", "180.0"),
+            ("chat_timeout", P, "ReadWindow", "AUTO_READ_TIMEOUT"),
             ("chat_response_max_bytes", P, "int | None", "268435456"),
+            ("import_research_timeout", P, "ReadWindow", "AUTO_READ_TIMEOUT"),
+            ("backend", K, "Literal['web', 'android'] | None", "None"),
+            ("config", K, "ClientConfig | None", "None"),
         ),
         None,
     ),
@@ -507,7 +562,7 @@ LIVE_SIGNATURES: dict[str, Callable[..., object]] = {
     "CookiePersistence._prepare_open_baseline": CookiePersistence._prepare_open_baseline,
     "CookiePersistence.capture_open_snapshot": CookiePersistence.capture_open_snapshot,
     "CookiePersistence._save_canonical": CookiePersistence._save_canonical,
-    "CookiePersistence.save": CookiePersistence.save,
+    "CookiePersistence._save_v0_callback": CookiePersistence._save_v0_callback,
     "NotebookLMClient.__init__": NotebookLMClient.__init__,
     "AuthTokens.__init__": AuthTokens.__init__,
     "AuthTokens.from_storage": AuthTokens.from_storage,
@@ -630,33 +685,24 @@ def test_result_projections_and_compatibility_value_identities() -> None:
     assert storage.CookieSaveResult.__module__ == "notebooklm._auth.storage"
     assert storage.CookieSaveResult.__qualname__ == "CookieSaveResult"
     assert storage.CookieSaveResult.__dataclass_params__.frozen is True
-    assert storage_writer.merge_cookie_delta is storage.merge_cookie_delta
-    assert storage_writer.persist_minted_jar is storage.persist_minted_jar
-    assert storage_writer.replace_from_remint is storage.replace_from_remint
-    assert storage_writer.update_account_metadata is storage.update_account_metadata
-    assert storage_writer.clear_in_band_account is storage.clear_in_band_account
     assert storage.in_storage_transaction is profile_store.in_storage_transaction
     assert storage.raise_on_lock_unavailable is profile_store.raise_on_lock_unavailable
     assert storage.report_on_lock_unavailable is profile_store.report_on_lock_unavailable
     assert storage.skip_on_lock_unavailable is profile_store.skip_on_lock_unavailable
-    assert storage_transaction.in_storage_transaction is profile_store.in_storage_transaction
-    assert storage_transaction.raise_on_lock_unavailable is profile_store.raise_on_lock_unavailable
-    assert (
-        storage_transaction.report_on_lock_unavailable is profile_store.report_on_lock_unavailable
-    )
-    assert storage_transaction.skip_on_lock_unavailable is profile_store.skip_on_lock_unavailable
-    assert browser_capture.storage is storage
+    assert not hasattr(browser_capture, "storage")
+    assert browser_capture.ReplaceResult is profile_store.ReplaceResult
     assert not hasattr(refresh, "save_cookies_to_storage")
     assert callable(storage.save_cookies_to_storage)
     assert not hasattr(auth, "ProfileStore")
     assert not hasattr(auth, "ProfileAccount")
     assert "MintedSessionWriteRequest" not in storage.__all__
-    assert "MintedSessionWriteRequest" not in storage_writer.__all__
     assert not hasattr(auth, "MintedSessionWriteRequest")
     assert storage.MintedSessionWriteRequest is profile_store.MintedSessionWriteRequest
+    assert cookies.StorageStateValidationError.__module__ == "notebooklm._auth.cookies"
 
 
 def test_phase9_closed_values_and_paired_compatibility_owners_are_exact() -> None:
+    assert cookies._LoadedCookiePair.__module__ == "notebooklm._auth.cookies"
     value_shapes = {
         tokens.InlineAuthSource: ([("document", "ProfileDocument", True)], False),
         tokens.FileAuthSource: (
@@ -667,7 +713,10 @@ def test_phase9_closed_values_and_paired_compatibility_owners_are_exact() -> Non
             [("live", "httpx.Cookies", False), ("baseline", "CookieJar", False)],
             False,
         ),
-        tokens.LoadPolicy: ([("allow_headless", "bool", True)], True),
+        tokens.LoadPolicy: (
+            [("allow_headless", "bool", True), ("heal_psidts", "bool", True)],
+            True,
+        ),
         tokens.TokenAcquisition: (
             [
                 ("csrf_token", "str", False),
@@ -689,6 +738,10 @@ def test_phase9_closed_values_and_paired_compatibility_owners_are_exact() -> Non
         ),
         cookies._LoadedCookiePair: (
             [("live", "httpx.Cookies", False), ("baseline", "CookieJar", False)],
+            False,
+        ),
+        profile_migration._LoadedProfilePair: (
+            [("cookies", "_LoadedCookiePair", False), ("account", "ProfileAccount | None", True)],
             False,
         ),
         recovery.ColdRecoveryResult: (
@@ -788,10 +841,8 @@ def test_cookie_save_delegate_remains_same_module_and_late_bound() -> None:
 
 def test_minted_facade_identities_and_master_wrapper_late_lookup_are_exact() -> None:
     assert auth.persist_minted_jar is master_token.persist_minted_jar
-    assert storage_writer.persist_minted_jar is storage.persist_minted_jar
     assert master_token.persist_minted_jar is not storage.persist_minted_jar
     assert auth.write_master_token is master_token.write_master_token
-    assert storage_writer.write_master_token is storage.write_master_token
     assert master_token.write_master_token is not storage.write_master_token
 
     source = ast.parse(inspect.getsource(master_token.persist_minted_jar))
@@ -915,11 +966,6 @@ def test_legacy_account_facade_shim_and_default_identities_are_exact() -> None:
     assert auth.KEEP_ACCOUNT is storage.KEEP_ACCOUNT
     assert auth.CLEAR_ACCOUNT is storage.CLEAR_ACCOUNT
     assert auth.replace_from_login is storage.replace_from_login
-    assert storage_writer.AccountRecord is storage.AccountRecord
-    assert storage_writer.AccountArg is storage.AccountArg
-    assert storage_writer.KEEP_ACCOUNT is storage.KEEP_ACCOUNT
-    assert storage_writer.CLEAR_ACCOUNT is storage.CLEAR_ACCOUNT
-    assert storage_writer.replace_from_login is storage.replace_from_login
     assert storage._drop_legacy_account_key is profile_migration._drop_legacy_account_key
     assert auth.drop_legacy_account_key is profile_migration._drop_legacy_account_key
 
@@ -938,11 +984,38 @@ def test_legacy_account_facade_shim_and_default_identities_are_exact() -> None:
         "PromotionFailed",
     }
     assert internal_components.isdisjoint(storage.__all__)
-    assert internal_components.isdisjoint(storage_writer.__all__)
     assert all(not hasattr(auth, name) for name in internal_components)
 
     account_default = inspect.signature(storage.replace_from_login).parameters["account"].default
     assert account_default is storage.KEEP_ACCOUNT
+
+
+def test_legacy_result_dependencies_are_only_compatibility_owners() -> None:
+    assert _legacy_result_dependency_paths(SRC_ROOT) == _EXPECTED_LEGACY_RESULT_DEPENDENCIES
+
+
+def test_legacy_result_dependency_inventory_bites_on_aliases_and_dynamic_access(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "notebooklm"
+    package.mkdir()
+    (package / "aliases.py").write_text(
+        "from notebooklm._auth.storage import WriteOutcome as WO\n"
+        "import notebooklm.auth as facade\n"
+        "RESULT = 'LoginWriteOutcome'\n"
+        "def use(value):\n"
+        "    return WO, facade.LoginWriteStatus, getattr(facade, RESULT), "
+        "facade.__dict__['CookieSaveResult']\n",
+        encoding="utf-8",
+    )
+    (package / "star.py").write_text("from notebooklm._auth.storage import *\n", encoding="utf-8")
+
+    inventory = _legacy_result_dependency_paths(package)
+    assert inventory["WriteOutcome"] == frozenset({"aliases.py", "star.py"})
+    assert inventory["LoginWriteOutcome"] == frozenset({"aliases.py", "star.py"})
+    assert inventory["LoginWriteStatus"] == frozenset({"aliases.py", "star.py"})
+    assert inventory["CookieSaveResult"] == frozenset({"aliases.py", "star.py"})
+    assert inventory["WriteStatus"] == frozenset({"star.py"})
 
 
 def test_legacy_account_writer_preserves_odd_values_and_clears_unknowns(tmp_path: Path) -> None:
@@ -982,10 +1055,13 @@ def test_legacy_account_writer_preserves_odd_values_and_clears_unknowns(tmp_path
     )
     assert unknown_outcome.ok
     unknown_document = json.loads(unknown_path.read_text(encoding="utf-8"))
-    assert "notebooklm" not in unknown_document
+    assert unknown_document["notebooklm"] == {
+        "account_route_cleared": True,
+        "version": 1,
+    }
 
 
-def test_facade_identities_and_three_cookie_save_lookup_seams() -> None:
+def test_facade_identities_and_explicit_cookie_save_adapter() -> None:
     assert auth.master_token_bootstrap is master_token.bootstrap_from_oauth_token
     assert auth.master_token_remint is master_token.remint_from_stored_token
     assert auth.replace_from_login is storage.replace_from_login
@@ -995,17 +1071,18 @@ def test_facade_identities_and_three_cookie_save_lookup_seams() -> None:
         is account.repair_account_metadata_from_playwright_storage
     )
     assert auth.validate_with_recovery is psidts_recovery.validate_with_recovery
-    assert callable(lifecycle._default_cookie_saver)
-    from notebooklm import _cookie_persistence as persistence_module
+    from notebooklm import _runtime
+    from notebooklm._web.transport import cookie_persistence as persistence_module
 
-    assert lifecycle._default_cookie_saver is persistence_module._default_cookie_saver
-    source = ast.parse(inspect.getsource(lifecycle._default_cookie_saver))
-    calls = [node for node in ast.walk(source) if isinstance(node, ast.Call)]
-    assert len(calls) == 1
-    assert ast.unparse(calls[0].func) == "_auth_storage.save_cookies_to_storage"
-    assert persistence_module._canonical_cookie_saver_is_current()
+    assert not hasattr(lifecycle, "_default_cookie_saver")
+    assert not hasattr(persistence_module, "_default_cookie_saver")
+    assert not hasattr(_runtime, "_default_cookie_saver")
+    assert not hasattr(persistence_module, "_canonical_cookie_saver_is_current")
     assert "cookie_saver" in inspect.signature(NotebookLMClient.__init__).parameters
-    assert "save_cookies_to_storage" in inspect.signature(CookiePersistence.save).parameters
+    assert (
+        "save_cookies_to_storage"
+        in inspect.signature(CookiePersistence._save_v0_callback).parameters
+    )
 
 
 def test_all_remaining_facade_inventory_callables_are_exact_identity_reexports() -> None:
@@ -1041,35 +1118,39 @@ def test_all_remaining_facade_inventory_callables_are_exact_identity_reexports()
 
 
 EXPECTED_DIRECT_CALLERS = {
-    "AccountRecord": [
-        "src/notebooklm/cli/services/login/cookie_writes.py",
-        "src/notebooklm/cli/services/login/refresh.py",
-    ],
+    "_load_storage_state": ["src/notebooklm/_app/doctor.py"],
+    "_load_storage_state_from_env_value": ["src/notebooklm/_app/doctor.py"],
+    "_sanitized_auth_entries": ["src/notebooklm/_app/doctor.py"],
+    "_storage_has_routable_cookie": ["src/notebooklm/_app/doctor.py"],
     "AuthTokens": [
         "src/notebooklm/__init__.py",
         "src/notebooklm/_client_assembly.py",
-        "src/notebooklm/_cookie_persistence.py",
-        "src/notebooklm/_kernel.py",
-        "src/notebooklm/_runtime/auth.py",
-        "src/notebooklm/_runtime/init.py",
-        "src/notebooklm/_runtime/lifecycle.py",
+        "src/notebooklm/_client_compat.py",
+        "src/notebooklm/_client_contracts.py",
+        "src/notebooklm/_web/transport/auth.py",
+        "src/notebooklm/_web/transport/cookie_persistence.py",
+        "src/notebooklm/_web/transport/init.py",
+        "src/notebooklm/_web/transport/kernel.py",
+        "src/notebooklm/_web/transport/lifecycle.py",
         "src/notebooklm/cli/auth_runtime.py",
         "src/notebooklm/cli/helpers.py",
         "src/notebooklm/cli/language_cmd.py",
         "src/notebooklm/client.py",
     ],
-    "CLEAR_ACCOUNT": ["src/notebooklm/cli/services/login/refresh.py"],
     "MasterTokenError": [
         "src/notebooklm/_app/master_token.py",
         "src/notebooklm/cli/session_cmd.py",
     ],
-    "build_cookie_jar": ["src/notebooklm/_kernel.py"],
+    "app_host_scope_note": ["src/notebooklm/cli/services/login/cookie_jar.py"],
+    "build_cookie_jar": ["src/notebooklm/_web/transport/kernel.py"],
     "build_httpx_cookies_from_storage": ["src/notebooklm/cli/auth_runtime.py"],
     "cookie_names_from_storage": [
         "src/notebooklm/_app/doctor.py",
         "src/notebooklm/cli/services/login/cookie_writes.py",
         "src/notebooklm/cli/services/login/refresh.py",
     ],
+    "capture_browser_oauth_token": ["src/notebooklm/cli/services/login/master_token.py"],
+    "check_headless_reauth_readiness": ["src/notebooklm/cli/doctor_cmd.py"],
     "fetch_tokens_passive": [
         "src/notebooklm/_app/auth_check.py",
         "src/notebooklm/cli/playwright_login_io.py",
@@ -1082,6 +1163,7 @@ EXPECTED_DIRECT_CALLERS = {
         "src/notebooklm/cli/services/login/refresh.py",
         "src/notebooklm/cli/session_cmd.py",
     ],
+    "filter_storage_state_cookies_by_domain_policy": ["src/notebooklm/cli/_cookie_import.py"],
     "missing_cookies_hint": [
         "src/notebooklm/cli/services/login/cookie_writes.py",
         "src/notebooklm/cli/services/login/refresh.py",
@@ -1091,7 +1173,8 @@ EXPECTED_DIRECT_CALLERS = {
         "src/notebooklm/cli/services/login/refresh.py",
     ],
     "repair_account_metadata_from_playwright_storage": ["src/notebooklm/_app/profile.py"],
-    "replace_from_login": [
+    "ReplaceResult": ["src/notebooklm/cli/services/login/refresh.py"],
+    "replace_profile_from_login": [
         "src/notebooklm/cli/_cookie_import.py",
         "src/notebooklm/cli/services/login/cookie_writes.py",
         "src/notebooklm/cli/services/login/refresh.py",
@@ -1110,15 +1193,16 @@ EXPECTED_DIRECT_CALLERS = {
 EXPECTED_ALIAS_CALLERS = {
     "Account": ["src/notebooklm/_app/login_cookie.py"],
     "GOOGLE_REGIONAL_CCTLDS": ["src/notebooklm/_app/login_cookie.py"],
-    "LoginWriteOutcome": ["src/notebooklm/_app/login_cookie.py"],
     "MINIMUM_REQUIRED_COOKIES": ["src/notebooklm/_app/login_cookie.py"],
     "OPTIONAL_COOKIE_DOMAINS_BY_LABEL": ["src/notebooklm/_app/login_cookie.py"],
     "REQUIRED_COOKIE_DOMAINS": ["src/notebooklm/_app/login_cookie.py"],
+    "ReplaceResult": ["src/notebooklm/_app/login_cookie.py"],
     "_has_valid_secondary_binding": ["src/notebooklm/_app/login_cookie.py"],
     "_sanitize_cookie_entry": ["src/notebooklm/_app/login_cookie.py"],
     "_sanitized_auth_entries": [
         "src/notebooklm/_app/auth_check.py",
         "src/notebooklm/_app/login_cookie.py",
+        "src/notebooklm/_app/web_profiles.py",
     ],
     "_storage_entry_to_cookie": [
         "src/notebooklm/_app/auth_check.py",
@@ -1131,6 +1215,7 @@ EXPECTED_ALIAS_CALLERS = {
     ],
     "assert_account_writable": ["src/notebooklm/_app/master_token.py"],
     "bootstrap_missing_storage_from_master_token": ["src/notebooklm/_app/master_token.py"],
+    "browser_login_channels": ["src/notebooklm/_app/login_browser.py"],
     "build_cookie_jar": [
         "src/notebooklm/_app/login_cookie.py",
         "src/notebooklm/cli/helpers.py",
@@ -1138,6 +1223,7 @@ EXPECTED_ALIAS_CALLERS = {
     "convert_rookiepy_cookies_to_storage_state": ["src/notebooklm/_app/login_cookie.py"],
     "cookie_names_from_storage": ["src/notebooklm/_app/login_cookie.py"],
     "enumerate_accounts": ["src/notebooklm/_app/login_cookie.py"],
+    "ensure_browser_login_available": ["src/notebooklm/_app/login_browser.py"],
     "extract_cookies_from_storage": [
         "src/notebooklm/_app/auth_check.py",
         "src/notebooklm/_app/login_cookie.py",
@@ -1148,6 +1234,7 @@ EXPECTED_ALIAS_CALLERS = {
     "master_token_remint": ["src/notebooklm/_app/master_token.py"],
     "missing_cookies_hint": ["src/notebooklm/_app/login_cookie.py"],
     "read_master_token": ["src/notebooklm/_app/master_token.py"],
+    "run_browser_login_capture": ["src/notebooklm/_app/login_browser.py"],
 }
 
 
@@ -2123,12 +2210,12 @@ def test_first_party_facade_callers_are_frozen_in_both_import_idioms() -> None:
     assert aliases == EXPECTED_ALIAS_CALLERS
     union = {(name, path) for name, paths in direct.items() for path in paths}
     union |= {(name, path) for name, paths in aliases.items() for path in paths}
-    assert len(direct) == 15
-    assert sum(map(len, direct.values())) == 42
-    assert len(aliases) == 25
-    assert sum(map(len, aliases.values())) == 30
-    assert len({name for name, _path in union}) == 37
-    assert len(union) == 72
+    assert len(direct) == 22
+    assert sum(map(len, direct.values())) == 50
+    assert len(aliases) == 28
+    assert sum(map(len, aliases.values())) == 34
+    assert len({name for name, _path in union}) == 45
+    assert len(union) == 84
 
 
 @pytest.mark.skipif(not hasattr(ast, "TryStar"), reason="exception-group AST requires 3.11+")

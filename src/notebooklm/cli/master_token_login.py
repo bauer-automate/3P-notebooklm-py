@@ -10,7 +10,6 @@ Kept out of ``session_cmd.py`` to hold that module under the size ratchet
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from .._app.master_token import (
@@ -20,6 +19,7 @@ from .._app.master_token import (
     remint_login,
 )
 from ..paths import get_storage_path
+from . import runtime
 from .error_handler import exit_with_code
 from .rendering import console
 from .services.login import master_token as mt_service
@@ -30,6 +30,7 @@ def run_master_token_login(
     *,
     storage,
     browser,
+    browser_timeout=300,
     account_email,
     oauth_token,
     android_id,
@@ -52,7 +53,7 @@ def run_master_token_login(
         storage_path = (
             Path(storage).expanduser().resolve() if storage else get_storage_path(profile=profile)
         )
-        run_async = asyncio.run
+        run_async = runtime.run_async
         try:
             if refresh:
                 remint_result = remint_login(storage_path, run_async=run_async)
@@ -73,6 +74,7 @@ def run_master_token_login(
                 oauth_token=oauth_token,
                 browser=browser,
                 cdp_url=cdp_url,
+                timeout_s=browser_timeout,
                 capture_oauth_token=capture_oauth_token,
                 run_async=run_async,
             )
@@ -93,6 +95,7 @@ def run_master_token_login(
         del remint_result
         del storage
         del browser
+        del browser_timeout
         del account_email
         del oauth_token
         del android_id

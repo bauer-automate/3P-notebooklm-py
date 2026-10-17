@@ -1,42 +1,44 @@
-"""Packaging smoke tests for skill assets."""
+"""Packaging smoke tests for release contents and skill assets."""
 
 import shutil
 import subprocess
+import tarfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_SKILL_DIR = _REPO_ROOT / "plugin" / "skills" / "notebooklm"
 
+@pytest.fixture(scope="module")
+def release_archives(tmp_path_factory):
+    """Build the sdist and its wheel through the normal release path."""
+    if shutil.which("uv") is None:
+        pytest.skip("uv is required for build smoke tests")
 
-def _build_wheel(tmp_path: Path) -> Path:
-    """Build the wheel into ``tmp_path / "dist"`` and return its path."""
-    build_dir = tmp_path / "dist"
+    repo_root = Path(__file__).resolve().parents[2]
+    build_dir = tmp_path_factory.mktemp("release-dist")
     result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(build_dir)],
-        cwd=_REPO_ROOT,
+        ["uv", "build", "--out-dir", str(build_dir)],
+        cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    return next(build_dir.glob("*.whl"))
+
+    return repo_root, next(build_dir.glob("*.tar.gz")), next(build_dir.glob("*.whl"))
 
 
 def _normalize(text: str) -> str:
     return text.replace("\r", "")
 
 
-def test_wheel_includes_root_skill_content(tmp_path):
+def test_wheel_includes_root_skill_content(release_archives):
     """The built wheel should carry the whole plugin/skills/notebooklm/ tree
     + AGENTS.md into package data (notebooklm/data/skill/** and
     notebooklm/data/CODEX.md)."""
-    if shutil.which("uv") is None:
-        pytest.skip("uv is required for build smoke tests")
-
-    wheel_path = _build_wheel(tmp_path)
+    repo_root, _, wheel_path = release_archives
+    skill_dir = repo_root / "plugin" / "skills" / "notebooklm"
 
     with zipfile.ZipFile(wheel_path) as wheel:
         names = set(wheel.namelist())
@@ -44,38 +46,32 @@ def test_wheel_includes_root_skill_content(tmp_path):
         packaged_launcher = wheel.read("notebooklm/data/skill/scripts/nlm").decode("utf-8")
         packaged_codex = wheel.read("notebooklm/data/CODEX.md").decode("utf-8")
 
-    # SKILL.md is byte-equal to the checked-in source.
     assert _normalize(packaged_skill_entry) == _normalize(
-        (_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     )
-    # The launcher script made it in too, byte-equal.
     assert _normalize(packaged_launcher) == _normalize(
-        (_SKILL_DIR / "scripts" / "nlm").read_text(encoding="utf-8")
+        (skill_dir / "scripts" / "nlm").read_text(encoding="utf-8")
     )
-    # At least one references/*.md file is present.
     reference_entries = [
         name
         for name in names
         if name.startswith("notebooklm/data/skill/references/") and name.endswith(".md")
     ]
     assert reference_entries, f"no references/*.md packaged; wheel had: {sorted(names)}"
-
     assert _normalize(packaged_codex) == _normalize(
-        (_REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        (repo_root / "AGENTS.md").read_text(encoding="utf-8")
     )
 
 
-def test_wheel_skill_tree_is_byte_equal_to_source(tmp_path):
+def test_wheel_skill_tree_is_byte_equal_to_source(release_archives):
     """Every file under the packaged ``notebooklm/data/skill/`` tree is
     byte-equal to its ``plugin/skills/notebooklm/`` source counterpart, and
     no source file is missing from the wheel."""
-    if shutil.which("uv") is None:
-        pytest.skip("uv is required for build smoke tests")
-
-    wheel_path = _build_wheel(tmp_path)
+    repo_root, _, wheel_path = release_archives
+    skill_dir = repo_root / "plugin" / "skills" / "notebooklm"
     source_files = {
-        path.relative_to(_SKILL_DIR).as_posix(): path
-        for path in _SKILL_DIR.rglob("*")
+        path.relative_to(skill_dir).as_posix(): path
+        for path in skill_dir.rglob("*")
         if path.is_file()
     }
     assert source_files, "plugin/skills/notebooklm/ source tree is unexpectedly empty"
@@ -86,3 +82,45 @@ def test_wheel_skill_tree_is_byte_equal_to_source(tmp_path):
             assert _normalize(packaged) == _normalize(source_path.read_text(encoding="utf-8")), (
                 f"{rel_path} differs between source and packaged wheel"
             )
+
+
+def test_release_archives_exclude_repository_directories(release_archives):
+    """Neither release archive should ship tests or separate deployment assets."""
+    _, sdist_path, wheel_path = release_archives
+    excluded = {"tests", "examples", "desktop-extension", "deploy"}
+
+    with tarfile.open(sdist_path) as sdist:
+        # Source distributions wrap their contents in a versioned root directory.
+        sdist_paths = [PurePosixPath(member.name).parts[1:] for member in sdist]
+    with zipfile.ZipFile(wheel_path) as wheel:
+        wheel_paths = [PurePosixPath(name).parts for name in wheel.namelist()]
+
+    for archive_path, paths in ((sdist_path, sdist_paths), (wheel_path, wheel_paths)):
+        unexpected = ["/".join(parts) for parts in paths if parts and parts[0] in excluded]
+        assert not unexpected, f"{archive_path.name} includes excluded files: {unexpected[:10]}"
+
+
+def test_sdist_retains_build_inputs_and_embedded_commit(release_archives):
+    """A wheel rebuilt from the sdist keeps runtime files and its build commit."""
+    _, sdist_path, wheel_path = release_archives
+    required = {
+        "pyproject.toml",
+        "hatch_build.py",
+        "README.md",
+        "LICENSE",
+        "plugin/skills/notebooklm/SKILL.md",
+        "AGENTS.md",
+        "src/notebooklm/__init__.py",
+        "src/notebooklm/py.typed",
+        "src/notebooklm/_commit.py",
+    }
+    with tarfile.open(sdist_path) as sdist:
+        members = {member.name.partition("/")[2]: member for member in sdist}
+        assert required <= members.keys()
+        commit_file = sdist.extractfile(members["src/notebooklm/_commit.py"])
+        assert commit_file is not None
+        embedded_commit = commit_file.read()
+
+    with zipfile.ZipFile(wheel_path) as wheel:
+        assert {"notebooklm/__init__.py", "notebooklm/py.typed"} <= set(wheel.namelist())
+        assert wheel.read("notebooklm/_commit.py") == embedded_commit

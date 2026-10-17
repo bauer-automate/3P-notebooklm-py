@@ -1,6 +1,6 @@
-"""Frozen-snapshot gate for the wire integers of every RPC ``int``-Enum.
+"""Frozen-snapshot gate for every transport-neutral wire ``int``-Enum.
 
-The obfuscated wire integers in ``src/notebooklm/rpc/types.py`` (``VideoStyle``,
+The wire integers in ``src/notebooklm/_types/enums.py`` (``VideoStyle``,
 ``VideoFormat``, ``AudioFormat``, ``InfographicStyle``, …) are an *undocumented
 contract* with Google's backend. In #1597 Google changed ``VideoStyle``'s wire
 integers; our stale values produced **silent** wrong output — generation
@@ -25,25 +25,58 @@ import inspect
 
 import pytest
 
+import notebooklm._types.enums as domain_enums
 import notebooklm.rpc.types as rpc_types
 
-pytestmark = pytest.mark.repo_lint
+pytestmark = [pytest.mark.repo_lint, pytest.mark.pr_contract]
 
 # ---------------------------------------------------------------------------
 # Frozen wire-value snapshot.
 #
-# Every ``int``-valued ``Enum`` defined in ``notebooklm.rpc.types`` is pinned to
+# Every ``int``-valued ``Enum`` defined in ``notebooklm._types.enums`` is pinned to
 # its exact ``{member_name: value}`` map, INCLUDING value-aliases like
-# ``QuizQuantity.MORE`` and ``ArtifactTypeCode.QUIZ_FLASHCARD`` (the map is built
-# from ``__members__``, so aliases are frozen too — an alias whose wire value
-# drifted independently would otherwise slip past the gate).
+# ``ArtifactTypeCode.QUIZ_FLASHCARD`` (the map is built from ``__members__``, so
+# aliases are frozen too — an alias whose wire value drifted independently would
+# otherwise slip past the gate).
 #
 # To change a value here you MUST edit this snapshot in the SAME PR — that diff
 # line is the deliberate, reviewed acknowledgement that a wire contract moved.
 # ---------------------------------------------------------------------------
 
 _RPC_ENUM_SNAPSHOT: dict[str, dict[str, int]] = {
-    "ArtifactStatus": {"PROCESSING": 1, "PENDING": 2, "COMPLETED": 3, "FAILED": 4},
+    # #2127: 1/2 were transposed (1 read as PROCESSING, 2 as PENDING) and 0/5/6
+    # were absent. Corrected against the backend enum dump + two live traces.
+    "ArtifactStatus": {
+        "UNKNOWN": 0,
+        "PENDING": 1,
+        "PROCESSING": 2,
+        "COMPLETED": 3,
+        "FAILED": 4,
+        "SUGGESTED": 5,
+        "PENDING_REVIEW": 6,
+    },
+    # google.rpc.Code, as embedded at index 5 of a wrb.fr entry. Not our
+    # numbering to choose — these are the canonical gRPC statuses, so a diff
+    # here means either a typo or that the backend stopped speaking gRPC codes.
+    "GrpcStatusCode": {
+        "OK": 0,
+        "CANCELLED": 1,
+        "UNKNOWN": 2,
+        "INVALID_ARGUMENT": 3,
+        "DEADLINE_EXCEEDED": 4,
+        "NOT_FOUND": 5,
+        "ALREADY_EXISTS": 6,
+        "PERMISSION_DENIED": 7,
+        "RESOURCE_EXHAUSTED": 8,
+        "FAILED_PRECONDITION": 9,
+        "ABORTED": 10,
+        "OUT_OF_RANGE": 11,
+        "UNIMPLEMENTED": 12,
+        "INTERNAL": 13,
+        "UNAVAILABLE": 14,
+        "DATA_LOSS": 15,
+        "UNAUTHENTICATED": 16,
+    },
     "ArtifactTypeCode": {
         "AUDIO": 1,
         "REPORT": 2,
@@ -51,14 +84,34 @@ _RPC_ENUM_SNAPSHOT: dict[str, dict[str, int]] = {
         "QUIZ": 4,
         "QUIZ_FLASHCARD": 4,  # value-alias of QUIZ
         "MIND_MAP": 5,
+        "FANTASY_MAP": 6,
         "INFOGRAPHIC": 7,
         "SLIDE_DECK": 8,
         "DATA_TABLE": 9,
+        "FILE": 10,
     },
     "AudioFormat": {"DEEP_DIVE": 1, "BRIEF": 2, "CRITIQUE": 3, "DEBATE": 4},
     "AudioLength": {"SHORT": 1, "DEFAULT": 2, "LONG": 3},
     "ChatGoal": {"DEFAULT": 1, "CUSTOM": 2, "LEARNING_GUIDE": 3},
     "ChatResponseLength": {"DEFAULT": 1, "LONGER": 4, "SHORTER": 5},
+    "MagicArtifactType": {
+        "UNSPECIFIED": 0,
+        "MINDMAP": 1,
+        "AUDIO_OVERVIEW": 2,
+        "VIDEO_OVERVIEW": 3,
+        "NOTE": 4,
+        "TABLE": 5,
+        "LINE_CHART": 6,
+        "FLASHCARDS": 7,
+        "REPORT": 8,
+        "CONVERSATIONAL_TEXT_CHIP": 9,
+        "VIDEO_OVERVIEW_TEXT_CHIP": 10,
+        "AUDIO_OVERVIEW_TEXT_CHIP": 11,
+        "REPORT_TEXT_CHIP": 12,
+        "FLASHCARDS_TEXT_CHIP": 13,
+        "QUIZ_TEXT_CHIP": 14,
+        "SOURCE_DISCOVERY_TEXT_CHIP": 15,
+    },
     "ExportType": {"DOCS": 1, "SHEETS": 2},
     "InfographicDetail": {"CONCISE": 1, "STANDARD": 2, "DETAILED": 3},
     "InfographicOrientation": {"LANDSCAPE": 1, "PORTRAIT": 2, "SQUARE": 3},
@@ -76,13 +129,44 @@ _RPC_ENUM_SNAPSHOT: dict[str, dict[str, int]] = {
         "SCIENTIFIC": 11,
     },
     "QuizDifficulty": {"EASY": 1, "MEDIUM": 2, "HARD": 3},
-    "QuizQuantity": {"FEWER": 1, "STANDARD": 2, "MORE": 2},  # MORE = value-alias of STANDARD
+    "QuizQuantity": {"FEWER": 1, "STANDARD": 2, "MORE": 3},
     "ShareAccess": {"RESTRICTED": 0, "ANYONE_WITH_LINK": 1},
     "SharePermission": {"OWNER": 1, "EDITOR": 2, "VIEWER": 3, "_REMOVE": 4},
     "ShareViewLevel": {"FULL_NOTEBOOK": 0, "CHAT_ONLY": 1},
     "SlideDeckFormat": {"DETAILED_DECK": 1, "PRESENTER_SLIDES": 2},
     "SlideDeckLength": {"DEFAULT": 1, "SHORT": 2},
-    "SourceStatus": {"PROCESSING": 1, "READY": 2, "ERROR": 3, "PREPARING": 5},
+    "SourceStatus": {
+        "UNKNOWN": -1,
+        "PROCESSING": 1,
+        "READY": 2,
+        "ERROR": 3,
+        "PREPARING": 5,
+    },
+    # #2111 — SourceSettings.userDriveSourceStatus. UNKNOWN(-1) is a client
+    # sentinel; 1-5 are the backend UserDriveSourceStatus values (bound in
+    # tests/_guardrails/_wire_contract.py::ENUM_BINDINGS). Backend 0
+    # (UNSPECIFIED) is deliberately unmodelled — see ENUM_GAPS.
+    "DriveSourceStatus": {
+        "UNKNOWN": -1,
+        "INACCESSIBLE": 1,
+        "SYNCING": 2,
+        "ACTIVE": 3,
+        "DELETED": 4,
+        "GEN_AI_ACCESS_DENIED": 5,
+    },
+    # #2122 — POLL_RESEARCH task_info[2] / the START_*_RESEARCH mode param.
+    # UNKNOWN(-1) is a client sentinel; 1-6 are the backend DiscoveryMode
+    # values (bound in tests/_guardrails/_wire_contract.py::ENUM_BINDINGS).
+    # UNSPECIFIED(0) is deliberately unmodelled (ENUM_GAPS).
+    "DiscoveryMode": {
+        "UNKNOWN": -1,
+        "DEFAULT_LLM_SEARCH": 1,
+        "RAW_SEARCH": 2,
+        "CURIOUS_SEARCH": 3,
+        "CURIOUS_RAW_SEARCH": 4,
+        "DEEP_RESEARCH": 5,
+        "LITE_LLM_SEARCH": 6,
+    },
     "VideoFormat": {"EXPLAINER": 1, "BRIEF": 2, "CINEMATIC": 3, "SHORT": 4},
     "VideoStyle": {
         "AUTO_SELECT": 1,
@@ -100,7 +184,7 @@ _RPC_ENUM_SNAPSHOT: dict[str, dict[str, int]] = {
 
 
 def _discover_int_enums() -> dict[str, type[enum.Enum]]:
-    """Every ``int``-valued ``Enum`` class actually DEFINED in ``rpc/types.py``.
+    """Every ``int``-valued ``Enum`` class defined in ``_types/enums.py``.
 
     A wire enum is a class that subclasses both ``int`` and ``enum.Enum`` and is
     defined in this module (``__module__`` guard excludes anything imported in).
@@ -109,9 +193,9 @@ def _discover_int_enums() -> dict[str, type[enum.Enum]]:
     """
     return {
         name: obj
-        for name, obj in vars(rpc_types).items()
+        for name, obj in vars(domain_enums).items()
         if inspect.isclass(obj)
-        and obj.__module__ == rpc_types.__name__
+        and obj.__module__ == domain_enums.__name__
         and issubclass(obj, int)
         and issubclass(obj, enum.Enum)
     }
@@ -135,12 +219,13 @@ def test_rpc_enum_values_frozen(enum_name: str) -> None:
     These integers are an undocumented contract with Google's backend; a silent
     change produces wrong-output-without-error (see #1597, VideoStyle).
     """
-    enum_cls = getattr(rpc_types, enum_name, None)
+    enum_cls = getattr(domain_enums, enum_name, None)
     assert enum_cls is not None, (
         f"_RPC_ENUM_SNAPSHOT pins {enum_name}, but it no longer exists in "
-        "rpc/types.py. Remove it from _RPC_ENUM_SNAPSHOT in this PR (a removed "
+        "_types/enums.py. Remove it from _RPC_ENUM_SNAPSHOT in this PR (a removed "
         "wire enum is a deliberate, reviewed change)."
     )
+    assert getattr(rpc_types, enum_name) is enum_cls
     live = _live_value_map(enum_cls)
     assert live == _RPC_ENUM_SNAPSHOT[enum_name], (
         f"Wire values for {enum_name} changed.\n"
@@ -155,7 +240,7 @@ def test_rpc_enum_values_frozen(enum_name: str) -> None:
 
 
 def test_snapshot_covers_every_int_enum() -> None:
-    """Every int-Enum defined in rpc/types.py must be pinned in the snapshot.
+    """Every int-Enum defined in _types/enums.py must be pinned in the snapshot.
 
     Fails if someone adds a brand-new wire enum without freezing it. ``str``
     enums (``RPCMethod``, ``ReportFormat``) are excluded by construction.
@@ -170,7 +255,7 @@ def test_snapshot_covers_every_int_enum() -> None:
         "Add each with its exact {member_name: value} map so its wire contract is frozen."
     )
     assert not extra, (
-        f"_RPC_ENUM_SNAPSHOT pins enum(s) no longer defined in rpc/types.py: {sorted(extra)}."
+        f"_RPC_ENUM_SNAPSHOT pins enum(s) no longer defined in _types/enums.py: {sorted(extra)}."
     )
 
 

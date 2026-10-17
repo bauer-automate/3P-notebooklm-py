@@ -2,6 +2,8 @@
 
 import json
 import logging
+import subprocess
+import sys
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import get_args, get_origin, get_type_hints
@@ -20,7 +22,7 @@ from notebooklm import (
     ResearchTask,
     RPCError,
 )
-from notebooklm._research import ResearchAPI
+from notebooklm._web.research import WebResearchAPI
 from notebooklm.research import extract_report_urls, normalize_citation_url, select_cited_sources
 from notebooklm.rpc import RPCMethod
 
@@ -48,14 +50,14 @@ class TestBuildImportEntries:
     """Tests for import entry builder static methods."""
 
     def test_build_report_import_entry(self):
-        entry = ResearchAPI._build_report_import_entry("Title", "# Markdown")
+        entry = WebResearchAPI._build_report_import_entry("Title", "# Markdown")
         assert entry[1] == ["Title", "# Markdown"]
         assert entry[3] == 3
         assert entry[10] == 3
         assert entry[0] is None
 
     def test_build_web_import_entry(self):
-        entry = ResearchAPI._build_web_import_entry("https://example.com", "Example")
+        entry = WebResearchAPI._build_web_import_entry("https://example.com", "Example")
         assert entry[2] == ["https://example.com", "Example"]
         assert entry[10] == 2
         assert entry[0] is None
@@ -106,6 +108,32 @@ class TestCitedSourceSelection:
 
         assert urls == {"https://example.com/a"}
 
+    def test_extract_report_urls_empty_report_returns_empty_set(self):
+        assert extract_report_urls("") == set()
+
+    @pytest.mark.parametrize("prefix", ["[source](", "![chart]("])
+    def test_extract_report_urls_handles_long_unclosed_markdown(self, prefix):
+        """Unclosed Markdown links and images must not hang citation extraction."""
+        url = "https://example.com/" + "a" * 10_000
+        # Isolate the regex so a regression fails with a timeout instead of
+        # wedging the test runner in non-interruptible regex backtracking.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json, sys; "
+                "from notebooklm.research import extract_report_urls; "
+                "print(json.dumps(sorted(extract_report_urls(json.load(sys.stdin)))))",
+            ],
+            input=json.dumps(prefix + url + " "),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+
+        assert json.loads(result.stdout) == [url]
+
     def test_select_cited_sources_filters_urls_and_preserves_report_entry(self):
         sources = [
             {
@@ -133,7 +161,7 @@ class TestCitedSourceSelection:
 
     @pytest.mark.parametrize(
         "selector",
-        [select_cited_sources, ResearchAPI.select_cited_sources],
+        [select_cited_sources, WebResearchAPI.select_cited_sources],
         ids=["public_function", "research_api_wrapper"],
     )
     def test_select_cited_sources_accepts_typed_task_sources(self, selector):
@@ -192,7 +220,7 @@ class TestCitedSourceSelection:
     def test_select_cited_sources_source_annotations_accept_research_source(self):
         selector_sources_hints = [
             get_type_hints(select_cited_sources)["sources"],
-            get_type_hints(ResearchAPI.select_cited_sources)["sources"],
+            get_type_hints(WebResearchAPI.select_cited_sources)["sources"],
         ]
 
         for sources_hint in selector_sources_hints:
@@ -617,6 +645,27 @@ class TestResearch:
             assert exc_info.value.timeout == 0
 
     @pytest.mark.asyncio
+    async def test_pinned_absence_timeout_preserves_web_no_research_last_status(
+        self, auth_tokens, httpx_mock, build_rpc_response
+    ):
+        """The shared waiter must not leak poll's Web-only NOT_FOUND sentinel."""
+        response_body = build_rpc_response(RPCMethod.POLL_RESEARCH, [])
+        httpx_mock.add_response(content=response_body.encode(), method="POST")
+
+        from notebooklm.exceptions import ResearchTimeoutError
+
+        async with NotebookLMClient(auth_tokens) as client:
+            with pytest.raises(ResearchTimeoutError) as exc_info:
+                await client.research.wait_for_completion(
+                    "nb_123",
+                    task_id="task_missing",
+                    timeout=0,
+                    initial_interval=1,
+                )
+
+        assert exc_info.value.last_status == ResearchStatus.NO_RESEARCH.value
+
+    @pytest.mark.asyncio
     async def test_wait_for_completion_rejects_invalid_budget(self, auth_tokens):
         async with NotebookLMClient(auth_tokens) as client:
             with pytest.raises(ValueError, match="timeout must be non-negative"):
@@ -830,7 +879,17 @@ class TestResearch:
     @pytest.mark.asyncio
     async def test_poll_deep_research_sources(self, auth_tokens, httpx_mock, build_rpc_response):
         """Test poll parses deep research sources (title only, no URL)."""
-        sources = [[None, "Deep Research Finding", None, 5, None, None, ["# Report markdown"]]]
+        sources = [
+            [
+                None,
+                "Deep Research Finding",
+                None,
+                5,
+                None,
+                None,
+                ["# Report markdown", 3, None, None, None, ["structured doc"]],
+            ]
+        ]
         task_info = [None, ["deep query", 1], 1, [sources, "Deep summary"], 2]
         response_body = build_rpc_response(RPCMethod.POLL_RESEARCH, [[["task_123", task_info]]])
         httpx_mock.add_response(content=response_body.encode(), method="POST")
@@ -878,11 +937,14 @@ class TestResearch:
         assert "task_id" in str(err)
 
     @pytest.mark.asyncio
-    async def test_poll_joins_legacy_report_chunks(
+    async def test_poll_ignores_web_snippet_before_report(
         self, auth_tokens, httpx_mock, build_rpc_response
     ):
-        """Test poll joins multiple legacy report chunks instead of truncating to the first one."""
-        sources = [[None, "Deep Research Finding", None, 5, None, None, ["chunk one", "chunk two"]]]
+        """A web content block cannot win report extraction by arriving first."""
+        sources = [
+            ["https://example.com", "Web result", "desc", 1, None, None, [None, 1, "snippet"]],
+            [None, "Deep Research Finding", None, 5, None, None, ["# Report", 3]],
+        ]
         task_info = [None, ["deep query", 1], 1, [sources, "Deep summary"], 2]
         response_body = build_rpc_response(RPCMethod.POLL_RESEARCH, [[["task_123", task_info]]])
         httpx_mock.add_response(content=response_body.encode(), method="POST")
@@ -890,8 +952,10 @@ class TestResearch:
         async with NotebookLMClient(auth_tokens) as client:
             result = await client.research.poll("nb_123")
 
-        assert result.report == "chunk one\n\nchunk two"
-        assert result.tasks[0].report == "chunk one\n\nchunk two"
+        assert result.report == "# Report"
+        assert result.sources[0].report_markdown == ""
+        assert result.sources[1].report_markdown == "# Report"
+        assert result.tasks[0].report == "# Report"
 
     @pytest.mark.asyncio
     async def test_poll_deep_research_current_report_shape(
@@ -909,7 +973,7 @@ class TestResearch:
                 None,
             ]
         ]
-        task_info = [None, ["deep query", 1], 1, [sources, "Deep summary"], 6]
+        task_info = [None, ["deep query", 1], 1, [sources, "Deep summary"], 2]
         response_body = build_rpc_response(RPCMethod.POLL_RESEARCH, [[["report_123", task_info]]])
         httpx_mock.add_response(content=response_body.encode(), method="POST")
 
@@ -942,8 +1006,16 @@ class TestResearch:
         assert result.sources[0].result_type == 2
 
     @pytest.mark.asyncio
-    async def test_poll_status_code_6_completed(self, auth_tokens, httpx_mock, build_rpc_response):
-        """Test that status code 6 (deep research) is treated as completed."""
+    async def test_poll_unobserved_status_code_6_completed(
+        self, auth_tokens, httpx_mock, build_rpc_response
+    ):
+        """Status code 6 coarsens to completed, as forward-compat only (#2143).
+
+        Constructed input: 6 appears in no captured payload (0 of 9 task rows
+        across the POLL cassettes), and every completed run — deep included —
+        reports 2. This pins the fallback without claiming 6 is deep research's
+        completion code.
+        """
         task_info = [None, ["query", 1], 1, [[], ""], 6]
         response_body = build_rpc_response(RPCMethod.POLL_RESEARCH, [[["task_123", task_info]]])
         httpx_mock.add_response(content=response_body.encode(), method="POST")
@@ -1000,20 +1072,23 @@ class TestResearch:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_import_sources_missing_url(self, auth_tokens):
+    async def test_import_sources_missing_url(self, auth_tokens, caplog):
         """Test import_sources filters out sources without URL.
 
         Sources without URLs cause the entire batch to fail, so they are
         filtered out before making the RPC call.
         """
-        async with NotebookLMClient(auth_tokens) as client:
-            sources = [{"title": "Title Only"}]  # No URL
-            result = await client.research.import_sources(
-                notebook_id="nb_123", task_id="task_123", sources=sources
-            )
+        with caplog.at_level(logging.DEBUG, logger="notebooklm._research"):
+            async with NotebookLMClient(auth_tokens) as client:
+                sources = [{"title": "Title Only"}]  # No URL
+                result = await client.research.import_sources(
+                    notebook_id="nb_123", task_id="task_123", sources=sources
+                )
 
         # Sources without URLs are filtered out, no RPC call made
         assert result == []
+        assert "Importing 1 research sources" in caplog.text
+        assert "Skipping 1 source(s)" in caplog.text
 
     @pytest.mark.asyncio
     async def test_import_sources_includes_deep_research_report_entry(
@@ -1029,15 +1104,15 @@ class TestResearch:
         async with NotebookLMClient(auth_tokens) as client:
             sources = [
                 {
-                    "title": "Deep Research Report",
-                    "result_type": 5,
-                    "report_markdown": "# Deep report body",
-                    "research_task_id": "report_123",
-                },
-                {
                     "url": "http://example.com",
                     "title": "Web Source",
                     "result_type": 1,
+                    "research_task_id": "report_123",
+                },
+                {
+                    "title": "Deep Research Report",
+                    "result_type": 5,
+                    "report_markdown": "# Deep report body",
                     "research_task_id": "report_123",
                 },
             ]
@@ -1558,21 +1633,6 @@ class TestResearch:
         assert result.sources[0].result_type == "video"
 
     @pytest.mark.asyncio
-    async def test_poll_legacy_report_mixed_chunks(
-        self, auth_tokens, httpx_mock, build_rpc_response
-    ):
-        """Legacy report chunks filter out non-string and empty values."""
-        sources = [[None, "Report Title", None, 5, None, None, ["chunk1", None, "", "chunk2"]]]
-        task_info = [None, ["query", 1], 1, [sources, ""], 2]
-        response_body = build_rpc_response(RPCMethod.POLL_RESEARCH, [[["task_123", task_info]]])
-        httpx_mock.add_response(content=response_body.encode(), method="POST")
-
-        async with NotebookLMClient(auth_tokens) as client:
-            result = await client.research.poll("nb_123")
-
-        assert result.report == "chunk1\n\nchunk2"
-
-    @pytest.mark.asyncio
     async def test_poll_source_single_element_list_title_dropped(
         self, auth_tokens, httpx_mock, build_rpc_response
     ):
@@ -1589,7 +1649,7 @@ class TestResearch:
 
 
 class TestResearchCancel:
-    """Tests for ``ResearchAPI.cancel`` (CancelDiscoverSourcesJob / Zbrupe)."""
+    """Tests for ``WebResearchAPI.cancel`` (CancelDiscoverSourcesJob / Zbrupe)."""
 
     @pytest.mark.asyncio
     async def test_cancel_sends_run_id_in_field_three(

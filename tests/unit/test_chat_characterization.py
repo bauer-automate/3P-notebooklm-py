@@ -10,12 +10,17 @@ faithfully reproduce. An earlier rename moved this file from
 marker; see ``pyproject.toml`` markers list for the rationale.
 """
 
+import json
+import logging
+import re
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pytest_httpx import HTTPXMock
 
 from notebooklm import NotebookLMClient
+from notebooklm.options import ClientConfig, RetryOptions
 from notebooklm.rpc import ChatGoal, ChatResponseLength, RPCMethod
 from notebooklm.types import ChatMode, ChatSettings
 
@@ -29,7 +34,7 @@ class TestChatAPI:
         # Pins the per-tenant isolation contract: two NotebookLMClient
         # instances must never share a conversation cache, or follow-up
         # turns from one tenant could leak into the other's outgoing
-        # history payload. The default ``ChatAPI(conversation_cache=None)``
+        # history payload. The default ``WebChatAPI(conversation_cache=None)``
         # factory path constructs a fresh ``ConversationCache`` per
         # instance — this test would have caught a regression where
         # someone made the default a class-level singleton.
@@ -199,13 +204,19 @@ class TestChatAPI:
         self,
         auth_tokens,
         httpx_mock: HTTPXMock,
+        caplog: pytest.LogCaptureFixture,
     ):
         """Test that CUSTOM mode without prompt raises ValidationError."""
         from notebooklm.exceptions import ValidationError
 
-        async with NotebookLMClient(auth_tokens) as client:
-            with pytest.raises(ValidationError, match="custom_prompt is required"):
-                await client.chat.configure("nb_123", goal=ChatGoal.CUSTOM)
+        with caplog.at_level(logging.DEBUG, logger="notebooklm._chat.api"):
+            async with NotebookLMClient(auth_tokens) as client:
+                with pytest.raises(ValidationError, match="custom_prompt is required"):
+                    await client.chat.configure("nb_123", goal=ChatGoal.CUSTOM)
+
+        assert "Configuring chat for notebook nb_123" in [
+            record.getMessage() for record in caplog.records
+        ]
 
     @pytest.mark.asyncio
     async def test_configure_custom_mode_with_prompt(
@@ -269,8 +280,8 @@ class TestChatAPI:
         httpx_mock: HTTPXMock,
         build_rpc_response,
     ):
-        """A never-configured notebook returns null at nb_info[7] → DEFAULT/DEFAULT."""
-        nb_info = [0, 1, 2, 3, 4, 5, 6, None]
+        """Empty default components at nb_info[7] decode as DEFAULT/DEFAULT."""
+        nb_info = [0, 1, 2, 3, 4, 5, 6, [[], []]]
         response = build_rpc_response(RPCMethod.GET_NOTEBOOK, [nb_info])
         httpx_mock.add_response(content=response.encode())
         async with NotebookLMClient(auth_tokens) as client:
@@ -355,17 +366,25 @@ class TestChatReferences:
                                 None,
                                 0.95,
                                 [[None]],
-                                [  # cite[1][4] - text passages
-                                    [  # passage_wrapper
-                                        [  # passage_data
-                                            100,  # start_char
-                                            250,  # end_char
-                                            [  # nested passages
-                                                [  # nested_group
-                                                    [  # inner
-                                                        50,
-                                                        120,
-                                                        "Machine learning is a branch of artificial intelligence.",
+                                [  # cite[1][4] - Citation.fragment (a message)
+                                    [  # fragment.elements
+                                        [  # StructuralElement
+                                            100,  # startIndex
+                                            250,  # endIndex
+                                            [  # Paragraph
+                                                [  # paragraph.elements
+                                                    [  # ParagraphElement
+                                                        # Span ranges nest INSIDE
+                                                        # their block's, as the
+                                                        # wire always sends them.
+                                                        100,
+                                                        250,
+                                                        # TextRun: content is wrapped,
+                                                        # never a bare string (#2120)
+                                                        [
+                                                            "Machine learning is a branch "
+                                                            "of artificial intelligence."
+                                                        ],
                                                     ]
                                                 ]
                                             ],
@@ -394,7 +413,9 @@ class TestChatReferences:
                                                     [
                                                         280,
                                                         380,
-                                                        "Algorithms learn patterns from training data.",
+                                                        [
+                                                            "Algorithms learn patterns from training data."
+                                                        ],
                                                     ]
                                                 ]
                                             ],
@@ -514,7 +535,7 @@ class TestChatReferences:
                                         [
                                             1000,  # start_char
                                             1500,  # end_char
-                                            [[[[950, 1100, "Cited passage text."]]]],
+                                            [[[[950, 1100, ["Cited passage text."]]]]],
                                         ]
                                     ]
                                 ],
@@ -675,7 +696,9 @@ class TestChatAskErrorHandling:
         )
         # ``server_error_max_retries=0`` pins the original immediate-raise
         # contract; the default retries 5xx + RequestError 3x.
-        async with NotebookLMClient(auth_tokens, server_error_max_retries=0) as client:
+        async with NotebookLMClient(
+            auth_tokens, config=ClientConfig(retry=RetryOptions(server_error_max_retries=0))
+        ) as client:
             with pytest.raises(NetworkError, match="timed out"):
                 await client.chat.ask(
                     "nb_123",
@@ -692,7 +715,7 @@ class TestChatAskErrorHandling:
     ):
         """Test ask() raises ChatError on httpx.HTTPStatusError.
         After the chat-path refactor, the chat path uses
-        :func:`_chat.transport.chat_aware_authed_post` which routes
+        :func:`_web.transport.chat.chat_aware_authed_post` which routes
         through the shared transport pipeline. Auth-shaped statuses
         (400/401/403) go through the refresh path before surfacing; this
         test uses 500 to exercise the plain
@@ -711,7 +734,9 @@ class TestChatAskErrorHandling:
             status_code=500,
             method="POST",
         )
-        async with NotebookLMClient(auth_tokens, server_error_max_retries=0) as client:
+        async with NotebookLMClient(
+            auth_tokens, config=ClientConfig(retry=RetryOptions(server_error_max_retries=0))
+        ) as client:
             with pytest.raises(ChatError, match="500"):
                 await client.chat.ask(
                     "nb_123",
@@ -740,7 +765,9 @@ class TestChatAskErrorHandling:
             httpx.ConnectError("connection refused"),
             url=re.compile(r".*GenerateFreeFormStreamed.*"),
         )
-        async with NotebookLMClient(auth_tokens, server_error_max_retries=0) as client:
+        async with NotebookLMClient(
+            auth_tokens, config=ClientConfig(retry=RetryOptions(server_error_max_retries=0))
+        ) as client:
             with pytest.raises(NetworkError, match="connection refused"):
                 await client.chat.ask(
                     "nb_123",
@@ -974,6 +1001,54 @@ class TestAskServerAssignedConversationId:
         body_qs = parse_qs(body, keep_blank_values=True)
         f_req = json.loads(unquote(body_qs["f.req"][0]))
         return json.loads(f_req[1])
+
+    @pytest.mark.asyncio
+    async def test_create_session_hint_skips_hptbtc_and_reaches_ask_result(
+        self,
+        auth_tokens,
+        httpx_mock: HTTPXMock,
+        build_rpc_response,
+    ) -> None:
+        """CREATE's session binds the POST and replaces the redundant hPTbtc read (#2133)."""
+        session_id = "created-session-id"
+        httpx_mock.add_response(
+            url=re.compile(r".*batchexecute.*rpcids=khqZz.*"),
+            content=build_rpc_response(RPCMethod.GET_CONVERSATION_TURNS, [[]]).encode(),
+            method="POST",
+        )
+        answer_row = [
+            "Answer with suggestions.",
+            None,
+            [session_id, "turn-id", 7],
+            None,
+            [[], None, None, [], 1],
+        ]
+        inner_json = json.dumps([answer_row, None, None, None, True, [[["What next?", 9]]]])
+        chunk_json = json.dumps([["wrb.fr", None, inner_json]])
+        httpx_mock.add_response(
+            url=re.compile(r".*GenerateFreeFormStreamed.*"),
+            content=f")]}}'\n{len(chunk_json)}\n{chunk_json}\n".encode(),
+            method="POST",
+        )
+
+        async with NotebookLMClient(auth_tokens) as client:
+            client.notebooks._created_chat_session_ids["nb-created"] = session_id
+            result = await client.chat.ask(
+                "nb-created",
+                "Question?",
+                source_ids=["src-1"],
+            )
+
+        assert result.conversation_id == session_id
+        assert result.is_follow_up is False
+        assert [step.question for step in result.next_steps] == ["What next?"]
+        assert not any("rpcids=hPTbtc" in str(request.url) for request in httpx_mock.get_requests())
+        chat_request = next(
+            request
+            for request in httpx_mock.get_requests()
+            if "GenerateFreeFormStreamed" in str(request.url)
+        )
+        assert self._decode_params(chat_request)[4] == session_id
 
     @pytest.mark.asyncio
     async def test_new_conversation_sends_null_conversation_id_in_request(
@@ -1264,7 +1339,9 @@ class TestAskServerAssignedConversationId:
             method="POST",
         )
 
-        async with NotebookLMClient(auth_tokens, server_error_max_retries=0) as client:
+        async with NotebookLMClient(
+            auth_tokens, config=ClientConfig(retry=RetryOptions(server_error_max_retries=0))
+        ) as client:
             with pytest.raises(ServerError, match="500"):
                 await client.chat.ask("nb_123", "Continue?", source_ids=["src_001"])
 
@@ -1289,7 +1366,9 @@ class TestAskServerAssignedConversationId:
             method="POST",
         )
 
-        async with NotebookLMClient(auth_tokens, server_error_max_retries=0) as client:
+        async with NotebookLMClient(
+            auth_tokens, config=ClientConfig(retry=RetryOptions(server_error_max_retries=0))
+        ) as client:
             with pytest.raises(ServerError, match="500"):
                 await client.chat.ask(
                     "nb_123",
@@ -1349,12 +1428,22 @@ class TestAskServerAssignedConversationId:
             is_reusable=True,
         )
         async with NotebookLMClient(auth_tokens) as client:
-            with pytest.raises(ChatError, match="hPTbtc"):
+            with pytest.raises(
+                ChatError, match="conversation id could not be resolved"
+            ) as captured:
                 await client.chat.ask(
                     "nb_123",
                     "Q?",
                     source_ids=["src_001"],
                 )
+        from notebooklm.outcomes import CommitState, RecoveryAction
+
+        assert captured.value.commit_state is CommitState.CONFIRMED
+        assert captured.value.operation_metadata is not None
+        assert (
+            captured.value.operation_metadata.recovery_action
+            is RecoveryAction.INSPECT_AND_RECONCILE
+        )
 
     @pytest.mark.asyncio
     async def test_follow_up_sends_caller_conversation_id_in_request(
@@ -1470,48 +1559,58 @@ class TestGetHistoryErrorHandling:
     """Tests for get_history error handling ."""
 
     @pytest.mark.asyncio
-    async def test_get_history_returns_empty_on_chat_error(
+    async def test_get_history_raises_on_chat_error(
         self,
         auth_tokens,
         httpx_mock: HTTPXMock,
         build_rpc_response,
     ):
-        """Test get_history returns [] when get_conversation_turns raises ChatError."""
+        """Turn-fetch ChatError from get_conversation_turns propagates (#2384)."""
         from notebooklm.exceptions import ChatError
 
         id_response = build_rpc_response(RPCMethod.GET_LAST_CONVERSATION_ID, [[["conv_001"]]])
         httpx_mock.add_response(content=id_response.encode())
         async with NotebookLMClient(auth_tokens) as client:
-            with patch.object(
-                client.chat,
-                "get_conversation_turns",
-                new_callable=AsyncMock,
-                side_effect=ChatError("API error"),
+            with (
+                patch.object(
+                    client.chat,
+                    "get_conversation_turns",
+                    new_callable=AsyncMock,
+                    side_effect=ChatError("API error"),
+                ),
+                pytest.raises(ChatError, match="API error"),
             ):
-                result = await client.chat.get_history("nb_123")
-        assert result == []
+                await client.chat.get_history("nb_123")
 
     @pytest.mark.asyncio
-    async def test_get_history_returns_empty_on_network_error(
+    async def test_get_history_raises_on_network_error(
         self,
         auth_tokens,
         httpx_mock: HTTPXMock,
         build_rpc_response,
     ):
-        """Test get_history returns [] when get_conversation_turns raises NetworkError."""
+        """Turn-fetch NetworkError from the conversation-turns RPC propagates (#2384)."""
+        import httpx
+
         from notebooklm.exceptions import NetworkError
+        from notebooklm.options import ClientConfig, RetryOptions
 
         id_response = build_rpc_response(RPCMethod.GET_LAST_CONVERSATION_ID, [[["conv_001"]]])
-        httpx_mock.add_response(content=id_response.encode())
-        async with NotebookLMClient(auth_tokens) as client:
-            with patch.object(
-                client.chat,
-                "get_conversation_turns",
-                new_callable=AsyncMock,
-                side_effect=NetworkError("connection error"),
-            ):
-                result = await client.chat.get_history("nb_123")
-        assert result == []
+        httpx_mock.add_response(
+            url=re.compile(r".*batchexecute.*rpcids=hPTbtc.*"),
+            content=id_response.encode(),
+            method="POST",
+        )
+        httpx_mock.add_exception(
+            httpx.ConnectError("connection error"),
+            url=re.compile(r".*batchexecute.*rpcids=khqZz.*"),
+        )
+        async with NotebookLMClient(
+            auth_tokens,
+            config=ClientConfig(retry=RetryOptions(server_error_max_retries=0)),
+        ) as client:
+            with pytest.raises(NetworkError, match="connection error"):
+                await client.chat.get_history("nb_123")
 
     @pytest.mark.asyncio
     async def test_get_history_returns_empty_when_no_conversation(
@@ -1520,7 +1619,7 @@ class TestGetHistoryErrorHandling:
         httpx_mock: HTTPXMock,
         build_rpc_response,
     ):
-        """Test get_history returns [] when get_conversation_id returns None."""
+        """No conversation is a real empty history, not a swallowed fetch failure (#2384)."""
         response = build_rpc_response(RPCMethod.GET_LAST_CONVERSATION_ID, [])
         httpx_mock.add_response(content=response.encode())
         async with NotebookLMClient(auth_tokens) as client:
@@ -1544,14 +1643,16 @@ class TestGetHistoryErrorHandling:
         id_response = build_rpc_response(RPCMethod.GET_LAST_CONVERSATION_ID, [[["conv_001"]]])
         httpx_mock.add_response(content=id_response.encode())
         async with NotebookLMClient(auth_tokens) as client:
-            with patch.object(
-                client.chat,
-                "get_conversation_turns",
-                new_callable=AsyncMock,
-                return_value=["not-the-turn-list"],
+            with (
+                patch.object(
+                    client.chat,
+                    "get_conversation_turns",
+                    new_callable=AsyncMock,
+                    return_value=["not-the-turn-list"],
+                ),
+                pytest.raises(UnknownRPCMethodError),
             ):
-                with pytest.raises(UnknownRPCMethodError):
-                    await client.chat.get_history("nb_123")
+                await client.chat.get_history("nb_123")
 
     @pytest.mark.asyncio
     async def test_get_history_reverses_turns(
@@ -1716,7 +1817,7 @@ class TestParseAskResponseEdgeCases:
                                 None,
                                 0.9,
                                 [[None]],
-                                [[[100, 200, [[[50, 150, "cited text"]]]]]],
+                                [[[100, 200, [[[100, 200, ["cited text"]]]]]]],
                                 [[[["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"]]]],
                                 ["chunk-001"],
                             ],
@@ -1790,7 +1891,7 @@ class TestExtractAnswerAndRefsFromChunk:
     def test_inner_data_first_not_list_raises(self, auth_tokens):
         """A populated record whose answer row is not a list is drift.
         Previously this silently returned ``(None, ...)`` (the answer was
-        dropped). Since the strict-decode migration of ``_chat.wire``
+        dropped). Since the strict-decode migration of the chat stream parser
         (ADR-0011) a non-list answer row in a *populated* ``wrb.fr`` record is
         treated as Google-side wire drift and raises ``UnknownRPCMethodError``.
         Strict decoding is the only mode (the ``NOTEBOOKLM_STRICT_DECODE=0``
@@ -2002,66 +2103,74 @@ class TestExtractTextPassagesEdgeCases:
         result = client.chat._extract_text_passages(cite_inner)
         assert result == (None, None, None)
 
-    def test_extract_text_passages_skips_short_passage_data(self, auth_tokens):
-        """Test _extract_text_passages skips passage_data with len < 3."""
+    def test_element_without_a_paragraph_keeps_its_range(self, auth_tokens):
+        """A range-only element contributes offsets but no text.
+
+        ``StructuralElement`` also carries table / image / code-block / rule
+        variants this client does not decode. They still occupy document
+        offsets, so dropping them would leave an unexplained gap in the
+        coordinate space; they contribute ``""`` to the cited text instead.
+        """
         client = NotebookLMClient(auth_tokens)
-        cite_inner = [None, None, None, None, [[[100, 200]]]]  # passage_data has len 2
-        result = client.chat._extract_text_passages(cite_inner)
-        assert result == (None, None, None)
+        cite_inner = [None, None, None, None, [[[100, 200]]]]
+        assert client.chat._extract_text_passages(cite_inner) == (None, 100, 200)
 
 
-class TestCollectTextsFromNested:
-    """Tests for _collect_texts_from_nested ."""
+class TestFragmentTextDegradation:
+    """Malformed paragraph internals degrade to no text, never to a raise.
 
-    def test_non_list_input_returns_immediately(self, auth_tokens):
-        """Test _collect_texts_from_nested returns immediately for non-list input ."""
+    These replace the ``_collect_texts_from_nested`` suite retired in #2120:
+    the nested-walk decoder it covered was subsumed by the shared document
+    adapters, so the same degradation classes are exercised through the
+    public entry point instead.
+    """
+
+    @pytest.mark.parametrize(
+        "paragraph",
+        [
+            "not a list",
+            None,
+            ["not_a_list_elements"],
+            [[[0, 100]]],  # ParagraphElement too short for a TextRun
+            [[[0, 100, 42]]],  # TextRun slot is not a list
+            [[[0, 100, [42]]]],  # TextRun content is not a string
+            [[[0, 100, [None]]]],
+        ],
+        ids=[
+            "non-list-paragraph",
+            "null-paragraph",
+            "non-list-elements",
+            "short-element",
+            "non-list-text-run",
+            "non-string-content",
+            "null-content",
+        ],
+    )
+    def test_unusable_paragraph_yields_no_text_but_keeps_the_range(self, auth_tokens, paragraph):
         client = NotebookLMClient(auth_tokens)
-        texts = []
-        client.chat._collect_texts_from_nested("not a list", texts)
-        assert texts == []
+        cite_inner = [None, None, None, None, [[[0, 100, paragraph]]]]
+        cited_text, start_char, end_char = client.chat._extract_text_passages(cite_inner)
+        assert cited_text is None
+        assert (start_char, end_char) == (0, 100)
 
-    def test_non_list_input_none_returns_immediately(self, auth_tokens):
-        """Test _collect_texts_from_nested returns immediately for None input."""
-        client = NotebookLMClient(auth_tokens)
-        texts = []
-        client.chat._collect_texts_from_nested(None, texts)
-        assert texts == []
+    def test_empty_text_runs_are_preserved_verbatim(self, auth_tokens):
+        """Whitespace is content, not noise.
 
-    def test_nested_group_not_list_is_skipped(self, auth_tokens):
-        """Test _collect_texts_from_nested skips nested_group that is not a list."""
+        The retired decoder stripped and dropped whitespace-only runs. It
+        cannot any more: ``cited_text`` is the fragment's exact text, and
+        dropping a run would break ``len(cited_text) == end - start``.
+        """
         client = NotebookLMClient(auth_tokens)
-        texts = []
-        # nested contains a non-list item
-        client.chat._collect_texts_from_nested(["not_a_list_group"], texts)
-        assert texts == []
-
-    def test_text_val_is_list_extracts_strings(self, auth_tokens):
-        """Test _collect_texts_from_nested extracts strings when text_val is a list ."""
-        client = NotebookLMClient(auth_tokens)
-        texts = []
-        # Structure: nested=[nested_group], nested_group=[inner], inner=[start, end, text_val]
-        nested = [[[0, 100, ["part one", "  ", "part two"]]]]
-        client.chat._collect_texts_from_nested(nested, texts)
-        assert "part one" in texts
-        assert "part two" in texts
-
-    def test_text_val_list_skips_non_strings(self, auth_tokens):
-        """Test _collect_texts_from_nested skips non-string items in text_val list."""
-        client = NotebookLMClient(auth_tokens)
-        texts = []
-        # text_val list contains a mix of string and non-string
-        nested = [[[0, 100, [42, "valid text", None]]]]
-        client.chat._collect_texts_from_nested(nested, texts)
-        assert texts == ["valid text"]
-
-    def test_inner_with_len_less_than_3_is_skipped(self, auth_tokens):
-        """Test _collect_texts_from_nested skips inner items with len < 3."""
-        client = NotebookLMClient(auth_tokens)
-        texts = []
-        # inner has only 2 elements
-        nested = [[[0, 100]]]
-        client.chat._collect_texts_from_nested(nested, texts)
-        assert texts == []
+        cite_inner = [
+            None,
+            None,
+            None,
+            None,
+            [[[0, 5, [[[0, 5, ["  "]], [2, 5, ["abc"]]]]]]],
+        ]
+        cited_text, start_char, end_char = client.chat._extract_text_passages(cite_inner)
+        assert cited_text == "  abc"
+        assert len(cited_text) == end_char - start_char
 
 
 class TestExtractUuidFromNested:
@@ -2230,77 +2339,50 @@ class TestExtractAnswerEmptyInnerData:
         assert conv_id is None
 
 
-class TestExtractTextPassagesMultiplePassages:
-    """Tests for _extract_text_passages with multiple passages ."""
+def _fragment(*elements):
+    """Wrap ``StructuralElement`` rows as a ``Citation.fragment`` message.
 
-    def test_extract_text_passages_multiple_passages_updates_end_char(self, auth_tokens):
-        """Test that end_char is updated for each valid passage ."""
+    The extra nesting is the whole of #2120: ``cite_inner[4]`` is the message,
+    and its ``elements`` list is one level below at ``[4][0]``. A fixture that
+    omits this level agrees with the pre-fix decoder and can never fail.
+    """
+    return [list(elements)]
+
+
+class TestExtractTextPassagesMultipleElements:
+    """A fragment spans every one of its blocks, not just the first (#2120)."""
+
+    def test_range_covers_first_start_to_last_end(self, auth_tokens):
         client = NotebookLMClient(auth_tokens)
-        # Two passage_wrappers: first sets start_char and end_char, second updates end_char
         cite_inner = [
             None,
             None,
             None,
             None,
-            [
-                # First passage_wrapper
-                [[100, 200, [[[50, 150, "first text"]]]]],
-                # Second passage_wrapper - end_char should be updated to 400
-                [[300, 400, [[[250, 380, "second text"]]]]],
-            ],
+            _fragment(
+                [100, 200, [[[100, 200, ["first text"]]]]],
+                [200, 400, [[[200, 400, ["second text"]]]]],
+            ),
         ]
         cited_text, start_char, end_char = client.chat._extract_text_passages(cite_inner)
-        assert start_char == 100  # from first passage
-        assert end_char == 400  # updated by second passage
+        assert (start_char, end_char) == (100, 400)
+        assert cited_text == "first textsecond text"
 
-    def test_extract_text_passages_start_char_not_reset_on_second_passage(self, auth_tokens):
-        """Test start_char is only set once from the first valid passage (arc 676->678)."""
+    def test_start_is_the_union_lower_bound(self, auth_tokens):
+        """The range is the union of every block, not just the first one's."""
         client = NotebookLMClient(auth_tokens)
         cite_inner = [
             None,
             None,
             None,
             None,
-            [
-                # First passage: sets start_char=10
-                [[10, 100, [[[5, 50, "text one"]]]]],
-                # Second passage: start_char should NOT be reset to 200
-                [[200, 300, [[[150, 250, "text two"]]]]],
-            ],
+            _fragment(
+                [10, 100, [[[10, 100, ["text one"]]]]],
+                [200, 300, [[[200, 300, ["text two"]]]]],
+            ),
         ]
         _, start_char, _ = client.chat._extract_text_passages(cite_inner)
-        assert start_char == 10  # only set from first passage
-
-
-class TestCollectTextsFromNestedEmptyTextVal:
-    """Test _collect_texts_from_nested when text_val list has no extractable strings (arc 709->703)."""
-
-    def test_text_val_list_all_empty_strings_adds_nothing(self, auth_tokens):
-        """Test that text_val list with only whitespace strings adds nothing (arc 709->703)."""
-        client = NotebookLMClient(auth_tokens)
-        texts = []
-        # text_val is a list but all items are whitespace or empty
-        nested = [[[0, 100, ["  ", "", "   "]]]]
-        client.chat._collect_texts_from_nested(nested, texts)
-        assert texts == []
-
-    def test_text_val_list_with_non_string_items_adds_nothing(self, auth_tokens):
-        """Test that text_val list with only non-string items adds nothing."""
-        client = NotebookLMClient(auth_tokens)
-        texts = []
-        # text_val is a list but all items are non-strings
-        nested = [[[0, 100, [None, 42, True]]]]
-        client.chat._collect_texts_from_nested(nested, texts)
-        assert texts == []
-
-    def test_text_val_neither_string_nor_list_does_nothing(self, auth_tokens):
-        """Test that text_val that is neither string nor list is skipped (arc 709->703)."""
-        client = NotebookLMClient(auth_tokens)
-        texts = []
-        # text_val is an integer - neither str nor list - skips both branches
-        nested = [[[0, 100, 42]]]
-        client.chat._collect_texts_from_nested(nested, texts)
-        assert texts == []
+        assert start_char == 10
 
 
 class TestParseAskResponseBranchCoverage:
@@ -2359,7 +2441,7 @@ class TestParseAskResponseBranchCoverage:
                                 None,
                                 0.9,
                                 [[None]],
-                                [[[100, 200, [[[50, 150, "cited text"]]]]]],
+                                [[[100, 200, [[[100, 200, ["cited text"]]]]]]],
                                 [[[["eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"]]]],
                                 ["chunk-001"],
                             ],
@@ -2386,28 +2468,25 @@ class TestParseAskResponseBranchCoverage:
 
 
 class TestExtractTextPassagesNonIntEndChar:
-    """Test _extract_text_passages when passage_data[1] is not an int (arc 678->682)."""
+    """An element with an unusable range is dropped whole (#2120)."""
 
-    def test_non_int_end_char_drops_paired_range(self, auth_tokens):
-        """A half-populated start/end pair is dropped to (None, None) so the
-        ChatReference paired-offset invariant accepts the result. The cited
-        text is still returned regardless.
+    def test_non_int_end_index_drops_the_element(self, auth_tokens):
+        """A block whose range cannot be trusted contributes nothing at all.
+
+        Its text is dropped along with its offsets, deliberately: keeping the
+        text would break ``len(cited_text) == end_char - start_char``, and a
+        block whose ``endIndex`` is a string has told us nothing reliable about
+        where in the source it sits.
         """
         client = NotebookLMClient(auth_tokens)
-        # passage_data[1] is a string, not int — start was set, end never was.
         cite_inner = [
             None,
             None,
             None,
             None,
-            [
-                [[100, "not_an_int", [[[50, 150, "some text"]]]]],
-            ],
+            [[[100, "not_an_int", [[[100, 150, ["some text"]]]]]]],
         ]
-        cited_text, start_char, end_char = client.chat._extract_text_passages(cite_inner)
-        assert start_char is None  # paired-drop: end was never int, start is cleared too
-        assert end_char is None
-        assert cited_text is not None  # text extraction still succeeded
+        assert client.chat._extract_text_passages(cite_inner) == (None, None, None)
 
 
 class TestChatHL:
@@ -2498,3 +2577,83 @@ class TestChatHL:
             r for r in httpx_mock.get_requests() if "GenerateFreeFormStreamed" in str(r.url)
         )
         assert "hl=en" in str(chat_request.url)
+
+
+class TestAskCarriesTheConversationTurnKey:
+    """``ChatAPI.ask`` must thread the decoded turn key onto ``AskResult`` (#2122).
+
+    Driven by the live five-chunk capture rather than a synthetic chunk: the
+    whole point of the key is that it comes off a real backend response, and
+    this is the only test that covers the ``ask`` → ``AskResult.turn_key``
+    hand-off (the CLI / MCP / REST tests build ``AskResult`` directly).
+    """
+
+    @staticmethod
+    def _captured_stream_body() -> bytes:
+        chunks = json.loads(
+            (Path(__file__).parent / "fixtures" / "chat_stream_final_response.json").read_text(
+                encoding="utf-8"
+            )
+        )["chunks"]
+        parts = [")]}'"]
+        for chunk in chunks:
+            frame = json.dumps([["wrb.fr", None, json.dumps(chunk)]])
+            parts.append(f"\n{len(frame)}\n{frame}")
+        parts.append("\n")
+        return "".join(parts).encode()
+
+    @pytest.mark.asyncio
+    async def test_turn_key_reaches_the_ask_result(
+        self,
+        auth_tokens,
+        httpx_mock: HTTPXMock,
+        mock_get_conversation_id,
+    ):
+        httpx_mock.add_response(
+            url=re.compile(r".*GenerateFreeFormStreamed.*"),
+            content=self._captured_stream_body(),
+            method="POST",
+        )
+        mock_get_conversation_id(conv_id="3afea005-7d13-41d0-9257-6a9e28597818")
+
+        async with NotebookLMClient(auth_tokens) as client:
+            result = await client.chat.ask(
+                notebook_id="test_nb",
+                question="What does a task wrap?",
+                source_ids=["src_001"],
+            )
+
+        assert result.answer == "A task wraps a **coroutine** [1]."
+        assert result.turn_key is not None
+        assert result.turn_key.session_id == "3afea005-7d13-41d0-9257-6a9e28597818"
+        assert result.turn_key.turn_id == "b38d4003-5be1-487d-a121-5c5958709021"
+        assert result.turn_key.turn_code == 2187103311
+
+    @pytest.mark.asyncio
+    async def test_turn_key_is_none_when_the_stream_carries_no_key(
+        self,
+        auth_tokens,
+        httpx_mock: HTTPXMock,
+        mock_get_conversation_id,
+    ):
+        """``ask`` still needs a conversation id at ``first[2][0]`` (#659), so
+        this covers a key too short to identify a turn, not a missing block."""
+        inner = json.dumps([["An answer.", None, ["server-conv"], None, [[], None, None, [], 1]]])
+        frame = json.dumps([["wrb.fr", None, inner]])
+        httpx_mock.add_response(
+            url=re.compile(r".*GenerateFreeFormStreamed.*"),
+            content=f")]}}'\n{len(frame)}\n{frame}\n".encode(),
+            method="POST",
+        )
+        mock_get_conversation_id()
+
+        async with NotebookLMClient(auth_tokens) as client:
+            result = await client.chat.ask(
+                notebook_id="test_nb", question="Q", source_ids=["src_001"]
+            )
+
+        assert result.answer == "An answer."
+        assert result.turn_key is not None
+        assert result.turn_key.session_id == "server-conv"
+        assert result.turn_key.turn_id is None
+        assert result.turn_key.turn_code is None

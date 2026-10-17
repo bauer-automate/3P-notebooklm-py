@@ -35,9 +35,16 @@ from typing import Any
 
 from fastmcp.exceptions import ToolError
 
-from .._app.errors import CATEGORY_HINTS, ErrorCategory, classify, did_you_mean_hint
-from .._redact import redact
-from ..exceptions import NotebookLMError
+from .._adapter_support import redact
+from .._app.errors import (
+    CATEGORY_HINTS,
+    ErrorCategory,
+    classify,
+    did_you_mean_hint,
+    unconfirmed_hint,
+)
+from ..exceptions import NotebookLMError, RateLimitError
+from ..outcomes import format_operation_metadata, operation_metadata_payload
 
 __all__ = [
     "CATEGORY_TABLE",
@@ -93,7 +100,7 @@ ERROR_CODES: frozenset[str] = frozenset(code for code, _ in CATEGORY_TABLE.value
 
 
 def tool_error_payload(exc: BaseException) -> dict[str, Any]:
-    """Return the structured ``{code, message, retriable, hint?}`` for ``exc``.
+    """Return the structured MCP error, including a known rate-limit retry delay.
 
     The category + retriability come from :func:`_app.errors.classify`; the code
     and hint come from :data:`CATEGORY_TABLE`. ``hint`` is omitted entirely when
@@ -112,10 +119,21 @@ def tool_error_payload(exc: BaseException) -> dict[str, Any]:
         "message": message,
         "retriable": classified.retriable,
     }
+    if isinstance(exc, RateLimitError) and exc.retry_after is not None:
+        payload["retry_after_seconds"] = exc.retry_after
+    operation_payload = operation_metadata_payload(exc)
+    payload.update(operation_payload)
     # A failed *name* lookup may carry near-miss candidates (issue #1787). Surface
     # them structurally AND replace the generic NOT_FOUND hint with a "Did you
     # mean …" one that names the titles inline — the FastMCP wire flattens this
     # payload to a string, so the inline titles are what a flat-string client sees.
+    # An UNCONFIRMED create (#2220) is forced to the RPC category, whose hint is
+    # None — so without this the client sees only an opaque message (often a bare
+    # connection error) and ``retriable: false``, with nothing saying a source may
+    # already exist. Surface the state structurally AND as the hint.
+    if getattr(exc, "unconfirmed", False):
+        payload["unconfirmed"] = True
+        hint = unconfirmed_hint(exc)
     candidates = list(getattr(exc, "candidates", ()) or ())
     if candidates:
         payload["candidates"] = candidates
@@ -134,12 +152,32 @@ def to_tool_error(exc: BaseException) -> ToolError:
     branch on the leading ``CODE:`` token and the ``retriable`` flag; the full
     payload (including ``hint``) is available via :func:`tool_error_payload` for
     structured consumers.
+
+    Known ``retry_after_seconds`` and ``unconfirmed=true`` are flattened into
+    that same parenthesis (#1925, #2220). Only the *batch* result shapes carry
+    the payload dict to the wire; a single tool
+    call is serialized through this ``ToolError`` message alone, so a marker
+    left in the dict would never reach the client for the ordinary
+    notebook/source create — exactly the caller most at risk of retrying a write
+    that may already exist.
     """
     payload = tool_error_payload(exc)
     suffix = f" hint: {payload['hint']}" if "hint" in payload else ""
+    unconfirmed = " unconfirmed=true" if payload.get("unconfirmed") else ""
+    retry_after = (
+        f" retry_after_seconds={payload['retry_after_seconds']}"
+        if "retry_after_seconds" in payload
+        else ""
+    )
+    operation_payload = operation_metadata_payload(exc)
+    operation = (
+        f" operation_metadata={format_operation_metadata(operation_payload)}"
+        if operation_payload
+        else ""
+    )
     return ToolError(
         f"{payload['code']}: {payload['message']} "
-        f"(retriable={str(payload['retriable']).lower()}){suffix}"
+        f"(retriable={str(payload['retriable']).lower()}{unconfirmed}{retry_after}){suffix}{operation}"
     )
 
 

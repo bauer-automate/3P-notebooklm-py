@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import notebooklm._app.login_browser as login_browser
 import notebooklm.cli.playwright_login_io as playwright_login_io_module
 import notebooklm.cli.services.playwright_login as _pl
 import notebooklm.cli.session_cmd as session_cmd_module
@@ -65,7 +66,7 @@ def _invoke_login_with_launch_failure(runner, tmp_path, launch_error, *cli_args)
         patch.object(_pl, "ensure_chromium_installed"),
         patch("playwright.sync_api.sync_playwright") as mock_pw,
         patch_session_login_dual("get_storage_path", return_value=tmp_path / "storage.json"),
-        patch.object(_pl, "get_browser_profile_dir", return_value=tmp_path / "profile"),
+        patch.object(login_browser, "get_browser_profile_dir", return_value=tmp_path / "profile"),
     ):
         mock_launch = mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
         mock_launch.side_effect = Exception(launch_error)
@@ -82,7 +83,7 @@ class TestLoginUrlValidation:
     def test_url_matches_default_base_host(self, monkeypatch):
         monkeypatch.delenv("NOTEBOOKLM_BASE_URL", raising=False)
 
-        from notebooklm.cli.services.playwright_login import (
+        from notebooklm._browser.browser_capture import (
             url_matches_base_host as _url_matches_base_host,
         )
 
@@ -95,7 +96,7 @@ class TestLoginUrlValidation:
     def test_url_matches_enterprise_base_host(self, monkeypatch):
         monkeypatch.setenv("NOTEBOOKLM_BASE_URL", "https://notebooklm.cloud.google.com")
 
-        from notebooklm.cli.services.playwright_login import (
+        from notebooklm._browser.browser_capture import (
             url_matches_base_host as _url_matches_base_host,
         )
 
@@ -106,7 +107,7 @@ class TestLoginUrlValidation:
     def test_connection_error_help_uses_enterprise_base_host(self, monkeypatch):
         monkeypatch.setenv("NOTEBOOKLM_BASE_URL", "https://notebooklm.cloud.google.com")
 
-        from notebooklm.cli.services.playwright_login import (
+        from notebooklm._browser.browser_capture import (
             connection_error_help as _connection_error_help,
         )
 
@@ -220,7 +221,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=tmp_path / "storage.json"),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=tmp_path / "profile",
             ),
@@ -230,6 +231,7 @@ class TestLoginCommand:
             mock_page = MagicMock()
             mock_page.url = f"https://{get_base_host()}/"
             mock_context.pages = [mock_page]
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -355,7 +357,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=tmp_path / "profile",
             ),
@@ -385,6 +387,7 @@ class TestLoginCommand:
                 ],
                 "origins": [],
             }
+            mock_context.cookies.return_value = mock_context.storage_state.return_value["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -400,6 +403,9 @@ class TestLoginCommand:
                 'Page.goto: Navigation to "https://accounts.google.com/" is interrupted by '
                 'another navigation to "https://notebooklm.google.com/"'
             ),
+            # #2257: a superseded navigation reports this instead of the prose
+            # above, and it must be treated as the same benign race.
+            "Page.goto: net::ERR_ABORTED; maybe frame was detached?",
         ],
     )
     @pytest.mark.requires_playwright
@@ -477,7 +483,8 @@ class TestLoginCommand:
         result = runner.invoke(cli, ["login"])
 
         assert result.exit_code == 0
-        assert "Already logged in" in result.output
+        assert "Capturing Google cookies..." in result.output
+        assert "Already logged in" not in result.output
         mock_page.wait_for_url.assert_not_called()
 
     def test_login_auto_detect_waits_for_url_when_not_logged_in(
@@ -500,7 +507,7 @@ class TestLoginCommand:
         assert result.exit_code == 0
         mock_page.wait_for_url.assert_called_once()
         # Verify timeout=300_000 (5 minutes) is passed
-        assert mock_page.wait_for_url.call_args.kwargs.get("timeout") == 300_000
+        assert 299_000 < mock_page.wait_for_url.call_args.kwargs["timeout"] <= 300_000
         # The detector must NOT inherit Playwright's default wait_until="load":
         # The app host is a streaming SPA that never fires "load", so a
         # load-gated wait hangs the full 5 min even though login already succeeded
@@ -509,7 +516,25 @@ class TestLoginCommand:
             "commit",
             "domcontentloaded",
         }
-        assert "Login detected" in result.output
+        assert "Capturing Google cookies..." in result.output
+        assert "Login detected" not in result.output
+
+    def test_login_forwards_custom_browser_timeout(self, runner, mock_login_browser_with_storage):
+        """The public timeout controls Playwright's human sign-in wait."""
+        mock_page = mock_login_browser_with_storage
+        mock_page.url = "https://accounts.google.com/signin"
+
+        def succeed(predicate, **kwargs):
+            assert predicate("https://notebooklm.google.com/")
+            mock_page.url = "https://notebooklm.google.com/"
+
+        mock_page.wait_for_url.side_effect = succeed
+
+        result = runner.invoke(cli, ["login", "--browser-timeout", "420"])
+
+        assert result.exit_code == 0
+        assert 419_000 < mock_page.wait_for_url.call_args.kwargs["timeout"] <= 420_000
+        assert "Waiting for login (up to 420 seconds)" in result.output
 
     @pytest.mark.requires_playwright
     def test_login_auto_detect_timeout_exits_with_helpful_message(
@@ -714,7 +739,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -726,6 +751,7 @@ class TestLoginCommand:
             mock_page.url = f"https://{get_base_host()}/"
             mock_context.pages = [mock_page]
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -751,7 +777,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -763,6 +789,7 @@ class TestLoginCommand:
             mock_page.url = f"https://{get_base_host()}/"
             mock_context.pages = [mock_page]
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -789,7 +816,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -802,6 +829,7 @@ class TestLoginCommand:
             mock_page.content.return_value = "<html></html>"
             mock_context.pages = [mock_page]
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -833,6 +861,7 @@ class TestLoginCommand:
         mock_page.content.return_value = "<html></html>"
         mock_context.pages = [mock_page]
         mock_context.storage_state.return_value = _required_cookie_state()
+        mock_context.cookies.return_value = _required_cookie_state()["cookies"]
         mock_playwright = MagicMock()
         mock_playwright.chromium.launch_persistent_context.return_value = mock_context
 
@@ -850,7 +879,14 @@ class TestLoginCommand:
         def fake_sync_playwright():
             return FakeSyncPlaywright()
 
-        def fake_repair(storage_path, io, *, page_html=None, quiet=False):
+        def fake_repair(
+            storage_path,
+            *,
+            emit_event,
+            run_async,
+            page_html=None,
+            quiet=False,
+        ):
             repair_calls.append(
                 {
                     "storage_path": storage_path,
@@ -865,10 +901,14 @@ class TestLoginCommand:
         with (
             patch.object(_pl, "ensure_chromium_installed"),
             patch("playwright.sync_api.sync_playwright", side_effect=fake_sync_playwright),
-            patch.object(_pl, "repair_playwright_account_metadata", side_effect=fake_repair),
+            patch.object(
+                login_browser,
+                "repair_playwright_account_metadata",
+                side_effect=fake_repair,
+            ),
         ):
             playwright_login.run_playwright_login(
-                playwright_login.PlaywrightLoginPlan(
+                login_browser.BrowserLoginPlan(
                     browser="chromium",
                     browser_profile=browser_dir,
                     storage_path=storage_file,
@@ -904,7 +944,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -917,6 +957,7 @@ class TestLoginCommand:
             mock_page.content.return_value = '<script>"bob@example.com"</script>'
             mock_context.pages = [mock_page]
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -951,7 +992,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -978,6 +1019,7 @@ class TestLoginCommand:
             mock_context.pages = [mock_page_stale]
             mock_context.new_page.return_value = mock_page_recovered
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -1020,7 +1062,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -1033,6 +1075,7 @@ class TestLoginCommand:
             mock_page.content.return_value = "<html></html>"
             mock_context.pages = [mock_page]
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -1160,7 +1203,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -1172,6 +1215,7 @@ class TestLoginCommand:
             mock_page.url = f"https://{get_base_host()}/"
             mock_context.pages = [mock_page]
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
             )
@@ -1206,14 +1250,18 @@ class TestLoginCommand:
         with (
             patch_session_login_dual("get_storage_path", return_value=tmp_path / "s.json"),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
-            # ``prepare_login_paths`` (in ``services.playwright_login``) owns
+            # ``prepare_login_paths`` (in ``_app.login_browser``) owns
             # the ``--fresh`` rmtree; patch the consumer module's ``shutil``
             # (#1367 removed the ``session_cmd`` stdlib re-export).
-            patch.object(_pl.shutil, "rmtree", side_effect=OSError("locked")) as mock_rmtree,
+            patch.object(
+                login_browser.shutil,
+                "rmtree",
+                side_effect=OSError("locked"),
+            ) as mock_rmtree,
         ):
             result = runner.invoke(cli, ["login", "--fresh"])
 
@@ -1235,7 +1283,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -1258,6 +1306,7 @@ class TestLoginCommand:
             # new_page() returns a working fresh page
             mock_context.new_page.return_value = mock_page_fresh
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
 
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
@@ -1288,7 +1337,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -1320,6 +1369,7 @@ class TestLoginCommand:
             mock_context.pages = [mock_page_stale]
             mock_context.new_page.return_value = mock_page_fresh
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
 
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
@@ -1344,7 +1394,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -1369,13 +1419,20 @@ class TestLoginCommand:
 
             mock_page_stale.goto.side_effect = stale_goto_side_effect
             mock_page_stale.url = f"https://{get_base_host()}/"
-            mock_page_recovered.goto.side_effect = PlaywrightError(
-                'Page.goto: Navigation to "https://accounts.google.com/" is interrupted by '
-                'another navigation to "https://notebooklm.google.com/"'
-            )
+
+            def recovered_goto(url, **kwargs):
+                if url == "https://accounts.google.com/":
+                    raise PlaywrightError(
+                        'Page.goto: Navigation to "https://accounts.google.com/" is interrupted by '
+                        'another navigation to "https://notebooklm.google.com/"'
+                    )
+                # The final app visit commits on the recovered page.
+
+            mock_page_recovered.goto.side_effect = recovered_goto
             mock_context.pages = [mock_page_stale]
             mock_context.new_page.return_value = mock_page_recovered
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
 
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
@@ -1399,7 +1456,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -1417,6 +1474,7 @@ class TestLoginCommand:
             mock_context.pages = [mock_page]
             mock_context.new_page.return_value = mock_page  # new pages also fail
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
 
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
@@ -1446,7 +1504,7 @@ class TestLoginCommand:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=storage_file),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=browser_dir,
             ),
@@ -1478,6 +1536,7 @@ class TestLoginCommand:
             mock_context.pages = [mock_page_stale]
             mock_context.new_page.return_value = mock_page_recovered
             mock_context.storage_state.return_value = _required_cookie_state()
+            mock_context.cookies.return_value = _required_cookie_state()["cookies"]
 
             mock_launch = (
                 mock_pw.return_value.__enter__.return_value.chromium.launch_persistent_context
@@ -1575,7 +1634,7 @@ class TestLoginNoTraceback:
             patch("playwright.sync_api.sync_playwright") as mock_pw,
             patch_session_login_dual("get_storage_path", return_value=tmp_path / "storage.json"),
             patch.object(
-                _pl,
+                login_browser,
                 "get_browser_profile_dir",
                 return_value=tmp_path / "profile",
             ),
@@ -1691,6 +1750,7 @@ class TestLoginLanguageSync:
     def test_sync_uses_explicit_storage_and_profile(self, tmp_path):
         """Language sync should use the freshly written login target."""
         from notebooklm.cli.session_cmd import _sync_server_language_to_config
+        from notebooklm.options import ClientConfig, WebBackendConfig, WebRequestOptions
 
         config_path = tmp_path / "config.json"
         storage_path = tmp_path / "profiles" / "work" / "storage_state.json"
@@ -1712,6 +1772,7 @@ class TestLoginLanguageSync:
         mock_client_cls.from_storage.assert_called_once_with(
             path=str(storage_path),
             profile="work",
+            config=ClientConfig(backend=WebBackendConfig(request=WebRequestOptions())),
         )
         config = json.loads(config_path.read_text())
         assert config["language"] == "fr"

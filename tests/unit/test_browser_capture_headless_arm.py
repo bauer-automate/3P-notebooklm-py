@@ -25,8 +25,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from notebooklm._auth import browser_capture
-from notebooklm._auth.browser_capture import (
+from notebooklm._browser import browser_capture
+from notebooklm._browser.browser_capture import (
     RETRYABLE_CONNECTION_ERRORS,
     TARGET_CLOSED_ERROR,
     BrowserCapturePlan,
@@ -85,6 +85,7 @@ def _fake_playwright_landing(url: str, *, cookies: list[dict] | None = None) -> 
     page.goto.return_value = None
     page.content.return_value = "<html></html>"
     context = MagicMock()
+    context.cookies.return_value = cookies if cookies is not None else []
     context.pages = [page]
     context.storage_state.return_value = {
         "cookies": cookies if cookies is not None else [],
@@ -224,7 +225,7 @@ def test_headless_redirected_to_login_raises_loudly(tmp_path: Path) -> None:
     )
     io = _RaisingCaptureIO()
 
-    with pytest.raises(HeadlessLoginRequiredError, match="session is"):
+    with pytest.raises(HeadlessLoginRequiredError, match="no usable Google session cookies"):
         _run_headless(
             BrowserCapturePlan(browser="chromium", browser_profile=profile, storage_path=storage),
             io,

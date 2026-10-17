@@ -1,21 +1,8 @@
-"""Session and context management CLI commands.
+"""Session, login, context, and authentication-management CLI commands.
 
-Commands:
-    login   Log in to NotebookLM via browser
-    use     Set the current notebook context
-    status  Show current context
-    clear   Clear current notebook context
-    auth    Authentication management (logout / inspect / check / refresh)
-
-This module is split into thin Click handlers over service modules for
-Playwright login, browser-cookie login/refresh, session context,
-auth diagnostics, and auth-source precedence. Command-side wrappers in
-:mod:`notebooklm.cli.playwright_login_io` provide the concrete rendering,
-exit, and async-runner seams for the Playwright and browser-cookie login
-services.
-
-Body-used names that moved into services are re-imported here as command-layer
-bindings and legacy patch seams.
+Thin Click handlers delegate to service modules; command-side wrappers provide
+rendering, exit, and async-runner seams. Re-imported service names preserve the
+legacy command-layer patch surfaces.
 """
 
 from __future__ import annotations
@@ -28,9 +15,12 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import click
 import httpx
 
+from .._app.login_browser import BrowserLoginPlan, browser_login_channels
+from .._app.views import notebook_viewed_keys
 from ..auth import MasterTokenError as _MasterTokenError
 from ..exceptions import AuthError, NotebookNotFoundError
 from ..paths import get_storage_path
+from ..types import share_permission_to_str
 
 # Cookie-JSON import helpers (split out to keep this module under the size budget).
 from ._cookie_import import _import_cookie_json, _read_auth_json_input
@@ -42,6 +32,7 @@ from ._session_render import (
     _render_auth_inspect_error,
     _render_logout_outcome,
     _render_status,
+    _render_use_notebook,
     _use_notebook_table,
 )
 from .auth_runtime import (
@@ -82,12 +73,6 @@ from .services.login import (
 from .services.login import cookie_domains as _cookie_domains
 from .services.login.exceptions import LoginConfigurationError
 from .services.login.outcomes import BrowserCookieOutcome, NetworkFailure
-from .services.playwright_login import (
-    CHANNEL_BROWSERS as _CHANNEL_BROWSERS,
-)
-from .services.playwright_login import (
-    PlaywrightLoginPlan,
-)
 from .services.session_context import (
     UseNotebookResult,
     execute_logout,
@@ -99,6 +84,8 @@ if TYPE_CHECKING:
     from ..client import NotebookLMClient
 
 logger = logging.getLogger(__name__)
+
+_CHANNEL_BROWSERS = dict(browser_login_channels())
 
 
 async def fetch_tokens_with_domains(*args: Any, **kwargs: Any) -> Any:
@@ -136,13 +123,15 @@ def _run_playwright_login(
     browser_profile: Path,
     storage_path: Path,
     include_domains: set[str] | None = None,
+    browser_timeout: int = 300,
 ) -> None:
     """Backward-compat wrapper around :func:`run_login`."""
-    plan = PlaywrightLoginPlan(
+    plan = BrowserLoginPlan(
         browser=browser,
         browser_profile=browser_profile,
         storage_path=storage_path,
         include_domains=include_domains,
+        login_timeout_s=browser_timeout,
     )
     run_login(plan)
 
@@ -181,6 +170,13 @@ def register_session_commands(cli):
             "Use 'chrome' for system Google Chrome (workaround when bundled "
             "Chromium crashes, e.g. macOS 15+), 'msedge' for Microsoft Edge."
         ),
+    )
+    @click.option(
+        "--browser-timeout",
+        type=click.IntRange(min=1),
+        default=300,
+        show_default=True,
+        help="Seconds to wait for a human to complete browser sign-in.",
     )
     @click.option(
         "--browser-cookies",
@@ -311,6 +307,7 @@ def register_session_commands(cli):
         ctx,
         storage,
         browser,
+        browser_timeout,
         browser_cookies,
         account_email,
         all_accounts,
@@ -359,6 +356,7 @@ def register_session_commands(cli):
                         ctx,
                         storage=storage,
                         browser=browser,
+                        browser_timeout=browser_timeout,
                         account_email=account_email,
                         oauth_token=oauth_token,
                         android_id=android_id,
@@ -417,13 +415,14 @@ def register_session_commands(cli):
                     browser_profile=browser_profile,
                     storage_path=storage_path,
                     include_domains=include_domains,
+                    browser_timeout=browser_timeout,
                 )
                 console.print(f"\n[green]Authentication saved to:[/green] {storage_path}")
 
                 # Keep the local language in sync with the server (fixes #121).
                 _sync_server_language_to_config(storage_path=storage_path, profile=profile)
         finally:
-            del ctx, storage, browser, browser_cookies, account_email
+            del ctx, storage, browser, browser_timeout, browser_cookies, account_email
             del all_accounts, update, profile_name, fresh, include_domains_raw
             del master_token, master_token_refresh, oauth_token, android_id, cdp_url, force
             del run_master_token_login, include_domains, active_profile, confirm_overwrite
@@ -493,10 +492,10 @@ def register_session_commands(cli):
             if isinstance(exc, click.ClickException):
                 raise exc
             if isinstance(exc, NotebookNotFoundError):
+                # ``str(exc)`` keeps a status-5 account-routing hint (#2132).
                 _output_error(
-                    f"Error: Notebook {notebook_id!r} not found. "
-                    "Run 'notebooklm list' to see available notebooks, "
-                    "or pass --force to bypass verification.",
+                    f"Error: {exc}. Run 'notebooklm list' to see available "
+                    "notebooks, or pass --force to bypass verification.",
                     "NOT_FOUND",
                     json_output,
                     1,
@@ -526,7 +525,8 @@ def register_session_commands(cli):
         nb = result.notebook
         resolved_id = result.resolved_id
         created_str = nb.created_at.strftime("%Y-%m-%d") if nb.created_at else None
-        set_current_notebook(resolved_id, nb.title, nb.is_owner, created_str)
+        role_label = share_permission_to_str(nb.role) if nb.role is not None else None
+        set_current_notebook(resolved_id, nb.title, nb.is_owner, created_str, role=role_label)
 
         if json_output:
             json_output_response(
@@ -538,18 +538,15 @@ def register_session_commands(cli):
                         "id": resolved_id,
                         "title": nb.title,
                         "is_owner": nb.is_owner,
+                        "role": role_label,
                         "created_at": nb.created_at.isoformat() if nb.created_at else None,
-                        "modified_at": nb.modified_at.isoformat() if nb.modified_at else None,
+                        **notebook_viewed_keys(nb),
                     },
                 }
             )
             return
 
-        table = _use_notebook_table()
-        created = created_str or "-"
-        owner_status = "Owner" if nb.is_owner else "Shared"
-        table.add_row(nb.id, nb.title, owner_status, created)
-        console.print(table)
+        _render_use_notebook(nb, notebook_id=nb.id, created=created_str or "-")
 
     @cli.command("status")
     @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
@@ -609,7 +606,7 @@ def register_session_commands(cli):
         default="auto",
         help=(
             "Browser to read cookies from (chrome, firefox, brave, edge, "
-            "safari, arc, ...). 'auto' picks the first one rookiepy can read. "
+            "safari, arc, ...). 'auto' picks the first one rookie-cookies can read. "
             "Use 'chrome::<profile>' for one Chromium profile or "
             "'firefox::<container>' for one Firefox container. "
             "Requires: pip install 'notebooklm-py[cookies]'"
@@ -822,7 +819,7 @@ def register_session_commands(cli):
             # check or hijack its exit code).
             result.details["notebook_count"] = auth_check_notebook_count(ctx)
 
-        _render_auth_check_result(result)
+        _render_auth_check_result(result, json_output=json_output)
 
     @auth_group.command("refresh")
     @click.option(

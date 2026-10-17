@@ -44,11 +44,19 @@ BASELINE_PATH = _find_repo_root() / "tests/fixtures/cli_contract_baseline.json"
 HELP_SNIPPETS = {
     "": ("NotebookLM CLI", "notebooklm login", "completion"),
     "completion": ("Print the shell completion script", "bash", "zsh", "fish"),
+    "usage": (
+        "Show live compute usage",
+        "--categories",
+        "--actions",
+        "--json",
+        "No active notebook",
+    ),
     "download": ("Download generated content", "cinematic-video", "flashcards"),
     "download audio": ("Download audio", "--latest", "--no-clobber"),
     "source add": ("--follow-symlinks", "--mime-type", "--json"),
     "share public": ("--enable", "--disable", "--json"),
-    "research wait": ("--import-all", "--cited-only", "--timeout"),
+    "research status": ("--run-id", "--task-id", "--json"),
+    "research wait": ("--run-id", "--task-id", "--import-all", "--cited-only", "--timeout"),
     "label generate": ("--scope", "all", "unlabeled", "--yes"),
 }
 
@@ -234,6 +242,7 @@ def test_json_stdout_routing_and_exit_codes_for_download_runtime(
 # (``agent show`` / ``skill install`` / ``profile``); the concrete commands
 # that actually carry ``--json`` today and bypass the error envelope are:
 JSON_CONTRACT_EXEMPTIONS: dict[str, str] = {
+    "auth inspect": "Diagnostic command: inspects browser accounts, no active auth tokens required.",
     "auth logout": "Local auth-state mutation: clears on-disk creds, no auth required.",
     "auth refresh": "Local keepalive: rotates/rewrites the on-disk cookie jar, not an auth-gated RPC.",
     "clear": "Local context reset: clears the active-notebook file, no auth required.",

@@ -73,9 +73,12 @@ def test_public_facade_imports_are_identity_reexports() -> None:
     """Compatibility facades must keep returning the canonical public objects."""
     import notebooklm
     import notebooklm._auth.tokens as private_tokens
+    import notebooklm._web.wire.decoder as wire_decoder
+    import notebooklm._web.wire.encoder as wire_encoder
+    import notebooklm._web.wire.overrides as wire_overrides
+    import notebooklm._web.wire.safe_index as wire_safe_index
     import notebooklm.auth as public_auth
     import notebooklm.rpc as public_rpc
-    import notebooklm.rpc.overrides as rpc_overrides
     import notebooklm.rpc.types as rpc_types
     import notebooklm.types as public_types
 
@@ -83,7 +86,11 @@ def test_public_facade_imports_are_identity_reexports() -> None:
     assert public_auth.AuthTokens is private_tokens.AuthTokens
     assert notebooklm.ConnectionLimits is public_types.ConnectionLimits
     assert public_rpc.RPCMethod is rpc_types.RPCMethod
-    assert public_rpc.resolve_rpc_id is rpc_overrides.resolve_rpc_id
+    assert public_rpc.resolve_rpc_id is wire_overrides.resolve_rpc_id
+    assert rpc_types.resolve_rpc_id is wire_overrides.resolve_rpc_id
+    assert public_rpc.decode_response is wire_decoder.decode_response
+    assert public_rpc.encode_rpc_request is wire_encoder.encode_rpc_request
+    assert public_rpc.safe_index is wire_safe_index.safe_index
 
 
 # The names de-blessed from ``notebooklm.rpc.__all__`` in #1589. They were
@@ -159,6 +166,19 @@ def test_rpc_all_is_minimized_to_documented_power_user_imports() -> None:
     assert public_rpc.__all__ == ["RPCMethod", "resolve_rpc_id"]
 
 
+def test_rpc_has_no_deep_wire_compatibility_modules() -> None:
+    """The implementation move must not leave duplicate module state behind."""
+    rpc_dir = Path(__file__).parents[2] / "src" / "notebooklm" / "rpc"
+    former_modules = ("decoder", "encoder", "overrides", "_safe_index")
+
+    assert [name for name in former_modules if (rpc_dir / f"{name}.py").exists()] == []
+    assert [
+        name
+        for name in former_modules
+        if importlib.util.find_spec(f"notebooklm.rpc.{name}") is not None
+    ] == []
+
+
 def test_rpc_legacy_reexports_stay_importable_but_unblessed() -> None:
     """The de-blessed RPC names remain importable as attributes (back-compat),
     while staying out of ``__all__``. Freezes the promise made in #1589 that this
@@ -203,13 +223,14 @@ def test_cited_source_selection_is_on_public_surface():
 
 
 # ---------------------------------------------------------------------------
-# RPC enums re-exported via notebooklm.types
+# Domain enums re-exported via notebooklm.types
 #
 # CLI modules import these enums from ``notebooklm.types`` (the public surface)
 # rather than reaching into ``notebooklm.rpc`` directly. The re-exports must be
-# the exact same objects as the canonical definitions in ``notebooklm.rpc.types``
+# the exact same objects as the compatibility exports in ``notebooklm.rpc.types``
 # (identity, not just equality), so isinstance checks and equality both work
-# regardless of which import path callers use.
+# regardless of which import path callers use. Their canonical definitions live
+# in ``notebooklm._types.enums`` and are checked separately below.
 #
 # The explicit list below covers every public RPC enum re-exported by
 # ``notebooklm.types`` (see ``notebooklm.types.__all__``). Keep this list in
@@ -226,11 +247,14 @@ _REEXPORTED_RPC_ENUMS = [
     "AudioLength",
     "ChatGoal",
     "ChatResponseLength",
+    "DiscoveryMode",
     "DriveMimeType",
+    "DriveSourceStatus",
     "ExportType",
     "InfographicDetail",
     "InfographicOrientation",
     "InfographicStyle",
+    "MagicArtifactType",
     "QuizDifficulty",
     "QuizQuantity",
     "ReportFormat",
@@ -244,6 +268,12 @@ _REEXPORTED_RPC_ENUMS = [
     "VideoStyle",
 ]
 
+# Exact A1 inventory: these enums are canonically defined in the neutral
+# ``_types.enums`` module and remain available through both compatibility
+# facades. The two internal names are module attributes on ``notebooklm.types``
+# but intentionally absent from its ``__all__``.
+_NEUTRAL_DOMAIN_ENUMS = [*_REEXPORTED_RPC_ENUMS, "ArtifactTypeCode", "GrpcStatusCode"]
+
 # NOTE: the former hand-typed ``_FROZEN_TYPES_ALL`` snapshot of
 # ``notebooklm.types.__all__`` is gone — it is now the regenerable ``types_all``
 # baseline (``tests/fixtures/baselines/types_all.json``, derived by the
@@ -254,6 +284,11 @@ _REEXPORTED_RPC_ENUMS = [
 _TOP_LEVEL_TYPE_EXPORTS = [
     "AccountLimits",
     "Artifact",
+    "ArtifactListing",
+    "ArtifactListingComponent",
+    "ArtifactListingFailure",
+    "ArtifactLookup",
+    "ArtifactLookupStatus",
     "ArtifactType",
     "AskResult",
     "AudioFormat",
@@ -262,11 +297,14 @@ _TOP_LEVEL_TYPE_EXPORTS = [
     "ChatMode",
     "ChatReference",
     "ChatResponseLength",
+    "ChatSession",
     "CitedSourceSelection",
     "ClientMetricsSnapshot",
     "Collection",
     "ConnectionLimits",
     "ConversationTurn",
+    "ConversationTurnKey",
+    "DiscoveryMode",
     "DriveMimeType",
     "ExportType",
     "GenerationState",
@@ -275,11 +313,14 @@ _TOP_LEVEL_TYPE_EXPORTS = [
     "InfographicOrientation",
     "InfographicStyle",
     "Label",
+    "MagicArtifactType",
     "MindMapResult",
     "Note",
     "Notebook",
     "NotebookDescription",
     "NotebookMetadata",
+    "NextStepSuggestion",
+    "PremiumFeatureInfo",
     "QuizDifficulty",
     "QuizQuantity",
     "ReportFormat",
@@ -298,6 +339,7 @@ _TOP_LEVEL_TYPE_EXPORTS = [
     "SlideDeckLength",
     "Source",
     "SourceFulltext",
+    "RelevantChunk",
     "SourceGuide",
     "SourceStatus",
     "SourceSummary",
@@ -363,6 +405,7 @@ _TOP_LEVEL_EXCEPTION_EXPORTS = [
     "NotebookLimitError",
     "NotebookLMError",
     "NotebookNotFoundError",
+    "OperationTimeoutError",
     "RateLimitError",
     "ResearchError",
     "ResearchStartUnavailableError",
@@ -372,17 +415,23 @@ _TOP_LEVEL_EXCEPTION_EXPORTS = [
     "RPCResponseTooLargeError",
     "RPCTimeoutError",
     "ServerError",
+    "PlayBookNotExportableError",
     "SourceAddError",
     "SourceError",
     "SourceNotFoundError",
     "SourceProcessingError",
     "SourceTimeoutError",
     "UnknownRPCMethodError",
+    "UnsupportedOperationError",
     "ValidationError",
     "WaitTimeoutError",
 ]
 
 _TYPES_PRIVATE_HELPER_SEAMS = [
+    # Routed through the facade for ``_app.source_add``'s path heuristic: the
+    # ``_app`` boundary lint forbids importing the private ``_types`` sibling
+    # that declares it (#2202).
+    "_PATH_SHAPED_FILE_EXTENSIONS",
     "_SOURCE_TYPE_COMPAT_MAP",
     "_datetime_from_timestamp",
     "_extract_artifact_url",
@@ -399,9 +448,9 @@ _TYPES_PRIVATE_HELPER_SEAMS = [
 # Private helpers that are no longer imported by first-party code but
 # must remain exportable through ``notebooklm.types`` for downstream
 # compatibility. ``_extract_source_created_at`` moved here when the
-# row-adapter migration (see ``_row_adapters.sources.SourceRow.created_at``)
+# row-adapter migration (see ``_web.rows.sources.SourceRow.created_at``)
 # replaced its sole first-party consumer
-# (``_source.listing._parse_source``).
+# (``_web.sources.listing._parse_source``).
 _TYPES_PRIVATE_EXTERNAL_COMPAT_SEAMS: list[str] = [
     "_extract_source_created_at",
 ]
@@ -439,6 +488,34 @@ def test_rpc_enum_reexports_are_identical(enum_name: str) -> None:
         f"notebooklm.types.{enum_name} must be the same object as "
         f"notebooklm.rpc.types.{enum_name} (identity, not equality)"
     )
+
+
+@pytest.mark.parametrize("enum_name", _NEUTRAL_DOMAIN_ENUMS)
+def test_domain_enum_compatibility_paths_are_identical(enum_name: str) -> None:
+    """All 26 domain enums resolve to their canonical neutral definitions."""
+    import notebooklm._types.enums as canonical_enums
+    import notebooklm.rpc.types as rpc_types
+    import notebooklm.types as public_types
+
+    canonical_enum = getattr(canonical_enums, enum_name)
+    assert getattr(public_types, enum_name) is canonical_enum
+    assert getattr(rpc_types, enum_name) is canonical_enum
+
+
+def test_neutral_domain_enum_manifest_is_complete() -> None:
+    """The A1 manifest covers exactly the 26 enums defined in the neutral module."""
+    import notebooklm._types.enums as canonical_enums
+
+    defined = {
+        name
+        for name, value in vars(canonical_enums).items()
+        if isinstance(value, type)
+        and value.__module__ == canonical_enums.__name__
+        and issubclass(value, enum.Enum)
+    }
+    assert len(_NEUTRAL_DOMAIN_ENUMS) == 26
+    assert len(set(_NEUTRAL_DOMAIN_ENUMS)) == 26
+    assert set(_NEUTRAL_DOMAIN_ENUMS) == defined
 
 
 def test_types_all_contract_is_frozen_in_order() -> None:
@@ -509,6 +586,8 @@ def test_rpc_helper_reexports_are_canonical_identities() -> None:
 
     assert public_types.artifact_status_to_str is rpc_types.artifact_status_to_str
     assert public_types.source_status_to_str is rpc_types.source_status_to_str
+    assert public_types.share_permission_to_str is rpc_types.share_permission_to_str
+    assert public_types.drive_source_status_to_str is rpc_types.drive_source_status_to_str
 
 
 def test_types_non_all_facade_attributes_are_frozen() -> None:
@@ -797,6 +876,7 @@ def test_auth_cookie_policy_facade_delegates_to_private_module() -> None:
     assert auth.ALLOWED_COOKIE_DOMAINS is cookie_policy.ALLOWED_COOKIE_DOMAINS
     assert auth.GOOGLE_REGIONAL_CCTLDS is cookie_policy.GOOGLE_REGIONAL_CCTLDS
     assert auth.MINIMUM_REQUIRED_COOKIES is cookie_policy.MINIMUM_REQUIRED_COOKIES
+    assert auth.app_host_scope_note is cookie_policy.app_host_scope_note
     assert auth._auth_domain_priority is cookie_policy._auth_domain_priority
     assert auth._is_google_domain is cookie_policy._is_google_domain
     assert auth._is_allowed_auth_domain is cookie_policy._is_allowed_auth_domain
@@ -822,7 +902,9 @@ def test_auth_cookie_conversion_facade_delegates_to_private_module() -> None:
     assert auth._cookie_map_from_jar is cookies._cookie_map_from_jar
     assert auth._cookie_to_storage_state is cookies._cookie_to_storage_state
     assert auth._load_storage_state is cookies._load_storage_state
+    assert auth._load_storage_state_from_env_value is cookies._load_storage_state_from_env_value
     assert auth._storage_entry_to_cookie is cookies._storage_entry_to_cookie
+    assert auth._storage_has_routable_cookie is cookies._storage_has_routable_cookie
     assert auth._cookie_key_variants is cookies._cookie_key_variants
     assert auth._find_cookie_for_storage is cookies._find_cookie_for_storage
     assert auth._replace_cookie_jar is cookies._replace_cookie_jar
@@ -1216,12 +1298,10 @@ def test_ungated_public_surface_covers_exactly_the_unpinned_modules() -> None:
 # ---------------------------------------------------------------------------
 # Regenerable-baseline freeze (ADR-0022).
 #
-# Every registered :class:`~tests._baselines.registry.Baseline` (``types_all``,
-# ``ungated_surface``, ``cli_contract``) is frozen here: the committed JSON file
-# must equal ``derive()``. A name added to (or removed from) a public surface
-# fails until the committed file is regenerated in the SAME PR — that diff line
-# is the deliberate, reviewed acknowledgement. Regenerate after an intended
-# change with::
+# Every registered :class:`~tests._baselines.registry.Baseline` is frozen here:
+# the committed JSON file must equal ``derive()``. Public-surface snapshots and
+# shrink-only ratchets share the same reviewable regen seam; ratchet growth also
+# requires ``--allow-growth``. Regenerate after an intended change with::
 #
 #     python scripts/regen_baselines.py
 #
@@ -1239,7 +1319,18 @@ def test_baseline_registry_is_non_trivial() -> None:
     names = {baseline.name for baseline in BASELINES}
     assert {
         "auth_import_graph",
+        "auth_facade_patch_sites",
+        "auth_family_patch_scorecard",
         "auth_patch_sites",
+        "auth_shared_mutations",
+        "backend_runtime_coupling",
+        "backend_static_coupling",
+        "backend_boundary",
+        "browser_import_graph",
+        "browser_patch_sites",
+        "guardrail_inline_literals",
+        "module_size",
+        "storage_transaction_policy",
         "types_all",
         "ungated_surface",
         "cli_contract",
@@ -1248,8 +1339,34 @@ def test_baseline_registry_is_non_trivial() -> None:
     assert len(names) == len(BASELINES)
 
 
-@pytest.mark.parametrize("baseline", BASELINES, ids=lambda b: b.name)
-def test_baseline_matches_committed_file(baseline: Baseline, update_baselines: bool) -> None:
+@pytest.mark.parametrize(
+    "baseline",
+    [
+        pytest.param(
+            baseline,
+            marks=(
+                pytest.mark.timeout(360)
+                if baseline.name in {"auth_family_patch_scorecard", "backend_runtime_coupling"}
+                else pytest.mark.timeout(180)
+                if baseline.name
+                in {
+                    "auth_patch_sites",
+                    "auth_shared_mutations",
+                    "browser_patch_sites",
+                    "auth_facade_patch_sites",
+                }
+                else ()
+            ),
+        )
+        for baseline in BASELINES
+    ],
+    ids=lambda b: b.name,
+)
+def test_baseline_matches_committed_file(
+    baseline: Baseline,
+    update_baselines: bool,
+    allow_baseline_growth: bool,
+) -> None:
     """The committed baseline JSON must equal ``derive()`` (CI-mode assertion).
 
     With ``--update-baselines`` (dev only — see ``tests/conftest.py``), the
@@ -1257,7 +1374,7 @@ def test_baseline_matches_committed_file(baseline: Baseline, update_baselines: b
     committed file from ``derive()`` and passes. CI must never set the flag.
     """
     if update_baselines:
-        baseline.write()
+        baseline.write(allow_growth=allow_baseline_growth)
         return
 
     assert baseline.path.is_file(), (
@@ -1381,79 +1498,3 @@ def test_public_shim_all_contract(shim_name: str, internal_name: str) -> None:
     assert len(all_list) == len(declared), (
         f"{shim_name}.__all__ contains duplicates: {sorted(all_list)}"
     )
-
-
-def test_consolidation_shims_are_identity_reexports() -> None:
-    """Every ADR-0033 merge shim must keep re-exporting the real objects.
-
-    The consolidation merges turn the absorbed modules into re-export shims for
-    one release. Nothing in ``src/``, ``tests/`` or ``scripts/`` imports them any
-    more, so their ``from .<canonical> import (...)`` blocks have **zero**
-    coverage: a later consolidation PR that renames one of these names would break
-    the shim with an ``ImportError`` raised only at import time, and no test would
-    notice. A further such PR is scheduled (the account-record relocation), so
-    this pins each shim to the canonical objects until they are removed at the
-    next major.
-
-    Add a ``(shim, canonical)`` pair here in the same PR as each new merge shim.
-    """
-    import notebooklm._auth._browser_cookie_filter as cookie_filter_shim
-    import notebooklm._auth.browser_cookie_recovery as browser_cookie_recovery_shim
-    import notebooklm._auth.psidts_recovery as psidts_recovery
-    import notebooklm._auth.storage as storage
-    import notebooklm._auth.storage_transaction as transaction_shim
-    import notebooklm._auth.storage_writer as writer_shim
-
-    pairs = [
-        # the persistence merge
-        (writer_shim, storage),
-        (transaction_shim, storage),
-        # the load-composition merge
-        (browser_cookie_recovery_shim, psidts_recovery),
-        # the write-side cookie-filter relocation (PR 4.2)
-        (cookie_filter_shim, storage),
-    ]
-
-    for shim, canonical in pairs:
-        exported = getattr(shim, "__all__", None)
-        assert exported, f"{shim.__name__} must declare __all__ so this gate can bite"
-        for name in exported:
-            assert hasattr(shim, name), f"{shim.__name__} re-exports missing name {name!r}"
-            assert hasattr(canonical, name), (
-                f"{shim.__name__} re-exports {name!r}, which no longer exists on "
-                f"{canonical.__name__} — the shim is broken"
-            )
-            assert getattr(shim, name) is getattr(canonical, name), (
-                f"{shim.__name__}.{name} is not the canonical {canonical.__name__}.{name} object"
-            )
-
-
-def test_browser_cluster_shims_are_identity_reexports() -> None:
-    """``browser_state_validation`` / ``login_wait_trace`` must re-export the real objects.
-
-    Same reasoning as :func:`test_consolidation_shims_are_identity_reexports`,
-    for the browser-cluster merge (ADR-0033 PR 4.1). Both modules existed only to
-    keep ``browser_capture`` under the ADR-0008 line cap, and both are now
-    one-line re-export shims. Nothing in ``src/``, ``tests/`` or ``scripts/``
-    imports them any more, so their ``from .browser_capture import (...)`` blocks
-    have **zero** coverage: renaming ``trace_url`` or ``heal_captured_state`` in a
-    later PR would break the shim with an ``ImportError`` raised only at import
-    time, and no test would notice. This pins the shims until they are removed at
-    the next major.
-    """
-    import notebooklm._auth.browser_capture as canonical
-    import notebooklm._auth.browser_state_validation as validation_shim
-    import notebooklm._auth.login_wait_trace as trace_shim
-
-    for shim in (validation_shim, trace_shim):
-        exported = getattr(shim, "__all__", None)
-        assert exported, f"{shim.__name__} must declare __all__ so this gate can bite"
-        for name in exported:
-            assert hasattr(shim, name), f"{shim.__name__} re-exports missing name {name!r}"
-            assert hasattr(canonical, name), (
-                f"{shim.__name__} re-exports {name!r}, which no longer exists on "
-                f"{canonical.__name__} — the shim is broken"
-            )
-            assert getattr(shim, name) is getattr(canonical, name), (
-                f"{shim.__name__}.{name} is not the canonical {canonical.__name__}.{name} object"
-            )

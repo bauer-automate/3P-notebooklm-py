@@ -24,32 +24,43 @@ Covers BOTH the single-download and the batch surfaces.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
 import notebooklm._artifact.downloads as _downloads_mod
-from notebooklm._artifacts import ArtifactsAPI
-from notebooklm.types import ArtifactDownloadError
+from notebooklm._android.assets import AndroidAssetDownloadService
+from notebooklm._android.auth import BearerCredential
+from notebooklm._artifact._download_client import (
+    _is_trusted_download_host,
+    _make_download_client,
+)
+from notebooklm._artifact._redirect_guard import redirect_revalidation_hooks
+from notebooklm._client_metrics import ClientMetrics
+from notebooklm._hop_credentials import HopCredentials
+from notebooklm._runtime.call_supervisor import CallSupervisor
+from notebooklm._web.artifacts import WebArtifactsAPI
+from notebooklm.exceptions import ArtifactDownloadError, AuthError
 
 
 @pytest.fixture
 def mock_artifacts_api(tmp_path):
     """ArtifactsAPI wired to mocks -- no real network, real httpx clients."""
-    from notebooklm._mind_map import NoteBackedMindMapService
-    from notebooklm._note_service import NoteService
+    from notebooklm._web.mind_maps import NoteBackedMindMapService
+    from notebooklm._web.notes import NoteService
     from tests._fixtures.fake_core import make_fake_core
 
     mock_core = make_fake_core(
         rpc_call=AsyncMock(),
         get_source_ids=AsyncMock(return_value=[]),
     )
-    api = ArtifactsAPI(
+    api = WebArtifactsAPI(
         rpc=mock_core,
-        drain=mock_core,
-        lifecycle=mock_core,
+        supervisor=mock_core,
         notebooks=AsyncMock(),
         mind_maps=AsyncMock(spec=NoteBackedMindMapService),
         note_service=AsyncMock(spec=NoteService),
@@ -88,6 +99,458 @@ def _patch_real_client_with_transport(handler: Callable[[httpx.Request], httpx.R
 # A trusted host accepted by ``_is_trusted_download_host``.
 _TRUSTED_HOST = "storage.googleapis.com"
 _TRUSTED_URL = f"https://{_TRUSTED_HOST}/start"
+_ANDROID_URL = "https://lh3.googleusercontent.com/start.png?capability=secret"
+_SIGNED_URL = "https://storage.googleapis.com/bucket/final.png?signature=secret"
+_PNG = b"\x89PNG\r\n\x1a\nredirect-test"
+
+
+class _RotatingBearer:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+        self.invalidations: list[int] = []
+
+    async def get(self, expected_epoch: int) -> BearerCredential:
+        self.calls.append(expected_epoch)
+        generation = len(self.calls)
+        return BearerCredential(f"token-{generation}", generation=generation)
+
+    def invalidate(self, generation: int) -> None:
+        self.invalidations.append(generation)
+
+
+class _FailingBearer(_RotatingBearer):
+    async def get(self, expected_epoch: int) -> BearerCredential:
+        self.calls.append(expected_epoch)
+        raise AuthError("master token expired")
+
+
+async def _android_service(
+    handler: Callable[[httpx.Request], httpx.Response],
+    bearer: _RotatingBearer,
+) -> AndroidAssetDownloadService:
+    supervisor = CallSupervisor(
+        metrics=ClientMetrics(),
+        max_concurrent_rpcs=2,
+    )
+    loop = asyncio.get_running_loop()
+    supervisor.set_bound_loop(loop)
+    supervisor.reset_after_open()
+    supervisor.prepare_generation(1)
+    supervisor.start_accepting(1)
+
+    def client_factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=False,
+            timeout=60.0,
+        )
+
+    service = AndroidAssetDownloadService(
+        bearer_provider=bearer,  # type: ignore[arg-type]
+        supervisor=supervisor,
+        client_factory=client_factory,
+    )
+    await service.open(loop, 1)
+    return service
+
+
+@pytest.mark.asyncio
+async def test_httpx_applies_cookie_policy_on_every_redirect_hop():
+    """httpx runs the same credential policy for the initial and redirected request."""
+    real_cls = httpx.AsyncClient
+    seen_requests: list[tuple[str, str | None]] = []
+    policy_calls: list[str] = []
+    cookies = httpx.Cookies()
+    cookies.set("SID", "secret", domain=".googleapis.com")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append((str(request.url), request.headers.get("cookie")))
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "/final"})
+        return httpx.Response(200, content=b"ok")
+
+    async def credential_for(url: str) -> HopCredentials:
+        policy_calls.append(url)
+        return HopCredentials(cookies=cookies)
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_cls(*args, **kwargs)
+
+    with patch.object(httpx, "AsyncClient", side_effect=client_factory):
+        client, get_guarded = _make_download_client(
+            cookies,
+            timeout=30.0,
+            credential_for=credential_for,
+        )
+        async with client:
+            response = await get_guarded(_TRUSTED_URL)
+
+    expected = [_TRUSTED_URL, f"https://{_TRUSTED_HOST}/final"]
+    assert response.content == b"ok"
+    assert policy_calls == expected
+    assert [url for url, _cookie in seen_requests] == expected
+    assert all(cookie == "SID=secret" for _url, cookie in seen_requests)
+
+
+@pytest.mark.asyncio
+async def test_httpx_policy_jar_replaces_constructor_jar():
+    """The selected jar is authoritative, rather than only an allow/drop signal."""
+    real_cls = httpx.AsyncClient
+    seen_cookies: list[str | None] = []
+    constructor_jar = httpx.Cookies()
+    constructor_jar.set("SID", "constructor", domain=".googleapis.com")
+    selected_jar = httpx.Cookies()
+    selected_jar.set("SID", "selected", domain=".googleapis.com")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_cookies.append(request.headers.get("cookie"))
+        return httpx.Response(200, content=b"ok")
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_cls(*args, **kwargs)
+
+    async def credential_for(_url: str) -> HopCredentials:
+        return HopCredentials(cookies=selected_jar)
+
+    with patch.object(httpx, "AsyncClient", side_effect=client_factory):
+        client, get_guarded = _make_download_client(
+            constructor_jar,
+            timeout=30.0,
+            credential_for=credential_for,
+        )
+        async with client:
+            await get_guarded(_TRUSTED_URL)
+
+    assert seen_cookies == ["SID=selected"]
+
+
+@pytest.mark.asyncio
+async def test_httpx_default_policy_normalizes_mapping_cookie_input():
+    """Legacy cookie loaders may return a plain mapping rather than a Cookies jar."""
+    real_cls = httpx.AsyncClient
+    seen_cookies: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_cookies.append(request.headers.get("cookie"))
+        return httpx.Response(200, content=b"ok")
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_cls(*args, **kwargs)
+
+    with patch.object(httpx, "AsyncClient", side_effect=client_factory):
+        client, get_guarded = _make_download_client(
+            {"SID": "mapping"},
+            timeout=30.0,
+        )
+        async with client:
+            await get_guarded(_TRUSTED_URL)
+
+    assert seen_cookies == ["SID=mapping"]
+
+
+@pytest.mark.asyncio
+async def test_httpx_none_policy_drops_first_hop_constructor_credentials():
+    """A first-hop None result removes constructor cookies and bearer headers."""
+    seen: list[tuple[str | None, str | None, str | None]] = []
+    constructor_jar = httpx.Cookies()
+    constructor_jar.set("SID", "constructor", domain=".googleapis.com")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (
+                request.headers.get("cookie"),
+                request.headers.get("authorization"),
+                request.headers.get("proxy-authorization"),
+            )
+        )
+        return httpx.Response(200, content=b"ok")
+
+    async def no_credentials(_url: str) -> None:
+        return None
+
+    async with httpx.AsyncClient(
+        cookies=constructor_jar,
+        headers={
+            "Authorization": "Bearer constructor",
+            "Proxy-Authorization": "Bearer proxy-constructor",
+        },
+        event_hooks=redirect_revalidation_hooks(
+            _is_trusted_download_host,
+            no_credentials,
+        ),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get(_TRUSTED_URL)
+
+    assert seen == [(None, None, None)]
+
+
+@pytest.mark.asyncio
+async def test_httpx_bearer_policy_attaches_then_drops_on_trusted_redirect():
+    """Policy headers are re-evaluated rather than inherited across trusted hops."""
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "/final"})
+        return httpx.Response(200, content=b"ok")
+
+    async def credential_for(url: str) -> HopCredentials | None:
+        if url.endswith("/start"):
+            return HopCredentials(headers={"Authorization": "Bearer selected"})
+        return None
+
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        event_hooks=redirect_revalidation_hooks(_is_trusted_download_host, credential_for),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get(_TRUSTED_URL)
+
+    assert seen == [
+        (_TRUSTED_URL, "Bearer selected"),
+        (f"https://{_TRUSTED_HOST}/final", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_httpx_selected_jar_receives_redirect_set_cookie():
+    """A redirect response rotates the selected jar before the next hop."""
+    seen_cookies: list[str | None] = []
+    constructor_jar = httpx.Cookies()
+    constructor_jar.set("SID", "constructor", domain=".googleapis.com")
+    selected_jar = httpx.Cookies()
+    selected_jar.set("SID", "selected", domain=".googleapis.com")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_cookies.append(request.headers.get("cookie"))
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "/final",
+                    "set-cookie": "ROTATED=next; Path=/; Secure",
+                },
+            )
+        return httpx.Response(200, content=b"ok")
+
+    async def credential_for(_url: str) -> HopCredentials:
+        return HopCredentials(cookies=selected_jar)
+
+    async with httpx.AsyncClient(
+        cookies=constructor_jar,
+        follow_redirects=True,
+        event_hooks=redirect_revalidation_hooks(
+            _is_trusted_download_host,
+            credential_for,
+        ),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get(_TRUSTED_URL)
+
+    assert seen_cookies[0] == "SID=selected"
+    assert set(seen_cookies[1].split("; ")) == {"SID=selected", "ROTATED=next"}
+
+
+@pytest.mark.asyncio
+async def test_httpx_selected_jar_domain_matches_each_redirect_host():
+    """A structured multi-domain jar emits only the cookie matching each hop."""
+    selected_jar = httpx.Cookies()
+    selected_jar.set("API", "api-cookie", domain=".googleapis.com")
+    selected_jar.set("MEDIA", "media-cookie", domain=".googleusercontent.com")
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.host, request.headers.get("cookie")))
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={"location": "https://lh3.googleusercontent.com/final"},
+            )
+        return httpx.Response(200, content=b"ok")
+
+    async def credential_for(_url: str) -> HopCredentials:
+        return HopCredentials(cookies=selected_jar)
+
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        event_hooks=redirect_revalidation_hooks(
+            _is_trusted_download_host,
+            credential_for,
+        ),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.get(_TRUSTED_URL)
+
+    assert seen == [
+        ("storage.googleapis.com", "API=api-cookie"),
+        ("lh3.googleusercontent.com", "MEDIA=media-cookie"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_android_sticky_bearer_stays_off_after_bounce_back(tmp_path: Path) -> None:
+    returned = "https://lh3.googleusercontent.com/returned.png?capability=again"
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        if request.url.host == "lh3.googleusercontent.com" and request.url.path == "/start.png":
+            return httpx.Response(302, headers={"location": _SIGNED_URL})
+        if request.url.host == "storage.googleapis.com":
+            return httpx.Response(302, headers={"location": returned})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=_PNG)
+
+    bearer = _RotatingBearer()
+    service = await _android_service(handler, bearer)
+    output = tmp_path / "bounce.png"
+
+    await service.download_url(_ANDROID_URL, str(output))
+
+    assert output.read_bytes() == _PNG
+    assert [authorization for _url, authorization in seen] == ["Bearer token-1", None, None]
+    assert bearer.calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_android_reacquires_bearer_on_each_allowed_hop(tmp_path: Path) -> None:
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization"))
+        if request.url.path == "/start.png":
+            return httpx.Response(307, headers={"location": "/fresh.png"})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=_PNG)
+
+    bearer = _RotatingBearer()
+    service = await _android_service(handler, bearer)
+
+    await service.download_url(_ANDROID_URL, str(tmp_path / "fresh.png"))
+
+    # The fake advances generation on every get(), modelling a cache deadline
+    # crossed between hops. The second request must use the newly acquired token.
+    assert seen == ["Bearer token-1", "Bearer token-2"]
+    assert bearer.calls == [1, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_android_mid_chain_auth_failure_invalidates_failing_generation(
+    tmp_path: Path, status: int
+) -> None:
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization"))
+        if request.url.path == "/start.png":
+            return httpx.Response(307, headers={"location": "/expired.png"})
+        return httpx.Response(status)
+
+    bearer = _RotatingBearer()
+    service = await _android_service(handler, bearer)
+
+    with pytest.raises(AuthError) as captured:
+        await service.download_url(_ANDROID_URL, str(tmp_path / "expired.png"))
+
+    assert f"HTTP {status}" in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert seen == ["Bearer token-1", "Bearer token-2"]
+    assert bearer.invalidations == [2]
+
+
+@pytest.mark.asyncio
+async def test_web_mid_chain_auth_failure_preserves_http_cause(
+    mock_artifacts_api: WebArtifactsAPI, tmp_path: Path
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "/expired"})
+        return httpx.Response(401)
+
+    client_patch, cookies_patch = _patch_real_client_with_transport(handler)
+    with client_patch, cookies_patch, pytest.raises(AuthError) as captured:
+        await mock_artifacts_api._download_url(_TRUSTED_URL, str(tmp_path / "web.bin"))
+
+    assert isinstance(captured.value.__cause__, httpx.HTTPStatusError)
+
+
+@pytest.mark.asyncio
+async def test_android_batch_uses_fresh_sticky_policy_for_each_url(tmp_path: Path) -> None:
+    second = "https://lh3.googleusercontent.com/second.png?capability=two"
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        if request.url.path == "/start.png":
+            return httpx.Response(302, headers={"location": _SIGNED_URL})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=_PNG)
+
+    bearer = _RotatingBearer()
+    service = await _android_service(handler, bearer)
+    first_output = tmp_path / "first.png"
+    second_output = tmp_path / "second.png"
+
+    result = await service.download_urls_batch(
+        [(_ANDROID_URL, str(first_output)), (second, str(second_output))]
+    )
+
+    assert result.succeeded == [str(first_output), str(second_output)]
+    assert [authorization for _url, authorization in seen] == [
+        "Bearer token-1",
+        None,
+        "Bearer token-2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_android_batch_invalidates_each_failing_generation_before_next_url(
+    tmp_path: Path,
+) -> None:
+    second = "https://lh3.googleusercontent.com/second.png?capability=two"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401)
+
+    bearer = _RotatingBearer()
+    service = await _android_service(handler, bearer)
+
+    with pytest.raises(AuthError) as captured:
+        await service.download_urls_batch(
+            [
+                (_ANDROID_URL, str(tmp_path / "first.png")),
+                (second, str(tmp_path / "second.png")),
+            ]
+        )
+
+    assert captured.value.__cause__ is None
+    assert bearer.invalidations == [1, 2]
+    assert bearer.calls == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_android_batch_attempts_each_url_when_bearer_mint_fails(tmp_path: Path) -> None:
+    second = "https://lh3.googleusercontent.com/second.png?capability=two"
+    bearer = _FailingBearer()
+    service = await _android_service(
+        lambda _request: pytest.fail("mint failure must precede dispatch"), bearer
+    )
+
+    with pytest.raises(AuthError) as captured:
+        await service.download_urls_batch(
+            [
+                (_ANDROID_URL, str(tmp_path / "first.png")),
+                (second, str(tmp_path / "second.png")),
+            ]
+        )
+
+    assert str(captured.value) == "master token expired"
+    assert bearer.calls == [1, 1]
+    assert bearer.invalidations == []
 
 
 def _redirect_handler(

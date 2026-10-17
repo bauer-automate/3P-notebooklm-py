@@ -31,6 +31,7 @@ cassette order or of extra unused interactions in a multi-op cassette.)
 from __future__ import annotations
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from tests.integration.conftest import skip_no_cassettes
 from tests.vcr_config import notebooklm_vcr
@@ -73,40 +74,36 @@ async def test_mcp_share_status_over_vcr() -> None:
     assert "share_url" in structured
     # view_level is intentionally NOT surfaced by the read path.
     assert "view_level" not in structured
+    # #2130 — decoded from the REAL recorded 8-slot body through the full
+    # tool -> client -> RPC-decode stack, so the MCP surface is pinned against
+    # the wire rather than against a fake.
+    assert structured["max_individuals_share_limit"] == 1000
+    assert structured["is_public_sharing_allowed"] is True
+    # The verdict rides along so a JS consumer never has to write `!allowed`,
+    # which would also fire on the unknown case.
+    assert structured["is_public_sharing_denied"] is False
 
 
 @pytest.mark.asyncio
 @notebooklm_vcr.use_cassette("cli_share_add.yaml")
 async def test_mcp_share_set_user_over_vcr() -> None:
-    """``share_set_user`` grants access through the real client over VCR.
-
-    End-to-end: tool -> ``client.sharing.add_user`` -> the mutating grant RPC
-    (``QDyure``) THEN a ``get_status`` re-read (``JFMDGd``). This is the
-    position-sensitive access-grant path #1732 flags — a mocked test cannot
-    validate the ``QDyure`` body shape; VCR does.
-    """
+    """The recorded rejected grant surfaces as unconfirmed through the real MCP stack."""
     async with build_mcp_client() as mcp_client:
-        result = await mcp_client.call_tool(
-            "share_set_user",
-            {
-                "notebook": SHARE_NOTEBOOK_ID,
-                "email": "collaborator@example.com",
-                "permission": "editor",
-                # notify is shape-irrelevant (the freq matcher collapses the bool),
-                # so False here replays fine against the notify=True recording.
-                "notify": False,
-                # confirm-gated (#1742): required to reach the mutating grant RPC;
-                # confirm=True skips the gate's get_status, so add_user's own
-                # QDyure+JFMDGd is the only traffic → matches the recording.
-                "confirm": True,
-            },
-        )
-
-    structured = result.structured_content
-    assert isinstance(structured, dict)
-    assert structured["status"] == "updated"
-    assert structured["notebook_id"] == SHARE_NOTEBOOK_ID
-    assert isinstance(structured["shared_users"], list)
+        with pytest.raises(ToolError, match="invalid argument") as caught:
+            await mcp_client.call_tool(
+                "share_set_user",
+                {
+                    "notebook": SHARE_NOTEBOOK_ID,
+                    # Match the actual recorded request; its readback has only the owner.
+                    "email": "vcr-share-test@example.com",
+                    "permission": "viewer",
+                    "notify": False,
+                    "confirm": True,
+                },
+            )
+    assert "unconfirmed=true" in str(caught.value)
+    assert "retriable=false" in str(caught.value)
+    assert "invitation emails" in str(caught.value)
 
 
 @pytest.mark.asyncio
