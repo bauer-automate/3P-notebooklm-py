@@ -599,6 +599,17 @@ MAPPINGS: tuple[Mapping, ...] = (
         section=DOC,
     ),
     Mapping("documents", "TextRunRow", "_CONTENT_POS", "TextRun", "content", section=DOC),
+    Mapping(
+        "documents", "ParagraphElementRow", "_IMAGE_POS", "ParagraphElement", "image", section=DOC
+    ),
+    Mapping(
+        "documents",
+        "ParagraphElementRow",
+        "_RESOURCE_POS",
+        "ParagraphElement",
+        "resource",
+        section=DOC,
+    ),
     Mapping("documents", "TextRunRow", "_STYLE_POS", "TextRun", "textStyle", section=DOC),
     Mapping("documents", "TextRunRow", "_BOLD_POS", "TextStyle", "bold", section=DOC_COMMON),
     Mapping("documents", "TextRunRow", "_ITALIC_POS", "TextStyle", "italic", section=DOC_COMMON),
@@ -1594,6 +1605,30 @@ PINNED: tuple[Pinned, ...] = (
         "rows carry actOnSourcesResponse (tag 5), 28/28 each",
     ),
     Pinned(
+        "chat",
+        "ConversationTurnRow",
+        "_ID_POS",
+        0,
+        "ChatHistoryMessage tag 1 — message id",
+        "#2541: Web history row ids match Android ChatHistoryMessage.message_id",
+    ),
+    Pinned(
+        "chat",
+        "ConversationTurnRow",
+        "_TIMESTAMP_POS",
+        1,
+        "ChatHistoryMessage tag 2 — [seconds, nanos] timestamp",
+        "#2541: paired Web/Android history captures; live UTC timestamp projection on both",
+    ),
+    Pinned(
+        "chat",
+        "ConversationTurnRow",
+        "_STATUS_POS",
+        5,
+        "ChatHistoryMessage tag 6 — observed status code",
+        "#2541: raw varint 1 on a stale answer and 2 on completed turns; Web j0a reads tag 6",
+    ),
+    Pinned(
         "research",
         "ResearchTaskRow",
         "_UPDATED_AT_POS",
@@ -1756,6 +1791,7 @@ ENUM_BINDINGS: dict[str, tuple[str, dict[int, str]]] = {
             4: "ARTIFACT_STATUS_FAILED",
             5: "ARTIFACT_STATUS_SUGGESTED",
             6: "ARTIFACT_PENDING_REVIEW",
+            7: "ARTIFACT_STATUS_SCHEDULED",
         },
     ),
     # rpc/types.py::QuizQuantity. Shared by quiz AND flashcards; the two backend

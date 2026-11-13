@@ -220,6 +220,7 @@ def test_reachable_artifact_enum_names_and_numbers_are_exhaustive() -> None:
         "ARTIFACT_STATUS_FAILED": 4,
         "ARTIFACT_STATUS_SUGGESTED": 5,
         "ARTIFACT_PENDING_REVIEW": 6,
+        "ARTIFACT_STATUS_SCHEDULED": 7,
     }
     assert _enum_values(artifacts_pb2.AppType) == {
         "APP_TYPE_UNSPECIFIED": 0,
@@ -352,6 +353,10 @@ def test_artifact_projection_fields_are_exhaustive() -> None:
                 enum,
                 f"{package}.QuizGenerationOptions.QuizDifficulty",
             ),
+            ("image_option", 5, singular, message, f"{package}.ImageOption"),
+        ),
+        artifacts_pb2.ImageOption: _expected(
+            ("disabled_source_images", 1, singular, boolean, None),
         ),
         artifacts_pb2.FlashcardsGenerationOptions: _expected(
             (
@@ -368,6 +373,7 @@ def test_artifact_projection_fields_are_exhaustive() -> None:
                 enum,
                 f"{package}.FlashcardsGenerationOptions.FlashcardsDifficulty",
             ),
+            ("image_option", 3, singular, message, f"{package}.ImageOption"),
         ),
         artifacts_pb2.AppArtifactGenerationOptions: _expected(
             ("app_type", 1, singular, enum, f"{package}.AppType"),

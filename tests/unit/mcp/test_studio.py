@@ -847,6 +847,25 @@ async def test_artifact_generate_valid_language_passes(mcp_call, mock_client) ->
     mock_client.artifacts.generate_audio.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("artifact_type", "method"),
+    [("quiz", "generate_quiz"), ("flashcards", "generate_flashcards")],
+)
+async def test_artifact_generate_quiz_family_language(
+    mcp_call, mock_client, artifact_type, method
+) -> None:
+    """quiz/flashcards omit language unless given; an explicit code is forwarded."""
+    generate = AsyncMock(return_value=FakeStatus(task_id=TASK_ID))
+    setattr(mock_client.artifacts, method, generate)
+    await mcp_call("studio_generate", {"notebook": NB_ID, "artifact_type": artifact_type})
+    await mcp_call(
+        "studio_generate",
+        {"notebook": NB_ID, "artifact_type": artifact_type, "language": "vi"},
+    )
+    assert "language" not in generate.await_args_list[0].kwargs
+    assert generate.await_args_list[1].kwargs["language"] == "vi"
+
+
 # ---------------------------------------------------------------------------
 # studio_generate — per-kind options (#1654)
 # ---------------------------------------------------------------------------
@@ -2190,6 +2209,30 @@ async def test_studio_delete_confirm_false_preview_shape(mcp_call, mock_client) 
     }
     mock_client.artifacts.delete.assert_not_called()
     mock_client.notes.delete.assert_not_called()
+
+
+async def test_studio_delete_preview_shows_the_resolved_title(mcp_call, mock_client) -> None:
+    """A tiered-matcher hit previews the REAL item and title (issue #2476)."""
+    art = _completed_artifact(_ART_FULL, "İstanbul notları")
+    mock_client.notes.list = AsyncMock(return_value=[])
+    mock_client.artifacts.list = AsyncMock(return_value=[art])
+    mock_client.artifacts.delete = AsyncMock()
+    result = await mcp_call("studio_delete", {"notebook": NB_ID, "item": "istanbul"})
+    assert result.structured_content == {
+        "status": "needs_confirmation",
+        "preview": {
+            "action": "delete_studio_item",
+            "notebook_id": NB_ID,
+            "item_id": _ART_FULL,
+            "type": "audio",
+            "title": "İstanbul notları",
+        },
+    }
+    batch = await mcp_call("studio_delete", {"notebook": NB_ID, "items": ["istanbul"]})
+    assert batch.structured_content["preview"]["items"] == [
+        {"item_id": _ART_FULL, "type": "audio", "title": "İstanbul notları"}
+    ]
+    mock_client.artifacts.delete.assert_not_called()
 
 
 async def test_studio_delete_preview_canonical_target_survives_title_replacement(

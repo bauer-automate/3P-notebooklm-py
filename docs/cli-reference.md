@@ -397,7 +397,7 @@ All generate commands (except the synchronous `mind-map`) accept the same unifor
 Language-aware generate commands (`audio`, `video`, `cinematic-video`, `report`, `infographic`, `slide-deck`, `data-table`, `mind-map`) also support:
 - `--language LANG` to override output language (precedence: `--language` > `NOTEBOOKLM_HL` env > config > `'en'`)
 
-`quiz`, `flashcards`, and `revise-slide` do not accept `--language`.
+`quiz` and `flashcards` also accept `--language LANG`, but unlike the commands above they send no language unless the flag is given (`NOTEBOOKLM_HL` and config are not applied). `revise-slide` does not accept `--language`.
 
 All generation commands construct exact frozen request variants governed by the same neutral
 domain validation used by MCP and REST. The CLI maps its Click-owned inputs directly into most
@@ -413,8 +413,8 @@ embedded in the request, event, or outcome types.
 | `cinematic-video [description]` | Instructions | Alias for `video --format cinematic` | `generate cinematic-video "Documentary about quantum physics"` |
 | `slide-deck [description]` | Instructions | `--format [detailed\|presenter]`, `--length [default\|short]` | `generate slide-deck` |
 | `revise-slide <description>` | Revision instructions | `-a/--artifact <id>` (required), `--slide N` (required) | `generate revise-slide "Move title up" --artifact <id> --slide 0` |
-| `quiz [description]` | Instructions | `--difficulty [easy\|medium\|hard]`, `--quantity [fewer\|standard\|more]` | `generate quiz --difficulty hard` |
-| `flashcards [description]` | Instructions | `--difficulty [easy\|medium\|hard]`, `--quantity [fewer\|standard\|more]` | `generate flashcards` |
+| `quiz [description]` | Instructions | `--difficulty [easy\|medium\|hard]`, `--quantity [fewer\|standard\|more]`, `--language CODE`, `--question-types TYPES`, `--images\|--text-only` | `generate quiz --difficulty hard --question-types multiple-choice,short-answer` |
+| `flashcards [description]` | Instructions | `--difficulty [easy\|medium\|hard]`, `--quantity [fewer\|standard\|more]`, `--language CODE`, `--images\|--text-only` | `generate flashcards` |
 | `infographic [description]` | Instructions | `--orientation [landscape\|portrait\|square]`, `--detail [concise\|standard\|detailed]`, `--style [auto\|sketch-note\|professional\|bento-grid\|editorial\|instructional\|bricks\|clay\|anime\|kawaii\|scientific]` | `generate infographic` |
 | `data-table <description>` | Instructions | (uniform options only) | `generate data-table "compare concepts"` |
 | `mind-map` | - | `--kind [interactive\|note-backed]`, `--instructions TEXT` *(no `--wait` / `--timeout` / `--interval` / `--retry` / `--prompt-file`)* | `generate mind-map --kind interactive` |
@@ -1363,6 +1363,7 @@ notebooklm generate audio [description] [OPTIONS]
 - `-n, --notebook ID` - Notebook ID (uses current if not set)
 - `--format [deep-dive|brief|critique|debate]` - Podcast format (default: deep-dive)
 - `--length [short|default|long]` - Duration (default: default)
+- `--later` - Queue audio for later on Web or Android; the server chooses the time (usually a few hours). Returns `scheduled` and cannot be combined with `--wait`.
 - `--language LANG` - Output language (precedence: `--language` > `NOTEBOOKLM_HL` env > config > `'en'`)
 - `-s, --source ID` - Limit to specific source IDs (repeatable, uses all if not specified)
 - `--wait / --no-wait` - Wait for completion (default: `--no-wait`)
@@ -1390,8 +1391,24 @@ notebooklm generate audio -s src_abc -s src_def
 notebooklm generate audio --json
 # Output: {"task_id": "abc123...", "status": "pending"}
 
+# Queue audio for later without waiting
+notebooklm generate audio --later --json
+# {"task_id": "...", "status": "scheduled"}
+
 # Read long instructions from a file
 notebooklm generate audio --prompt-file instructions.txt --format debate
+```
+
+The same `--later` flag is available on `generate video`, `report`, `quiz`,
+`flashcards`, `infographic`, and `slide-deck` on Web and Android. Report formats,
+including `--format study-guide`, also support it. `--later --wait` is rejected
+before generation; poll the returned task ID separately. Cinematic video
+(`--format cinematic` or `generate cinematic-video`) rejects `--later`.
+
+```bash
+notebooklm generate report --format study-guide --later --json
+notebooklm generate quiz --later --json
+notebooklm --backend android generate infographic --later --json
 ```
 
 ### Generate: `video`
