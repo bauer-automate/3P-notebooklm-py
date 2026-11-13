@@ -53,7 +53,7 @@ PR_LIFECYCLE_CONTRACTS = {
 PUBLISH_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "publish.yml"
 TESTPYPI_PUBLISH_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "testpypi-publish.yml"
 SUPPORTED_OSES = ["ubuntu-latest", "macos-latest", "windows-latest"]
-SUPPORTED_PYTHONS = ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+SUPPORTED_PYTHONS = ["3.12", "3.13", "3.14", "3.15"]
 GENERATION_E2E = Path(__file__).resolve().parents[1] / "e2e" / "test_generation.py"
 E2E_DIR = Path(__file__).resolve().parents[1] / "e2e"
 
@@ -127,18 +127,11 @@ def test_test_matrix_is_independent_and_preserves_ci_contract() -> None:
     assert jobs["test"]["strategy"]["fail-fast"] is False
 
     matrix = jobs["test"]["strategy"]["matrix"]
-    # The full 3-OS by 5-Python product is nightly's job (see
+    # The full 3-OS by 4-Python product is nightly's job (see
     # ``test_nightly_runs_full_sha_pinned_compatibility_matrix``). PRs retain
-    # oldest/canonical/newest full Linux runs and two audited OS smoke cells.
+    # canonical/newest full Linux runs and two audited OS smoke cells.
     assert set(matrix) == {"include"}
     assert matrix["include"] == [
-        {
-            "os": "ubuntu-latest",
-            "python-version": "3.10",
-            "canonical": False,
-            "windows_playwright": False,
-            "selection": "full",
-        },
         {
             "os": "ubuntu-latest",
             "python-version": "3.12",

@@ -46,17 +46,7 @@ import re
 import sys
 from pathlib import Path
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - 3.10 path
-    try:
-        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-    except ImportError:
-        print(
-            "tomli is required on Python 3.10. Install with: uv pip install tomli",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src" / "notebooklm"

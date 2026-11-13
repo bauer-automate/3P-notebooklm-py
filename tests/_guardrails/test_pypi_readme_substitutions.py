@@ -15,15 +15,10 @@ so a missing rewrite can't silently recur. Fix the substitutions in
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 import pytest
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover -- only hit on Python 3.10
-    import tomli as tomllib  # transitive via uv.lock; declared in [dev] for safety
+import tomllib
 
 pytestmark = pytest.mark.repo_lint
 

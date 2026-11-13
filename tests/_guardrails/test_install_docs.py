@@ -14,12 +14,8 @@ import sys
 from pathlib import Path
 
 import pytest
+import tomllib
 from scripts._tracked_files import tracked_files
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover -- only hit on Python 3.10
-    import tomli as tomllib  # transitive via uv.lock; declared in [dev] for safety
 
 pytestmark = pytest.mark.repo_lint
 

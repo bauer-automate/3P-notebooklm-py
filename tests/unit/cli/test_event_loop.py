@@ -221,5 +221,4 @@ class TestRealWindowsLoops:
             warnings.simplefilter("ignore", DeprecationWarning)
             after = asyncio.get_event_loop_policy()
         assert issubclass(loop_type, asyncio.SelectorEventLoop)
-        if sys.version_info >= (3, 11):
-            assert after is before
+        assert after is before

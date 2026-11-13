@@ -3,7 +3,7 @@ name = "notebooklm-py"
 version = "0.8.6"
 description = "Unofficial Python library for automating Google NotebookLM"
 dynamic = ["readme"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "Teng Lin", email = "teng.lin@gmail.com"}
@@ -14,8 +14,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -88,7 +86,6 @@ dev = [
     "mypy>=1.0.0,<3",
     "pre-commit>=4.5.1,<5",
     "ruff==0.16.9",
-    "tomli>=2.0.0,<3; python_version < '3.11'",  # for tests/unit/test_install_docs.py on Python 3.10 (tomllib is 3.11+)
     "vcrpy>=6.0.0,<9",
     "packaging>=23.0,<27",  # for tests/unit/test_version_gate.py (PEP 440 version parsing)
     # Deterministic Android protobuf toolchain: grpcio-tools 1.84.0 embeds
@@ -234,7 +231,7 @@ fail_under = 90
 "src/notebooklm/cli/session_cmd.py" = 83
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_return_any = false
 warn_unused_ignores = true
 disallow_untyped_defs = false
@@ -286,7 +283,7 @@ warn_return_any = true
 strict_optional = true
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py310"  # lint-rule floor only; runtime floor is 3.12 (modernization tracked separately)
 line-length = 100
 src = ["src", "tests"]
 # Preserve protoc's byte-for-byte output. Generated modules are reviewed via

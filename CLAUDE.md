@@ -8,6 +8,10 @@ Guidance for Claude Code working in this repository. Follow conventions in [CONT
 
 **Critical constraint:** Obfuscated RPC method IDs in `src/notebooklm/rpc/_identifiers.py` are undocumented and Google changes them periodically — the #1 breakage class. `rpc/types.py` re-exports them for backwards compatibility.
 
+## Python Version Policy
+
+Minimum Python is **3.12**. Never add or keep compatibility code, CI cells, classifiers, or dependency markers for older versions. This fork ships to Bauer Automate users only, and nobody else edits it on earlier Pythons. Upstream still supports 3.10, so expect a conflict on `requires-python`, the CI matrices, and `_version_check.py` at each sync, and keep the fork side.
+
 ## Development Commands
 
 See [docs/installation.md](docs/installation.md) for the full installation guide.
