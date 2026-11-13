@@ -1,6 +1,6 @@
 """Runtime Python version check.
 
-Ensures users on unsupported Python versions (< 3.10) get a clear error
+Ensures users on unsupported Python versions (< 3.12) get a clear error
 message instead of a cryptic TypeError from PEP 604 union syntax (str | None).
 
 See: https://github.com/teng-lin/notebooklm-py/issues/117
@@ -8,7 +8,7 @@ See: https://github.com/teng-lin/notebooklm-py/issues/117
 
 import sys
 
-MIN_VERSION = (3, 10)
+MIN_VERSION = (3, 12)
 
 
 def check_python_version():

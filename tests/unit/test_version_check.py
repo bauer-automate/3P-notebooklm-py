@@ -21,7 +21,7 @@ def test_version_check_exits_on_old_python():
         text=True,
     )
     assert result.returncode != 0
-    assert "requires Python 3.10 or later" in result.stderr
+    assert "requires Python 3.12 or later" in result.stderr
     assert "3.9.0" in result.stderr
 
 
@@ -29,7 +29,7 @@ def test_version_check_passes_on_supported_python():
     """Verify that the version check passes on the current (supported) Python."""
     from notebooklm._version_check import check_python_version
 
-    # Should not raise on current Python (>= 3.10)
+    # Should not raise on current Python (>= 3.12)
     check_python_version()
 
 
@@ -49,5 +49,5 @@ def test_version_check_in_process_exits_on_old_python(monkeypatch):
         _version_check.check_python_version()
 
     message = str(exc_info.value)
-    assert "requires Python 3.10 or later" in message
+    assert "requires Python 3.12 or later" in message
     assert "3.9.5" in message

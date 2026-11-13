@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import gc
 import inspect
-import sys
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -245,12 +244,7 @@ def test_repair_adapter_preserves_cancellation_identity(monkeypatch) -> None:
             Path("storage.json"), _LoginIO(), page_html="<html>active</html>"
         )
 
-    if sys.version_info >= (3, 11):
-        assert raised.value is error
-    else:
-        # Python 3.10's task machinery reconstructs cancellation at the
-        # synchronous runner boundary and drops the original arguments.
-        assert raised.value.args == ()
+    assert raised.value is error
 
 
 @pytest.mark.parametrize(

@@ -8,13 +8,9 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+import tomllib
 from google.protobuf import descriptor_pb2, text_format
 from google.protobuf.descriptor import FieldDescriptor
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 from notebooklm._android.proto.google.internal.labs.tailwind.orchestration.v1 import (
     notebooks_pb2 as exact_notebooks_pb2,

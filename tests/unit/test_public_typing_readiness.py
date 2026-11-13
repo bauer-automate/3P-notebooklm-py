@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover -- only hit on Python 3.10
-    import tomli as tomllib
-
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"

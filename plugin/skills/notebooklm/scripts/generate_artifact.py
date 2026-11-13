@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.12"
 # dependencies = ["notebooklm-py>=0.8.0a3"]
 # ///
 """Generate a studio artifact, wait for it to finish, and download it.

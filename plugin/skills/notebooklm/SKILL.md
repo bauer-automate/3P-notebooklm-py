@@ -15,7 +15,7 @@ authorization, and credential-handling rules below apply to both interfaces.
 
 ## Setup and Authentication
 
-Requires Python 3.10+. Install the package in the user's existing environment; do not create a
+Requires Python 3.12+. Install the package in the user's existing environment; do not create a
 separate environment unless requested:
 
 ```bash

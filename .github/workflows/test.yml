@@ -208,18 +208,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Three full routine cells cover the oldest, canonical, and newest
+        # Three full routine cells cover the canonical and newest
         # supported CPython versions. The secondary OS cells start with the
         # audited platform manifest; high-risk or unclassifiable PRs expand
         # those cells back to the full routine selector below. The complete
-        # 18-cell product remains in nightly-checks.yml until the observation
+        # 12-cell product remains in nightly-checks.yml until the observation
         # criteria in the optimization plan have been met.
         include:
-        - os: ubuntu-latest
-          python-version: "3.10"
-          canonical: false
-          windows_playwright: false
-          selection: full
         - os: ubuntu-latest
           python-version: "3.12"
           canonical: true

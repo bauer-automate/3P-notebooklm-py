@@ -26,17 +26,7 @@ import json
 import re
 import sys
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-    except ImportError:
-        print(
-            "tomli is required on Python 3.10. Install with: uv pip install tomli",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+import tomllib
 
 
 def _check_global_drift(pyproject_path: str, workflow_path: str) -> int:
