@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chat answer states (#2541).** `chat.get_history_turns()` exposes message
+  status, UTC timestamp, empty-answer reason, and the web UI's stale-answer
+  classification on Web and Android. `AskResult.empty_answer_reason` distinguishes
+  diagnostic empty responses, and Web quota markers now raise `RateLimitError`.
+
+- **History turn fidelity (#2543).** `get_history_turns()` now yields the question of
+  an Android combined row, and `ChatHistoryTurn.answer_present` tells an absent answer
+  payload apart from an empty answer (`is_empty` is `False` when it is absent).
+
+- **Quiz question types (#2528).** `generate_quiz(question_types=[QuizQuestionType...])`
+  and `generate quiz --question-types multiple-choice,short-answer` limit the question
+  types on the Web backend. Android raises `UnsupportedOperationError` for a restricting
+  selection because its server ignores the option.
+- **Quiz and flashcards image option (#2528).** `include_images=False` (CLI
+  `--text-only`) generates text only; `None` keeps the server default (images
+  included). Sent as `image_option.disabled_source_images` on Web and Android.
+
+- **Quiz and flashcards output language (#2528).** `generate_quiz` and
+  `generate_flashcards` take an optional `language` code, and the CLI gains
+  `--language` on both. Omitting it leaves behavior unchanged; MCP and REST
+  forward `language` for these types only when supplied.
+
 - **Claude Code plugin support.** Added `.claude-plugin/marketplace.json`
   (repo root) and `plugin/.claude-plugin/plugin.json` so `/plugin marketplace
   add teng-lin/notebooklm-py` now works — previously the repo had no plugin
@@ -35,6 +57,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `references/` + `scripts/`, with `scripts/*` kept executable) instead of
   just `SKILL.md`; `--json` `entries` lists every archived path.
 
+## [0.8.6] - 2026-10-28
+
+### Added
+
+- **Deferred audio generation (#2506).** Queue audio overviews with `later=True`
+  in Python or `--later` in the CLI on Web and Android.
+
+- **Deferred Studio generation (#2519).** Queue videos, reports (including study
+  guides), quizzes, flashcards, infographics and slide decks with `later=True`
+  in Python or `--later` in the CLI on Web and Android. Scheduled jobs return
+  `scheduled`; combining `--later` with `--wait` is rejected. Cinematic video
+  remains unsupported for deferred generation.
+
+- **Experimental Android Live Voice (#2509).** Android clients can open
+  notebook-bound `client.live.connect(...)` sessions with audio input/output,
+  transcripts, interruption events and bounded lifecycle cleanup. Recording,
+  playback and codecs remain application-owned; automatic reconnection is not enabled.
+
 ### Changed
 
 - **The Windows CLI runs on asyncio's default event loop (#2485).** The
@@ -53,6 +93,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Android owned notebooks can be removed from recent views without an error.**
+  Google now returns `INVALID_ARGUMENT` for this no-op. The client verifies
+  explicit ownership before accepting that response; failures for shared,
+  missing, or unreadable notebooks still raise an error.
+
+- **Fresh installs include `typing_extensions` (#2500).** Declare the runtime
+  dependency used by public type exports.
+- **Synchronous cookie recovery honors the selected transport (#2504).**
+  Curl-backed recovery uses the supported curl_cffi runtime.
+- Updated locked dependencies to address reported vulnerabilities (#2513).
+
+- **An uppercase full UUID now reaches the right notebook, source, note or
+  artifact.** The CLI and MCP resolvers passed a full UUID through in the case
+  it was typed, but Google matches ids case-sensitively and its ids are always
+  lowercase. Reads by an uppercase id failed with a misleading `NOT_FOUND`, and
+  `notebook_delete` by one reported `deleted` while the notebook stayed. The
+  resolvers now lowercase a full UUID before any backend call. The REST server,
+  which takes ids as given in the path, is unchanged.
+
 - **Windows CLI uploads on the selector loop no longer lose data (#2485).** On
   Python 3.12–3.14, asyncio's selector loop drops a chunk of the request body
   when a Windows socket send would block, so multi-megabyte uploads failed
@@ -69,6 +128,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   speed: the same 22.8 MB file downloads in about a second. Each range is
   checked against the previous one and the declared total, and a server that
   ignores the range is still read in full.
+- **Title lookups now find `İstanbul` from `istanbul` (#2476).** MCP name
+  resolution (notebooks, sources, notes, artifacts and Studio items) matches
+  in tiers. Tier 1 is Unicode canonical caseless matching, so composed and
+  decomposed spellings now agree. Only when tier 1 finds nothing does an
+  accent-insensitive tier 2 run, and it raises an ambiguity error rather than
+  pick between several titles. The near-miss hints and the download `--name`
+  filter use the accent-insensitive key directly. Studio item refs gain the
+  title-prefix matching the other resolvers already had for lookups and
+  previews; `studio_rename` and a confirmed single-item `studio_delete` still
+  need an exact title or an id, and a complete Studio listing for a title. Dotless `ı` still
+  never matches `i`. The confirmation previews of `share_set_access`,
+  `share_set_user` and `share_remove_user` now include the resolved notebook
+  `title`, as `notebook_delete` already did, so a tier-2 match is visible
+  before anything changes; if the notebook list cannot be read, the preview
+  shows `title: null` instead of failing. These previews, and those of
+  `notebook_delete` and a single-source `source_delete`, reuse the list read
+  to resolve a name instead of listing again; the two delete previews also
+  show `title: null` when a full-id preview cannot read the list (with a
+  name, resolution fails first). Preview titles are now also found when the
+  ref is a full id in uppercase. Tools that change data (renames,
+  saves, adds, generation, research, chat settings, sharing changes, and
+  confirmed deletes) use tier 1 only: a ref that only the accent-insensitive
+  tier would match returns a `VALIDATION` error naming the candidates, where
+  it was `NOT_FOUND` with a "Did you mean" hint before. Read-only tools and
+  confirmation previews keep both tiers.
 
 ## [0.8.5] - 2026-10-12
 
@@ -2969,7 +3053,8 @@ This is the initial public release of `notebooklm-py`. While core functionality 
 - **Authentication expiry**: CSRF tokens expire after some time. Re-run `notebooklm login` if you encounter auth errors.
 - **Large file uploads**: Files over 50MB may fail or timeout. Split large documents if needed.
 
-[Unreleased]: https://github.com/teng-lin/notebooklm-py/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/teng-lin/notebooklm-py/compare/v0.8.6...HEAD
+[0.8.6]: https://github.com/teng-lin/notebooklm-py/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/teng-lin/notebooklm-py/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/teng-lin/notebooklm-py/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/teng-lin/notebooklm-py/compare/v0.8.2...v0.8.3

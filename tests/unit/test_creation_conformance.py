@@ -423,3 +423,59 @@ async def test_interactive_domain_normalization_and_language_encoding(
         params = terminal.rpc_call.call_args.args[1]
         assert "fr" not in repr(params)
         assert params[2][9][1] == ([4, None, instructions] if instructions.strip() else [4])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "family",
+    ["audio", "video", "report", "study_guide", "quiz", "flashcards", "infographic", "slide_deck"],
+)
+@pytest.mark.parametrize("later", [False, True])
+async def test_deferred_generation_wire(backend, creation_api, family, later):
+    """Both backends preserve the field-7 scheduling message and ordinary defaults."""
+    api, observed, terminal, _ = creation_api
+    await getattr(api, f"generate_{family}")("nb", source_ids=["source"], later=later)
+    assert observed[0].later is later
+    if backend == "web":
+        params = terminal.rpc_call.await_args.args[1]
+        assert len(params) == (7 if later else 3)
+        if later:
+            assert params[3:] == [None, None, None, [True]]
+    else:
+        from notebooklm._android.proto.notebooklm.internal.android.wire.v1 import artifacts_pb2
+
+        projection = artifacts_pb2.WireCreateArtifactDeferredProjection.FromString(
+            terminal.calls[0][1].SerializeToString()
+        )
+        assert projection.HasField("deferred_generation") is later
+        assert projection.deferred_generation.enabled is later
+        # This independently observed suffix is shared with Web field 7.
+        if later:
+            assert b"\x3a\x02\x08\x01" in terminal.calls[0][1].SerializeToString()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "family",
+    ["audio", "video", "report", "study_guide", "quiz", "flashcards", "infographic", "slide_deck"],
+)
+@pytest.mark.parametrize("later", [1, "true", None])
+async def test_later_requires_bool_before_source_lookup(creation_api, family, later):
+    """Reject invalid scheduling values before source resolution on either backend."""
+    api, observed, _, notebooks = creation_api
+    with pytest.raises(ValidationError, match="later must be a bool"):
+        await getattr(api, f"generate_{family}")("nb", later=later)
+    assert observed == []
+    if hasattr(notebooks, "calls") and isinstance(notebooks.calls, list):
+        assert notebooks.calls == []
+    else:
+        notebooks.get_source_ids.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cinematic_later_is_rejected_before_source_lookup(creation_api):
+    """Keep unverified cinematic scheduling from reaching a protocol hook."""
+    api, observed, _, _ = creation_api
+    with pytest.raises(ValidationError, match="not supported for cinematic video"):
+        await api.generate_video("nb", video_format=VideoFormat.CINEMATIC, later=True)
+    assert observed == []

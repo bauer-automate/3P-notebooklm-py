@@ -54,6 +54,7 @@ _RPC_ENUM_SNAPSHOT: dict[str, dict[str, int]] = {
         "FAILED": 4,
         "SUGGESTED": 5,
         "PENDING_REVIEW": 6,
+        "SCHEDULED": 7,
     },
     # google.rpc.Code, as embedded at index 5 of a wrb.fr entry. Not our
     # numbering to choose — these are the canonical gRPC statuses, so a diff
@@ -130,6 +131,12 @@ _RPC_ENUM_SNAPSHOT: dict[str, dict[str, int]] = {
     },
     "QuizDifficulty": {"EASY": 1, "MEDIUM": 2, "HARD": 3},
     "QuizQuantity": {"FEWER": 1, "STANDARD": 2, "MORE": 3},
+    "QuizQuestionType": {
+        "FILL_IN_THE_BLANK": 1,
+        "MULTIPLE_CHOICE": 2,
+        "MULTIPLE_SELECT": 3,
+        "SHORT_ANSWER": 4,
+    },
     "ShareAccess": {"RESTRICTED": 0, "ANYONE_WITH_LINK": 1},
     "SharePermission": {"OWNER": 1, "EDITOR": 2, "VIEWER": 3, "_REMOVE": 4},
     "ShareViewLevel": {"FULL_NOTEBOOK": 0, "CHAT_ONLY": 1},

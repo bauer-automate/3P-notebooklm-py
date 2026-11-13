@@ -6,6 +6,7 @@
 Complete reference for the `notebooklm` Python library.
 
 See also:
+- [Android Live Voice](live-voice.md) for notebook-bound bidirectional audio sessions.
 - [Architecture Guide](./architecture.md) for structural overview, capability protocols, and transport design.
 - [Architecture diagrams](./diagrams/README.md) for explorable call flows, lifecycles, and class models.
 - [Operation contracts](./architecture.md#operation-lifetime-deadlines-and-evidence) for aggregate deadlines, task/epoch ownership, mutation journals, and safe recovery.
@@ -1814,6 +1815,12 @@ status = await client.artifacts.generate_audio(
     language="en",
 )
 
+# Queue supported Studio artifacts for later (Web and Android)
+status = await client.artifacts.generate_report(notebook_id, later=True)
+assert status.is_scheduled  # status.status == "scheduled"; not terminal
+# The server chooses when generation runs, usually a few hours later.
+# Account quota and feature availability still apply.
+
 # Video
 status = await client.artifacts.generate_video(
     notebook_id,
@@ -1841,8 +1848,28 @@ status = await client.artifacts.generate_quiz(
     instructions="...",
     quantity=QuizQuantity.MORE,  # FEWER, STANDARD, MORE
     difficulty=QuizDifficulty.MEDIUM,  # EASY, MEDIUM, HARD
+    language="vi",  # optional output language; None (default) omits it
+    question_types=[QuizQuestionType.MULTIPLE_CHOICE, QuizQuestionType.SHORT_ANSWER],
+    # MULTIPLE_CHOICE, MULTIPLE_SELECT, FILL_IN_THE_BLANK, SHORT_ANSWER; None = all
+    include_images=False,  # text only; None (default) keeps the server default (images)
 )
 ```
+
+`question_types` must be a non-empty list when given; the Web backend sends the
+complement as the request's "avoid" list. The Android backend does not honor it, so
+`generate_quiz(question_types=...)` raises `UnsupportedOperationError` there (unless the
+selection includes every type, which is the default and sends nothing).
+`generate_flashcards` accepts the same optional `language` and `include_images`.
+`include_images` must be a `bool` or `None`, and `language` must be a non-empty string
+or `None`; anything else raises `ValidationError`.
+
+`later=True` is a keyword-only option on `generate_audio`, `generate_video`,
+`generate_report`, `generate_study_guide`, `generate_quiz`, `generate_flashcards`,
+`generate_infographic`, and `generate_slide_deck`. It defaults to `False`.
+Cinematic video does not support deferred generation; requesting it raises
+`ValidationError` before submission. Deferred jobs remain subject to account
+quota and feature availability. No immediate generation is substituted.
+
 
 **Omitting an option does not mean "let the server choose."** `quantity=None` /
 `difficulty=None` (the defaults) are resolved to `QuizQuantity.STANDARD` and
@@ -1871,6 +1898,11 @@ status = await with_rate_limit_retry(
 ```
 
 **Waiting for Completion:**
+
+Scheduled artifacts remain nonterminal. `wait_for_completion()` also waits
+while an artifact is `scheduled`, so its ordinary timeout may expire before
+the server starts a job queued with `later=True`. Prefer checking
+`poll_status()` later, or choose a timeout that covers the deferred delay.
 
 ```python
 from notebooklm import ArtifactTimeoutError
@@ -1910,12 +1942,69 @@ else:
 | `configure(notebook_id, ...)` | `str, ...` | `None` | Set chat persona. **Writes the whole chat-settings block with no merge** — an omitted `goal`/`response_length` resets that field to its default. For a partial, merge-preserving update use the CLI `configure` / MCP `chat_configure` (they read `get_settings` first). |
 | `get_settings(notebook_id)` | `str` | `ChatSettings` | Read the notebook's current chat configuration (`goal`, `response_length`, `custom_prompt`). A never-configured notebook reads back as `DEFAULT`/`DEFAULT`. |
 | `get_history(notebook_id, limit=100, conversation_id=None)` | `str, int, str` | `list[tuple[str, str]]` | Get Q&A pairs from most recent conversation. For a positive `limit`, empty means no conversation or no turns; turn-fetch failures raise. Android also returns `[]` for non-positive limits. |
+| `get_history_turns(notebook_id, limit=100, conversation_id=None)` | `str, int, str` | `list[ChatHistoryTurn]` | Individual messages, oldest first, with status, UTC timestamp, document content and empty-answer reason. `limit` counts messages, including questions; non-positive limits return `[]`. |
 | `get_conversation_turns(notebook_id, conversation_id, limit=2)` | `str, str, int` | `Any` | Raw turn payload. Web: batchexecute rows. Android: protobuf `ListChatTurnsResponse`. Prefer `get_history` for typed Q&A pairs. |
 | `get_conversation_id(notebook_id)` | `str` | `str \| None` | Get most recent conversation ID from server |
 | `session_status(notebook_id, conversation_id=None)` | `str, str \| None` | `ChatSessionStatus` | Read the selected session's live generation state. Omitting `conversation_id` selects the most recent session; a notebook with no session is idle. |
 | `cancel(notebook_id, conversation_id=None)` | `str, str \| None` | `None` | Idempotently stop active generation for the selected session. Omitting `conversation_id` selects the most recent session. The caller holding a Web response stream must also abandon that stream after success. |
 | `delete_conversation(notebook_id, conversation_id)` | `str, str` | `None` | **DESTRUCTIVE.** Permanently delete a server-side conversation (web UI's "Delete history" action). The next `ask()` with no `conversation_id` then starts a brand-new conversation. |
 | `save_answer_as_note(notebook_id, ask_result, *, title=None)` | `str, AskResult, str \| None` | `Note` | Save a chat answer as a citation-rich note ([issue #660](https://github.com/teng-lin/notebooklm-py/issues/660)) — the resulting note's `[N]` markers remain interactive hover-anchored citations in the NotebookLM web UI. Owns the saved-from-chat workflow on `ChatAPI` (the data owner). Raises `ValueError` if `ask_result.references` is empty. When `title is None`, derives `f"Chat: {ask_result.answer[:50].strip().replace(chr(10), ' ')}"`. |
+
+**Failed, stale and empty answers (#2541):**
+
+`get_history()` keeps returning `(question, answer)` pairs. Use
+`get_history_turns()` on either backend to distinguish outcomes:
+
+```python
+from notebooklm import ChatTurnStatus, EmptyAnswerReason
+from notebooklm.exceptions import RateLimitError
+
+turns = await client.chat.get_history_turns(nb_id, conversation_id=conversation_id)
+for turn in turns:
+    if turn.role != 2:  # 1 = question, 2 = answer
+        continue
+    print(turn.message_id, turn.timestamp, turn.status, turn.state)
+    if turn.state == "error":
+        print("The answer failed or its generation became stale")
+    elif turn.is_empty:
+        print("The completed answer has no content", turn.empty_answer_reason)
+    elif not turn.answer_present:
+        print("The answer payload was missing, so it could not be read")
+```
+
+`answer_present` is `False` when an answer row carried no answer payload, which
+is different from a completed answer with empty text; `is_empty` is `False` for
+the former. On Android, an answer row that also carries its question (a combined
+legacy-shaped row) yields that question as a role-1 turn, sharing the row's
+`message_id`, just before the answer turn.
+
+`ChatTurnStatus` names the observed codes: `IN_PROGRESS=1`, `COMPLETED=2`,
+`FAILED=3`, `CANCELLED=4`. The names are client interpretations, not recovered
+server enum labels. `status` preserves unknown integer codes; an omitted status
+is `None`. For answers, `state` is `streaming`, `error`, `success`, or `unknown`.
+An in-progress answer **over** 30 minutes old is successful if it contains
+non-whitespace text or visible document content; otherwise it is an error,
+matching the web UI. A missing timestamp leaves it streaming. Thought/function
+blocks, horizontal rules, and whitespace-only paragraphs/code do not count as
+visible content. `has_document_content` records this independently of whether
+all document variants render as text. `display_state(now=aware_datetime)` applies
+the same rule with an explicit clock; `state` evaluates it at the current time.
+Unknown status codes remain `unknown` rather than implying completion.
+
+`AskResult.empty_answer_reason` and `ChatHistoryTurn.empty_answer_reason`
+preserve the server's nonzero diagnostic code: `EmptyAnswerReason.UNANSWERABLE=1`
+or `FILTERED=2`. Missing/default zero is `None`; unknown nonzero codes survive.
+These reasons describe an empty answer, not a failed generation. Live Web
+quota errors carrying `UserDisplayableError` field 12 or 13 now raise
+`RateLimitError`; other displayable rejections remain `ChatError`. Android's
+`RESOURCE_EXHAUSTED` mapping already raises `RateLimitError`. History only
+records the generic failed status, so a later history fetch cannot recover
+whether a failure was quota-related.
+
+`session_status()` alone cannot distinguish a live stream from a dead
+in-progress turn: it may continue reporting `generating=True` and a token for
+days. Read the individual turn states as well. This does not automatically
+cancel or retry a generation.
 
 **ask() Parameters:**
 ```python
@@ -2942,6 +3031,10 @@ class Artifact:
         """Actively generating (status code 2)."""
 
     @property
+    def is_scheduled(self) -> bool:
+        """Deferred generation queued for a server-selected time (status code 7)."""
+
+    @property
     def is_failed(self) -> bool:
         """Generation failed (status code 4)."""
 
@@ -2992,6 +3085,7 @@ backend label verbatim while `report_format` maps labels the client recognizes.
 | 4 | `FAILED` | `"failed"` | Generation failed |
 | 5 | `SUGGESTED` | `"suggested"` | A suggestion row, not a real artifact; filtered out of listings server-side |
 | 6 | `PENDING_REVIEW` | `"pending_review"` | Backend state whose semantics are unconfirmed; modeled so it stays distinguishable from `"unknown"` |
+| 7 | `SCHEDULED` | `"scheduled"` | Deferred generation queued for a server-selected time |
 
 **Corrected in [#2127](https://github.com/teng-lin/notebooklm-py/issues/2127):**
 codes 1 and 2 were transposed relative to the backend — the library read 1 as
@@ -3039,7 +3133,7 @@ Returned by `poll_status`, `wait_for_completion`, and most artifact generation m
 @dataclass
 class GenerationStatus:
     task_id: str  # Same value as Artifact.id once complete
-    status: GenerationState  # str-Enum; see the member table below for all nine values
+    status: GenerationState  # str-Enum; see the member table below for all ten values
     url: str | None = None  # Populated for media artifacts when status == "completed"
     error: str | None = None
     error_code: str | None = None  # e.g. "USER_DISPLAYABLE_ERROR" for rate limits
@@ -3060,6 +3154,10 @@ class GenerationStatus:
     @property
     def is_pending(self) -> bool:
         """Check if generation is pending."""
+
+    @property
+    def is_scheduled(self) -> bool:
+        """Check if generation is queued for later."""
 
     @property
     def is_not_found(self) -> bool:
@@ -3100,6 +3198,7 @@ working unchanged. **Prefer the `.is_*` predicates** (`status.is_complete`,
 | `UNKNOWN` | `"unknown"` | status code 0, plus any code outside the backend enum (future-proofing) |
 | `SUGGESTED` | `"suggested"` | status code 5 — a suggestion row; listings filter these out server-side |
 | `PENDING_REVIEW` | `"pending_review"` | status code 6 — backend state with unconfirmed semantics ([#2127](https://github.com/teng-lin/notebooklm-py/issues/2127)) |
+| `SCHEDULED` | `"scheduled"` | status code 7 — an artifact created with `later=True`; nonterminal |
 | `REMOVED` | `"removed"` | Legacy compatibility value; no longer emitted by polling |
 
 `GenerationState.is_terminal` is the single authority for "generation ended":

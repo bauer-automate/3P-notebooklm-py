@@ -28,6 +28,7 @@ from ._artifact.creation import (
 from ._artifact.creation_normalized import NormalizedArtifactCreationRequest
 from ._artifact.creation_policy import (
     WEB_CREATION_POLICY,
+    coerce_question_types,
     normalize_creation,
     normalize_video_prompt,
 )
@@ -47,6 +48,7 @@ from ._types.enums import (
     InfographicStyle,
     QuizDifficulty,
     QuizQuantity,
+    QuizQuestionType,
     ReportFormat,
     SlideDeckFormat,
     SlideDeckLength,
@@ -174,22 +176,53 @@ class ArtifactsAPI(ABC):
         """
         return (
             ArtifactCreationCapability(
-                "audio", ("language", "instructions", "audio_format", "audio_length")
+                "audio", ("language", "instructions", "audio_format", "audio_length", "later")
             ),
             ArtifactCreationCapability(
-                "video", ("language", "instructions", "video_format", "video_style", "style_prompt")
+                "video",
+                (
+                    "language",
+                    "instructions",
+                    "video_format",
+                    "video_style",
+                    "style_prompt",
+                    "later",
+                ),
             ),
             ArtifactCreationCapability("cinematic_video", ("language", "instructions")),
             ArtifactCreationCapability(
-                "report", ("report_format", "language", "custom_prompt", "extra_instructions")
-            ),
-            ArtifactCreationCapability("quiz", ("instructions", "quantity", "difficulty")),
-            ArtifactCreationCapability("flashcards", ("instructions", "quantity", "difficulty")),
-            ArtifactCreationCapability(
-                "infographic", ("language", "instructions", "orientation", "detail_level", "style")
+                "report",
+                ("report_format", "language", "custom_prompt", "extra_instructions", "later"),
             ),
             ArtifactCreationCapability(
-                "slide_deck", ("language", "instructions", "slide_format", "slide_length")
+                "quiz",
+                (
+                    "language",
+                    "instructions",
+                    "quantity",
+                    "difficulty",
+                    "question_types",
+                    "include_images",
+                    "later",
+                ),
+            ),
+            ArtifactCreationCapability(
+                "flashcards",
+                (
+                    "language",
+                    "instructions",
+                    "quantity",
+                    "difficulty",
+                    "include_images",
+                    "later",
+                ),
+            ),
+            ArtifactCreationCapability(
+                "infographic",
+                ("language", "instructions", "orientation", "detail_level", "style", "later"),
+            ),
+            ArtifactCreationCapability(
+                "slide_deck", ("language", "instructions", "slide_format", "slide_length", "later")
             ),
             ArtifactCreationCapability("data_table", ("language", "instructions")),
         )
@@ -375,8 +408,18 @@ class ArtifactsAPI(ABC):
         instructions: str | None = None,
         audio_format: AudioFormat | None = None,
         audio_length: AudioLength | None = None,
+        *,
+        later: bool = False,
     ) -> GenerationStatus:
-        """Generate an Audio Overview (podcast)."""
+        """Generate an Audio Overview (podcast).
+
+        Set ``later=True`` to queue generation for later, as in the web app's
+        Generate later action. The server chooses the execution time, usually
+        a few hours later; account quota and feature availability still apply.
+        The returned status is ``scheduled`` while the artifact is queued.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
         async with self._operation_scope("artifacts.generate_audio"):
             language = self._resolve_language(language)
             source_ids = await self._resolve_source_ids(notebook_id, source_ids)
@@ -388,6 +431,7 @@ class ArtifactsAPI(ABC):
                     instructions,
                     audio_format,
                     audio_length,
+                    later,
                 )
             )
 
@@ -400,8 +444,18 @@ class ArtifactsAPI(ABC):
         video_format: VideoFormat | None = None,
         video_style: VideoStyle | None = None,
         style_prompt: str | None = None,
+        *,
+        later: bool = False,
     ) -> GenerationStatus:
-        """Generate a Video Overview."""
+        """Generate a Video Overview.
+
+        Set ``later=True`` to queue generation; the returned status is ``scheduled``.
+        The server chooses when to run it; account quota and availability still apply.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
+        if later and video_format == VideoFormat.CINEMATIC:
+            raise ValidationError("Deferred generation is not supported for cinematic video")
         language = self._resolve_language(language)
         normalized_style_prompt = normalize_video_prompt(video_format, video_style, style_prompt)
         async with self._operation_scope("artifacts.generate_video"):
@@ -415,6 +469,7 @@ class ArtifactsAPI(ABC):
                     video_format,
                     video_style,
                     normalized_style_prompt,
+                    later=later,
                 )
             )
 
@@ -443,8 +498,16 @@ class ArtifactsAPI(ABC):
         language: str | None = "en",
         custom_prompt: str | None = None,
         extra_instructions: str | None = None,
+        *,
+        later: bool = False,
     ) -> GenerationStatus:
-        """Generate a report artifact."""
+        """Generate a report artifact.
+
+        Set ``later=True`` to queue generation; the returned status is ``scheduled``.
+        The server chooses when to run it; account quota and availability still apply.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
         async with self._operation_scope("artifacts.generate_report"):
             report_format = _artifact_validation.coerce_report_format(report_format)
             language = self._resolve_language(language)
@@ -457,6 +520,7 @@ class ArtifactsAPI(ABC):
                     language,
                     custom_prompt,
                     extra_instructions,
+                    later=later,
                 )
             )
 
@@ -466,8 +530,16 @@ class ArtifactsAPI(ABC):
         source_ids: builtins.list[str] | None = None,
         language: str | None = "en",
         extra_instructions: str | None = None,
+        *,
+        later: bool = False,
     ) -> GenerationStatus:
-        """Generate a study guide report."""
+        """Generate a study guide report.
+
+        Set ``later=True`` to queue generation; the returned status is ``scheduled``.
+        The server chooses when to run it; account quota and availability still apply.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
         async with self._operation_scope("artifacts.generate_study_guide"):
             language = self._resolve_language(language)
             source_ids = await self._resolve_source_ids(notebook_id, source_ids)
@@ -479,6 +551,7 @@ class ArtifactsAPI(ABC):
                     language,
                     None,
                     extra_instructions,
+                    later=later,
                 )
             )
 
@@ -489,13 +562,38 @@ class ArtifactsAPI(ABC):
         instructions: str | None = None,
         quantity: QuizQuantity | None = None,
         difficulty: QuizDifficulty | None = None,
+        *,
+        later: bool = False,
+        language: str | None = None,
+        question_types: builtins.list[QuizQuestionType] | None = None,
+        include_images: bool | None = None,
     ) -> GenerationStatus:
-        """Generate a quiz."""
+        """Generate a quiz.
+
+        ``language`` is an output-language code (e.g. ``"vi"``); ``None`` omits it.
+        ``include_images=False`` generates text only (no images from the sources);
+        ``None`` keeps the server default (images included).
+        ``question_types`` limits the question types used (``None`` keeps the server
+        default of all types); it must be non-empty when given.
+
+        Set ``later=True`` to queue generation; the returned status is ``scheduled``.
+        The server chooses when to run it; account quota and availability still apply.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
         async with self._operation_scope("artifacts.generate_quiz"):
             source_ids = await self._resolve_source_ids(notebook_id, source_ids)
             return await self._create_artifact(
                 QuizCreationRequest(
-                    notebook_id, tuple(source_ids), instructions, quantity, difficulty
+                    notebook_id,
+                    tuple(source_ids),
+                    instructions,
+                    quantity,
+                    difficulty,
+                    later=later,
+                    language=language,
+                    include_images=include_images,
+                    question_types=coerce_question_types(question_types),
                 )
             )
 
@@ -506,13 +604,34 @@ class ArtifactsAPI(ABC):
         instructions: str | None = None,
         quantity: QuizQuantity | None = None,
         difficulty: QuizDifficulty | None = None,
+        *,
+        later: bool = False,
+        language: str | None = None,
+        include_images: bool | None = None,
     ) -> GenerationStatus:
-        """Generate flashcards."""
+        """Generate flashcards.
+
+        ``language`` is an output-language code (e.g. ``"vi"``); ``None`` omits it.
+        ``include_images=False`` generates text only (no images from the sources);
+        ``None`` keeps the server default (images included).
+
+        Set ``later=True`` to queue generation; the returned status is ``scheduled``.
+        The server chooses when to run it; account quota and availability still apply.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
         async with self._operation_scope("artifacts.generate_flashcards"):
             source_ids = await self._resolve_source_ids(notebook_id, source_ids)
             return await self._create_artifact(
                 FlashcardsCreationRequest(
-                    notebook_id, tuple(source_ids), instructions, quantity, difficulty
+                    notebook_id,
+                    tuple(source_ids),
+                    instructions,
+                    quantity,
+                    difficulty,
+                    later=later,
+                    language=language,
+                    include_images=include_images,
                 )
             )
 
@@ -525,8 +644,16 @@ class ArtifactsAPI(ABC):
         orientation: InfographicOrientation | None = None,
         detail_level: InfographicDetail | None = None,
         style: InfographicStyle | None = None,
+        *,
+        later: bool = False,
     ) -> GenerationStatus:
-        """Generate an infographic."""
+        """Generate an infographic.
+
+        Set ``later=True`` to queue generation; the returned status is ``scheduled``.
+        The server chooses when to run it; account quota and availability still apply.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
         async with self._operation_scope("artifacts.generate_infographic"):
             language = self._resolve_language(language)
             source_ids = await self._resolve_source_ids(notebook_id, source_ids)
@@ -539,6 +666,7 @@ class ArtifactsAPI(ABC):
                     orientation,
                     detail_level,
                     style,
+                    later=later,
                 )
             )
 
@@ -550,8 +678,16 @@ class ArtifactsAPI(ABC):
         instructions: str | None = None,
         slide_format: SlideDeckFormat | None = None,
         slide_length: SlideDeckLength | None = None,
+        *,
+        later: bool = False,
     ) -> GenerationStatus:
-        """Generate a slide deck."""
+        """Generate a slide deck.
+
+        Set ``later=True`` to queue generation; the returned status is ``scheduled``.
+        The server chooses when to run it; account quota and availability still apply.
+        """
+        if not isinstance(later, bool):
+            raise ValidationError("later must be a bool")
         async with self._operation_scope("artifacts.generate_slide_deck"):
             language = self._resolve_language(language)
             source_ids = await self._resolve_source_ids(notebook_id, source_ids)
@@ -563,6 +699,7 @@ class ArtifactsAPI(ABC):
                     instructions,
                     slide_format,
                     slide_length,
+                    later=later,
                 )
             )
 

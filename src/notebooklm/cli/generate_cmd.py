@@ -11,6 +11,7 @@ remain imported at module scope and ``_output_mind_map_result`` +
 
 import contextlib
 import os
+from functools import wraps
 from typing import Any
 
 import click
@@ -46,6 +47,7 @@ from ..types import (
     MindMapResult,
     QuizDifficulty,
     QuizQuantity,
+    QuizQuestionType,
     ReportFormat,
     SlideDeckFormat,
     SlideDeckLength,
@@ -136,6 +138,29 @@ _QUIZ_DIFFICULTY_MAP = {
     "medium": QuizDifficulty.MEDIUM,
     "hard": QuizDifficulty.HARD,
 }
+_QUIZ_QUESTION_TYPE_MAP = {
+    "multiple-choice": QuizQuestionType.MULTIPLE_CHOICE,
+    "multiple-select": QuizQuestionType.MULTIPLE_SELECT,
+    "fill-in-the-blank": QuizQuestionType.FILL_IN_THE_BLANK,
+    "short-answer": QuizQuestionType.SHORT_ANSWER,
+}
+
+
+def _parse_question_types(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> tuple[QuizQuestionType, ...] | None:
+    """Parse ``--question-types a,b`` into enum members (``None`` when omitted)."""
+    if value is None:
+        return None
+    names = [part.strip().lower() for part in value.split(",") if part.strip()]
+    unknown = [name for name in names if name not in _QUIZ_QUESTION_TYPE_MAP]
+    if unknown or not names:
+        raise click.BadParameter(  # cli-input-validation: --question-types value check
+            f"expected a comma-separated list of: {', '.join(_QUIZ_QUESTION_TYPE_MAP)}"
+        )
+    return tuple(dict.fromkeys(_QUIZ_QUESTION_TYPE_MAP[name] for name in names))
+
+
 _INFOGRAPHIC_ORIENTATION_MAP = {
     "landscape": InfographicOrientation.LANDSCAPE,
     "portrait": InfographicOrientation.PORTRAIT,
@@ -303,7 +328,7 @@ def _output_generation_outcome(
                 {"task_id": outcome.task_id, "status": "completed", "url": outcome.url}
             )
         else:
-            json_output_response({"task_id": outcome.task_id, "status": "pending"})
+            json_output_response({"task_id": outcome.task_id, "status": outcome.status})
         return
 
     if outcome.status == "completed":
@@ -311,6 +336,9 @@ def _output_generation_outcome(
             console.print(f"[green]{display_name.title()} ready:[/green] {outcome.url}")
         else:
             console.print(f"[green]{display_name.title()} ready[/green]")
+    elif outcome.status == "scheduled":
+        console.print(f"[yellow]Scheduled:[/yellow] {outcome.task_id}")
+        console.print("Generation will run later at a time chosen by the server.")
     else:
         console.print(f"[yellow]Started:[/yellow] {outcome.task_id or outcome.raw_status}")
 
@@ -448,7 +476,29 @@ def generate():
     pass
 
 
+def _with_deferred_client(f):
+    """Validate deferred CLI flags before authentication can perform network I/O."""
+    authenticated = with_client(f)
+
+    @wraps(f)
+    @click.pass_context
+    def wrapper(ctx, *args, **kwargs):
+        """Fail fast for conflicting or unsupported deferred generation flags."""
+        if kwargs.get("later"):
+            message = None
+            if kwargs.get("wait"):
+                message = "--later cannot be combined with --wait"
+            elif kwargs.get("video_format") == "cinematic" or ctx.info_name == "cinematic-video":
+                message = "Deferred generation is not supported for cinematic video"
+            if message is not None:
+                output_error(message, "VALIDATION_ERROR", kwargs.get("json_output", False), 1)
+        return authenticated(*args, **kwargs)
+
+    return wrapper
+
+
 @generate.command("audio")
+@click.option("--later", is_flag=True, help="Queue generation for later (usually a few hours).")
 @click.argument("description", default="", required=False)
 @prompt_file_option
 @notebook_option
@@ -472,7 +522,7 @@ def generate():
 @wait_polling_options(default_timeout=1200, default_interval=2)
 @retry_option
 @json_option
-@with_client
+@_with_deferred_client
 def generate_audio(
     ctx,
     description,
@@ -480,6 +530,7 @@ def generate_audio(
     notebook_id,
     audio_format,
     audio_length,
+    later,
     language,
     source_ids,
     wait,
@@ -508,6 +559,7 @@ def generate_audio(
         instructions=description or None,
         audio_format=_AUDIO_FORMAT_MAP[audio_format],
         audio_length=_AUDIO_LENGTH_MAP[audio_length],
+        later=later,
         wait=wait,
         timeout=timeout,
         interval=interval,
@@ -517,6 +569,7 @@ def generate_audio(
 
 
 @generate.command("video")
+@click.option("--later", is_flag=True, help="Queue generation for later (usually a few hours).")
 @click.argument("description", default="", required=False)
 @prompt_file_option
 @notebook_option
@@ -563,7 +616,7 @@ def generate_audio(
 )
 @retry_option
 @json_option
-@with_client
+@_with_deferred_client
 def generate_video(
     ctx,
     description,
@@ -574,6 +627,7 @@ def generate_video(
     style_prompt,
     language,
     source_ids,
+    later,
     wait,
     timeout,
     interval,
@@ -623,6 +677,7 @@ def generate_video(
             video_format=_VIDEO_FORMAT_MAP[video_format],
             video_style=_VIDEO_STYLE_MAP[style],
             style_prompt=style_prompt,
+            later=later,
             wait=wait,
             timeout=(
                 timeout
@@ -663,6 +718,7 @@ alias_command(
 
 
 @generate.command("slide-deck")
+@click.option("--later", is_flag=True, help="Queue generation for later (usually a few hours).")
 @click.argument("description", default="", required=False)
 @prompt_file_option
 @notebook_option
@@ -686,7 +742,7 @@ alias_command(
 @wait_polling_options(default_timeout=300, default_interval=2)
 @retry_option
 @json_option
-@with_client
+@_with_deferred_client
 def generate_slide_deck(
     ctx,
     description,
@@ -696,6 +752,7 @@ def generate_slide_deck(
     deck_length,
     language,
     source_ids,
+    later,
     wait,
     timeout,
     interval,
@@ -721,6 +778,7 @@ def generate_slide_deck(
         instructions=description or None,
         slide_format=_SLIDE_FORMAT_MAP[deck_format],
         slide_length=_SLIDE_LENGTH_MAP[deck_length],
+        later=later,
         wait=wait,
         timeout=timeout,
         interval=interval,
@@ -792,6 +850,7 @@ def generate_revise_slide(
 
 
 @generate.command("quiz")
+@click.option("--later", is_flag=True, help="Queue generation for later (usually a few hours).")
 @click.argument("description", default="", required=False)
 @prompt_file_option
 @notebook_option
@@ -807,12 +866,29 @@ def generate_revise_slide(
     default="medium",
     help="Question difficulty (default: medium)",
 )
+@click.option(
+    "--question-types",
+    default=None,
+    callback=_parse_question_types,
+    help=(
+        "Comma-separated question types to use: "
+        "multiple-choice, multiple-select, fill-in-the-blank, short-answer "
+        "(default: all)"
+    ),
+)
+@click.option("--language", default=None, help="Output language code (default: not sent)")
+@click.option(
+    "--images/--text-only",
+    "include_images",
+    default=None,
+    help="Include images from the sources, or generate text only (default: server default, images)",
+)
 @multi_source_option
 @wait_option
 @wait_polling_options(default_timeout=300, default_interval=2)
 @retry_option
 @json_option
-@with_client
+@_with_deferred_client
 def generate_quiz(
     ctx,
     description,
@@ -820,7 +896,11 @@ def generate_quiz(
     notebook_id,
     quantity,
     difficulty,
+    question_types,
+    language,
+    include_images,
     source_ids,
+    later,
     wait,
     timeout,
     interval,
@@ -837,14 +917,19 @@ def generate_quiz(
     Example:
       notebooklm generate quiz "focus on vocabulary terms"
       notebooklm generate quiz "test key concepts" --difficulty hard --quantity more
+      notebooklm generate quiz --question-types multiple-choice,short-answer
     """
     description = resolve_prompt(description, prompt_file, "description")
     request = QuizGenerationRequest(
         notebook_id=require_notebook(notebook_id),
         source_ids=_source_selection(ctx, source_ids),
+        language=UNSET if language is None else resolve_language(language),
+        include_images=include_images,
         instructions=description or None,
         quantity=_QUIZ_QUANTITY_MAP[quantity],
         difficulty=_QUIZ_DIFFICULTY_MAP[difficulty],
+        question_types=question_types,
+        later=later,
         wait=wait,
         timeout=timeout,
         interval=interval,
@@ -854,6 +939,7 @@ def generate_quiz(
 
 
 @generate.command("flashcards")
+@click.option("--later", is_flag=True, help="Queue generation for later (usually a few hours).")
 @click.argument("description", default="", required=False)
 @prompt_file_option
 @notebook_option
@@ -869,12 +955,19 @@ def generate_quiz(
     default="medium",
     help="Flashcard difficulty (default: medium)",
 )
+@click.option("--language", default=None, help="Output language code (default: not sent)")
+@click.option(
+    "--images/--text-only",
+    "include_images",
+    default=None,
+    help="Include images from the sources, or generate text only (default: server default, images)",
+)
 @multi_source_option
 @wait_option
 @wait_polling_options(default_timeout=300, default_interval=2)
 @retry_option
 @json_option
-@with_client
+@_with_deferred_client
 def generate_flashcards(
     ctx,
     description,
@@ -882,7 +975,10 @@ def generate_flashcards(
     notebook_id,
     quantity,
     difficulty,
+    language,
+    include_images,
     source_ids,
+    later,
     wait,
     timeout,
     interval,
@@ -904,9 +1000,12 @@ def generate_flashcards(
     request = FlashcardsGenerationRequest(
         notebook_id=require_notebook(notebook_id),
         source_ids=_source_selection(ctx, source_ids),
+        language=UNSET if language is None else resolve_language(language),
+        include_images=include_images,
         instructions=description or None,
         quantity=_QUIZ_QUANTITY_MAP[quantity],
         difficulty=_QUIZ_DIFFICULTY_MAP[difficulty],
+        later=later,
         wait=wait,
         timeout=timeout,
         interval=interval,
@@ -916,6 +1015,7 @@ def generate_flashcards(
 
 
 @generate.command("infographic")
+@click.option("--later", is_flag=True, help="Queue generation for later (usually a few hours).")
 @click.argument("description", default="", required=False)
 @prompt_file_option
 @notebook_option
@@ -943,7 +1043,7 @@ def generate_flashcards(
 @wait_polling_options(default_timeout=300, default_interval=2)
 @retry_option
 @json_option
-@with_client
+@_with_deferred_client
 def generate_infographic(
     ctx,
     description,
@@ -954,6 +1054,7 @@ def generate_infographic(
     style,
     language,
     source_ids,
+    later,
     wait,
     timeout,
     interval,
@@ -980,6 +1081,7 @@ def generate_infographic(
         orientation=_INFOGRAPHIC_ORIENTATION_MAP[orientation],
         detail_level=_INFOGRAPHIC_DETAIL_MAP[detail],
         style=_INFOGRAPHIC_STYLE_MAP[style],
+        later=later,
         wait=wait,
         timeout=timeout,
         interval=interval,
@@ -1090,6 +1192,7 @@ def generate_mind_map(
 
 
 @generate.command("report")
+@click.option("--later", is_flag=True, help="Queue generation for later (usually a few hours).")
 @click.argument("description", default="", required=False)
 @prompt_file_option
 @click.option(
@@ -1112,7 +1215,7 @@ def generate_mind_map(
 @wait_polling_options(default_timeout=300, default_interval=2)
 @retry_option
 @json_option
-@with_client
+@_with_deferred_client
 def generate_report_cmd(
     ctx,
     description,
@@ -1122,6 +1225,7 @@ def generate_report_cmd(
     source_ids,
     language,
     append_instructions,
+    later,
     wait,
     timeout,
     interval,
@@ -1162,6 +1266,7 @@ def generate_report_cmd(
         report_format=_REPORT_FORMAT_MAP[actual_format],
         custom_prompt=custom_prompt,
         extra_instructions=append_instructions,
+        later=later,
         wait=wait,
         timeout=timeout,
         interval=interval,

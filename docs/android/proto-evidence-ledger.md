@@ -129,7 +129,7 @@ fixtures. Hashes prevent a later local checkout from silently changing what was 
 | exact-package `source_settings.proto` | `becd695c4281e23064c16fc1441c61117e5dc2a44c52cadf44af9e31c7cb8b18` | separate settings package, fields #2/#4, complete enums |
 | exact-package sharing `supported.proto` | `f966dfebebe5eee213ad53607d2fddd44c8c33892f2a338d734491d9fb7b4309` | sharing service/message FQNs, tags, cardinality, and common-protos import |
 | exact-package common `common.proto` | `0a2a7acbeebf3a97ad0fffa8b7496cb119c9f0fffb731011c47e9dba43313044` | exact `ChatSession` and `ProjectPublicSettings` message closure without duplicate declarations |
-| [`schema.proto`](schema.proto) | `a5982ada714d231462625b87cbb71b8b6b87db19c02e15a1dfe294d065d0c4fb` | flattened Dart recovery used to identify gaps, never as a compile input; retains 15 zero-field messages plus the metering response family and exact per-message package/library provenance |
+| [`schema.proto`](schema.proto) | `0e6886db3e93161aaec0673b131bedf4b010ae04d833d45aac3176776402a7be` | flattened Dart recovery used to identify gaps, never as a compile input; retains 15 zero-field messages plus the metering response family and exact per-message package/library provenance |
 | [`enums.txt`](enums.txt) | `fb138adfec1d701932f7efaee9f20f4fbb43b3df27acb00de91c169e659c5401` | exhaustive enum names and integers |
 | blutter `pp.txt` | `2fc0bad6bee700cb628deb9ac1922eeea3d1255b51d8d2e1f63c5537d98965b0` | adjacent generated-client method paths, request/response generic bindings, and response constructors for the six formerly empty-response exceptions |
 | blutter `ida_script/addNames.py` | `982fcbf1c5ef1d7d0aa9d5d0ae8af3c6e6a7c575af9bdba1fc3d7469aa8bc511` | exact protobuf Dart-library identity for `Empty`, `DeleteNotesResponse`, and `ShareProjectResponse`; summarized in [`blutter-grpc-signature-evidence.md`](blutter-grpc-signature-evidence.md) |
@@ -145,7 +145,7 @@ fixtures. Hashes prevent a later local checkout from silently changing what was 
 | [`artifact-contracts-and-live-validation.md`](artifact-contracts-and-live-validation.md) | `58af0bbeebdfa6a6a7366577d90a5479bdf971a1ed76fe3d6d7d0b8420f8454d` | consolidated artifact generation, representation, data-table, retry/export, mind-map, and transfer evidence; preserves all four source-report hashes and cleanup qualifications |
 | [`file-transfer-evidence.md`](file-transfer-evidence.md) | `3752ef8cf75e3fcafaca3522a28a323c01d931c4d9f4ca39eb2d5ddb0679d2b9` | official-app/headless PDF upload request, qualified CSV/DOCX compatibility boundary, and live artifact representation/direct infographic/slide transfer |
 | [`resource-lifecycle-and-public-qualification.md`](resource-lifecycle-and-public-qualification.md) | `237a40f981523058a987f3fc4b3a0800fb0812750dbc5ec285a167940d4e2861` | consolidated notebook copy/metadata, note/mind-map, label/collection, membership, cleanup, and public-qualification evidence; preserves all four source-report hashes |
-| [`endpoints.md`](endpoints.md) | `1769a5120a958ae6710b72a8294aae2b99ad57a6226c359157db6c4e2fbabfd4` | live request/response envelopes, route results, version-scoped APK inventories, captured note/sharing bytes, and the account-bootstrap replay boundary |
+| [`endpoints.md`](endpoints.md) | `4650bed3510453efc3a89b5e0e91e8c1a76a2a1080ed1aee4036bf006444204e` | live request/response envelopes, route results, version-scoped APK inventories, captured note/sharing bytes, and the account-bootstrap replay boundary |
 
 The recovery method and the warning about duplicate packages are committed in
 [`README.md`](README.md#caveats-that-will-bite-you). Live request/response shapes are documented in
@@ -498,7 +498,7 @@ retain their established builders.
 
 The compile inputs are
 [`chat.proto`](../../src/notebooklm/_android/proto_src/google/internal/labs/tailwind/orchestration/v1/chat.proto)
-(SHA-256 `4f343dd12cbce225fc727ac9e5bc88a898db831d322de0ef2d23382af5ee29a1`) and
+(SHA-256 `8aca3bc8bb08018cbb69a23b3317c3ce319480c97035f27cd8887feb18e98f30`) and
 [`common.proto`](../../src/notebooklm/_android/proto_src/labs/language/tailwind/common/protos/common.proto)
 (SHA-256 `7d064bf11e3f01465e485004e6dbba078ae9b92f02be53ac2a8a4ac6a420af75`).
 Chat request context imports
@@ -525,7 +525,7 @@ the generated descriptors; no undeclared semantic leaf is available to the adapt
 | `orchestration.v1.ConversationTurnKey` | `session_id` (1; string), `conversation_id` (2; string), `observed_field_3` (3; opaque int32) |
 | `orchestration.v1.ListChatSessionsRequest/Response` | `project_id` (3; string); `sessions` (1; repeated `ChatSession`) |
 | `orchestration.v1.ListChatTurnsRequest/Response` | `chat_session_id` (4; string), `page_token` (6; string); `chat_turns` (1; repeated `ChatHistoryMessage`), `next_page_token` (2; string) |
-| `orchestration.v1.ChatHistoryMessage` | `message_id` (1; string), `timestamp` (2; `Timestamp`), `observed_event_type` (3; raw int32 role), `user_query_text` (4; string), `act_on_sources_response` (5; `ActOnSourcesResponse`) |
+| `orchestration.v1.ChatHistoryMessage` | `message_id` (1; string), `timestamp` (2; `Timestamp`), `observed_event_type` (3; raw int32 role), `user_query_text` (4; string), `act_on_sources_response` (5; `ActOnSourcesResponse`), `status` (6; observed optional int32, #2541) |
 | `orchestration.v1.ActOnSourcesResponse` | `response` (1; `AnswerResponse`), `next_step_suggestions` (6; `NextStepSuggestions`) |
 | `orchestration.v1.ActOnSourcesRequest` | `sources` (1; repeated `InputSource`), `options` (2; `ActOnSourcesOptions`), `free_form_action` (3; `FreeFormAction`), `mind_map_action` (6; current-bundle `ActOnSourcesMindMapAction`), `source_options` (7; `InputSourceOptions`), `request_context` (8; `RequestContext`), `chat_session_id` (10; string), `origin` (11; `QueryOrigin`) |
 | `orchestration.v1.ActOnSourcesMindMapAction` | `action` (1; string), `context` (2; repeated key/value rows), `language` (3; string) |
@@ -563,9 +563,8 @@ suggestion lists use last-nonempty-wins semantics through that terminal frame, m
 Web stream contract, and preserve unknown suggestion type codes in public `NextStepSuggestion`
 values. `AskResult.raw_response` is a deterministic protobuf JSON
 projection of the winning final typed frame; the neutral base retains its public 1000-character
-bound. Exact `EmptyAnswerReason #4` (`UNKNOWN`, `UNANSWERABLE`, or `FILTERED`) remains diagnostic
-rather than adding a backend-specific `AskResult` field, but is retained in that JSON if a future
-response populates it; retained live probes have not observed a nonzero reason. The final answer's
+bound. Exact `EmptyAnswerReason #4` (`UNKNOWN`, `UNANSWERABLE`, or `FILTERED`) is projected on `AskResult.empty_answer_reason` on both backends and retained in
+that JSON when populated; retained live probes have not observed a nonzero reason. The final answer's
 `responseDoc` is the only citation source: source identity descends
 through `DocumentObject.citation.source_attribution.ingested_source.source`. Cited text preserves
 the existing offset-aware paragraph/table projection; when a fragment consists only of admitted
@@ -609,6 +608,29 @@ are byte-checked by the deterministic regeneration command below.
 - `ListChatTurns` aggregates exact request/response token pages up to the caller limit, detects
   repeated tokens, and returns the bounded protobuf snapshot. The public-shaped history decoder
   reverses those captured newest-first rows.
+
+### History answer-state evidence (#2541)
+
+`ChatHistoryMessage` field 6 is an observed varint status, admitted as optional
+`int32 status` so omitted fields remain distinguishable from explicitly sent
+zero. The public `ChatTurnStatus` names are client interpretations (1 in progress,
+2 completed, 3 failed, 4 cancelled), not recovered enum labels. The issue includes
+an Android wire dump with field 6 = 1 and the matching Web `khqZz` row slot 5.
+The versioned Web build `boq-labs-tailwind.LabsTailwindUi.en.NwjfSQ1X8sI.es6.O`
+was inspected on 2026-11-04: `j0a` classifies status 3/4 as errors and an
+in-progress answer older than `18E5` milliseconds as success only when it has
+text or visible document content (`g0a`). Thought/function blocks, horizontal
+rules, and whitespace-only paragraphs/code are excluded. Status/timestamps are
+read from history; `session_status()` remains an independent server signal.
+
+Live probes on 2026-11-04 used a disposable notebook and synthetic source text.
+Web and Android asks both produced status-2 history answers with UTC timestamps
+and visible document content. The notebook was deleted afterwards. An unrelated
+question produced an ordinary textual refusal, so it did not validate a live
+nonzero `empty_answer_reason`. Failed/stale/cancelled turns, reason codes and
+quota markers are covered by deterministic wire tests; quota was not deliberately
+exhausted. `AnswerResponse.empty_answer_reason` field 4 was already declared in
+the archived schema and is now projected without discarding unknown nonzero codes.
 
 ## Notes and sharing field ledger
 
