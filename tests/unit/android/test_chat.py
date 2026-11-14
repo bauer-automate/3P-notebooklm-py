@@ -6,6 +6,7 @@ import inspect
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any, cast
 
 import pytest
@@ -737,7 +738,7 @@ async def test_history_turns_exposes_native_status_timestamp_and_empty_reason() 
     turns = await api.get_history_turns("notebook-1", conversation_id="conversation-1", limit=4)
     assert [turn.message_id for turn in turns] == ["failed", "empty", "future", "missing"]
     assert turns[0].status == 1
-    assert turns[0].timestamp == datetime.fromtimestamp(1_700_000_000.123456, tz=timezone.utc)
+    assert turns[0].timestamp == datetime.fromtimestamp(1_700_000_000.123456, tz=UTC)
     assert turns[0].state == "error"
     assert turns[1].status == 2 and turns[1].is_empty
     assert turns[1].empty_answer_reason == chat_pb2.UNANSWERABLE

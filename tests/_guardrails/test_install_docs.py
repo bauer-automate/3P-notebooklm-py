@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 from scripts._tracked_files import tracked_files
 
 pytestmark = pytest.mark.repo_lint

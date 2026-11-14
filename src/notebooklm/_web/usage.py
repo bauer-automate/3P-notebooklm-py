@@ -9,7 +9,7 @@ semantic validation usable by the Web and Android adapters.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from ..exceptions import DecodingError
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 _ACCOUNT_METHOD_ID = RPCMethod.GET_ACCOUNT.value
 _QUOTA_METHOD_ID = RPCMethod.LIST_QUOTA_SUMMARY.value
-_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _bridge_types() -> tuple[type[Any], type[Any], type[Any], type[Any], type[Any]]:

@@ -8,7 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from enum import Enum
 from functools import wraps
 from typing import Any, ParamSpec, TextIO, TypeVar
@@ -94,7 +94,7 @@ class RPCProgress:
     def emit(self, message: str) -> None:
         if self.stream is None:
             return
-        stamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        stamp = datetime.now(UTC).strftime("%H:%M:%S UTC")
         try:
             print(f"[{stamp}] {message}", file=self.stream, flush=True)
         except OSError:

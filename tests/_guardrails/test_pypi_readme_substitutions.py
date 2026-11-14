@@ -15,10 +15,10 @@ so a missing rewrite can't silently recur. Fix the substitutions in
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 
 pytestmark = pytest.mark.repo_lint
 

@@ -7,6 +7,7 @@ import textwrap
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
@@ -1544,7 +1545,7 @@ class TestAddFile:
         test_file = tmp_path / "podcast.mp3"
         test_file.write_bytes(b"fake audio")
 
-        created_at = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        created_at = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
 
         # First rpc_call serves file registration. Second serves rename() —
         # which returns a sparse Source (only id + new title) so we can verify

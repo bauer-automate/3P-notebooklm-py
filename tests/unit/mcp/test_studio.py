@@ -10,7 +10,7 @@ enum dispatch, the start→status poll shape, and error projection.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -99,14 +99,14 @@ _AUDIO_ARTIFACT = Artifact(
     title="Podcast",
     _artifact_type=ArtifactTypeCode.AUDIO.value,
     status=int(ArtifactStatus.COMPLETED),
-    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    created_at=datetime(2024, 1, 1, tzinfo=UTC),
 )
 _QUIZ_ARTIFACT = Artifact(
     id="q1",
     title="Quiz",
     _artifact_type=ArtifactTypeCode.QUIZ.value,
     status=int(ArtifactStatus.COMPLETED),
-    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    created_at=datetime(2024, 1, 1, tzinfo=UTC),
     _variant=QUIZ_VARIANT,
 )
 
@@ -117,7 +117,7 @@ class FakeArtifact:
     title: str
     kind: ArtifactType = ArtifactType.AUDIO
     is_completed: bool = True
-    created_at: datetime = field(default_factory=lambda: datetime(2024, 1, 1, tzinfo=timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime(2024, 1, 1, tzinfo=UTC))
 
 
 @dataclass
@@ -172,7 +172,7 @@ def _completed_artifact(art_id: str, title: str) -> Artifact:
         title=title,
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 
@@ -397,7 +397,7 @@ async def test_studio_list_compact(mcp_call, mock_client) -> None:
                 id=_NOTE_ID,
                 title="My Note",
                 content="x" * 500,
-                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                created_at=datetime(2024, 1, 2, tzinfo=UTC),
             )
         ]
     )
@@ -472,7 +472,7 @@ async def test_studio_items_created_at_opt_in() -> None:
                 id=_NOTE_ID,
                 title="N",
                 content="b",
-                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                created_at=datetime(2024, 1, 2, tzinfo=UTC),
             )
         ]
     )
@@ -493,7 +493,7 @@ async def test_studio_items_artifact_meta_opt_in() -> None:
         title="Pod",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
         generation_prompt="Summarize the intro",
     )
     client = MagicMock()
@@ -532,7 +532,7 @@ async def test_studio_list_summary_artifact_carries_created_at_and_prompt(
         title="My Podcast",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
         generation_prompt="Summarize the intro",
     )
     mock_client.notes.list = AsyncMock(return_value=[])
@@ -1375,7 +1375,7 @@ async def test_studio_list_item_artifact_carries_generation_prompt(mcp_call, moc
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
         generation_prompt="Summarize the intro",
     )
     mock_client.notes.list = AsyncMock(return_value=[])
@@ -1394,7 +1394,7 @@ async def test_studio_list_item_artifact_prompt_none(mcp_call, mock_client) -> N
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
         generation_prompt=None,
     )
     mock_client.notes.list = AsyncMock(return_value=[])
@@ -1635,14 +1635,14 @@ _AUDIO_ARTIFACT_1 = Artifact(
     title="Podcast 1",
     _artifact_type=ArtifactTypeCode.AUDIO.value,
     status=int(ArtifactStatus.COMPLETED),
-    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    created_at=datetime(2024, 1, 1, tzinfo=UTC),
 )
 _AUDIO_ARTIFACT_2 = Artifact(
     id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     title="Podcast 2",
     _artifact_type=ArtifactTypeCode.AUDIO.value,
     status=int(ArtifactStatus.COMPLETED),
-    created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+    created_at=datetime(2024, 1, 2, tzinfo=UTC),
 )
 
 
@@ -1737,14 +1737,14 @@ async def test_artifact_download_by_id_ambiguous_prefix(mcp_call, mock_client, t
         title="Podcast A",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     art_same_2 = Artifact(
         id="cccccccc-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         title="Podcast B",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 2, tzinfo=UTC),
     )
     mock_client.artifacts.list = AsyncMock(return_value=[art_same_1, art_same_2])
     with pytest.raises(ToolError) as excinfo:
@@ -1824,7 +1824,7 @@ async def test_artifact_rename_regular_typed_artifact(mcp_call, mock_client) -> 
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.notes.list = AsyncMock(return_value=[])
     mock_client.artifacts.list = AsyncMock(return_value=[art])
@@ -2012,7 +2012,7 @@ async def test_artifact_retry_resolves_by_title(mcp_call, mock_client) -> None:
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.FAILED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.artifacts.list = AsyncMock(return_value=[art])
     mock_client.artifacts.retry_failed = AsyncMock(
@@ -2054,7 +2054,7 @@ async def test_artifact_retry_completed_gives_actionable_error(mcp_call, mock_cl
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.artifacts.retry_failed = AsyncMock(
         side_effect=ArtifactFeatureUnavailableError("retry")
@@ -2092,7 +2092,7 @@ async def test_artifact_retry_preserves_non_state_refusals(mcp_call, mock_client
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.artifacts.retry_failed = AsyncMock(side_effect=refusal)
     mock_client.artifacts.lookup = AsyncMock(
@@ -2120,7 +2120,7 @@ async def test_artifact_retry_state_refusal_with_status_is_enriched(
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.artifacts.retry_failed = AsyncMock(side_effect=RPCError("rejected", rpc_code=code))
     mock_client.artifacts.lookup = AsyncMock(
@@ -2143,7 +2143,7 @@ async def test_artifact_retry_refusal_on_failed_reraises_generic(mcp_call, mock_
         title="Podcast 1",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.FAILED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.artifacts.retry_failed = AsyncMock(
         side_effect=ArtifactFeatureUnavailableError("retry")

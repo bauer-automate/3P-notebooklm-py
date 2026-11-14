@@ -20,7 +20,7 @@ import os
 import tempfile
 import time
 from collections.abc import AsyncIterator, Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -309,14 +309,14 @@ def test_download_route_ambiguous_aid_is_400_not_500(mock_client, config) -> Non
         title="Podcast A",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     art_2 = Artifact(
         id="cccccccc-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         title="Podcast B",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 2, tzinfo=UTC),
     )
     mock_client.artifacts.list = AsyncMock(return_value=[art_1, art_2])
     app = _build(mock_client, config)
@@ -333,7 +333,7 @@ def _one_audio() -> Artifact:
         title="Podcast A",
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 

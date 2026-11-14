@@ -5,10 +5,10 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import tomllib
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-import tomllib
 from google.protobuf import descriptor_pb2, text_format
 from google.protobuf.descriptor import FieldDescriptor
 

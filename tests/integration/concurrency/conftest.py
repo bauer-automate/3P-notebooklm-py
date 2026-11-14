@@ -383,7 +383,7 @@ def cancellation_helper() -> CancellationHelper:
     ) -> T:
         try:
             return await asyncio.wait_for(coro, timeout=timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             tb = traceback.format_exc()
             logger.error(
                 "cancellation_helper: coroutine %r timed out after %.3fs\n%s",

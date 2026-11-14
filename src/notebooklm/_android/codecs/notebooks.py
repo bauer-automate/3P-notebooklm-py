@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import UTC, timezone
 from typing import Any, cast
 
 from ...exceptions import DecodingError, NotebookNotFoundError, RPCError
@@ -96,7 +96,7 @@ def _decode_project(
     role = None
     if project.HasField("metadata"):
         if project.metadata.HasField("create_time"):
-            created_at = project.metadata.create_time.ToDatetime(tzinfo=timezone.utc)
+            created_at = project.metadata.create_time.ToDatetime(tzinfo=UTC)
         role_name = _enum_name(_read_proto().ProjectRole, project.metadata.user_role)
         role = _PROJECT_ROLE_BY_NAME.get(role_name or "")
 

@@ -1,7 +1,7 @@
 """Unit coverage for the transport-neutral live usage API."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
@@ -31,7 +31,7 @@ from notebooklm.types import (
 )
 from tests._fixtures.fake_core import declared_noop_operation_scope
 
-RESET = datetime(2026, 9, 5, 14, tzinfo=timezone.utc)
+RESET = datetime(2026, 9, 5, 14, tzinfo=UTC)
 
 
 def _window(

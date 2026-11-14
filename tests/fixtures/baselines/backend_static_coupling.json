@@ -131,7 +131,7 @@
     },
     {
       "kind": "from",
-      "lineno": 11,
+      "lineno": 9,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._android.artifact_creation",
@@ -140,7 +140,7 @@
     },
     {
       "kind": "from",
-      "lineno": 12,
+      "lineno": 10,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._android.artifact_creation",
@@ -149,7 +149,7 @@
     },
     {
       "kind": "from",
-      "lineno": 17,
+      "lineno": 15,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._android.artifact_creation",
@@ -158,7 +158,7 @@
     },
     {
       "kind": "from",
-      "lineno": 21,
+      "lineno": 19,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._android.artifact_creation",
@@ -3218,7 +3218,7 @@
     },
     {
       "kind": "from",
-      "lineno": 17,
+      "lineno": 15,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._artifact.creation_policy",
@@ -5738,7 +5738,7 @@
     },
     {
       "kind": "from",
-      "lineno": 9,
+      "lineno": 7,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._web.params.creation",
@@ -5747,7 +5747,7 @@
     },
     {
       "kind": "from",
-      "lineno": 10,
+      "lineno": 8,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._web.params.creation",
@@ -5756,7 +5756,7 @@
     },
     {
       "kind": "from",
-      "lineno": 11,
+      "lineno": 9,
       "scope": null,
       "scope_kind": "module",
       "source": "notebooklm._web.params.creation",
@@ -10256,7 +10256,7 @@
     },
     {
       "kind": "from",
-      "lineno": 383,
+      "lineno": 381,
       "scope": "_add_one",
       "scope_kind": "function",
       "source": "notebooklm.mcp.tools._fileupload",
@@ -11922,7 +11922,7 @@
   ],
   "subsystems": {
     "android": {
-      "lines": 16835,
+      "lines": 16831,
       "modules": 56
     },
     "app": {
@@ -11938,11 +11938,11 @@
       "modules": 76
     },
     "mcp": {
-      "lines": 12226,
+      "lines": 12224,
       "modules": 42
     },
     "root": {
-      "lines": 28578,
+      "lines": 28576,
       "modules": 94
     },
     "rpc": {
@@ -11962,12 +11962,12 @@
       "modules": 18
     },
     "web": {
-      "lines": 34073,
+      "lines": 34071,
       "modules": 97
     }
   },
   "summary": {
-    "authored_lines": 156948,
+    "authored_lines": 156938,
     "authored_modules": 498,
     "class_local_edges": 0,
     "cross_subsystem_edges": 1313,

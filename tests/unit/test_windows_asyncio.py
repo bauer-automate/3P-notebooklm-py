@@ -151,7 +151,7 @@ def _run_transfer(
 
         try:
             await asyncio.wait_for(send_all(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # The buggy method can stall drain() (a dropped chunk empties the
             # buffer while the protocol is paused) or never finish the close.
             # It also leaves its writer registered on an empty buffer, which

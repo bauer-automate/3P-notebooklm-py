@@ -11,7 +11,7 @@ import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
@@ -65,7 +65,7 @@ def write_summary(markdown: str) -> None:
 
 
 def report(message: str, *, summary: bool = False, error: bool = False) -> None:
-    timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    timestamp = datetime.now(UTC).strftime("%H:%M:%S UTC")
     print(f"[{timestamp}] {message}", file=sys.stderr if error else sys.stdout, flush=True)
     if summary or error:
         write_summary(f"- {message}")

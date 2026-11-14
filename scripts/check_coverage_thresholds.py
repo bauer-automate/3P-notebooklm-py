@@ -25,7 +25,6 @@ import argparse
 import json
 import re
 import sys
-
 import tomllib
 
 

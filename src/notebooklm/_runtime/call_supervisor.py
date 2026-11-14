@@ -272,7 +272,7 @@ class CallSupervisor(LoopBoundPrimitive):
                     generation.condition.wait_for(lambda: generation.in_flight == 0),
                     timeout=timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Python 3.10's asyncio timeout is not yet an alias of the
                 # built-in type used by lifecycle timeout policy.
                 raise TimeoutError from None
@@ -445,7 +445,7 @@ class CallSupervisor(LoopBoundPrimitive):
         else:
             try:
                 await asyncio.wait_for(semaphore.acquire(), timeout=deadline.remaining())
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Keep queue-deadline behavior interpreter-independent; on
                 # Python 3.10 asyncio.TimeoutError is a distinct class.
                 raise TimeoutError from None

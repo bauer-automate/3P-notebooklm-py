@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -197,6 +197,6 @@ def _datetime_from_timestamp(value: Any) -> datetime | None:
     string changes (now offset-aware and identical everywhere).
     """
     try:
-        return datetime.fromtimestamp(value, tz=timezone.utc)
+        return datetime.fromtimestamp(value, tz=UTC)
     except (TypeError, ValueError, OSError, OverflowError):
         return None

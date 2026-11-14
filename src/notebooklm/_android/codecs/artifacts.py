@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import timezone
+from datetime import UTC, timezone
 from typing import Any
 
 from ..._types.artifact_content import (
@@ -222,7 +222,7 @@ def _decode_artifact(message: Any, *, method_id: str) -> Artifact:
 
     last_modified_at = None
     if message.HasField("last_modified_timestamp"):
-        last_modified_at = message.last_modified_timestamp.ToDatetime(tzinfo=timezone.utc)
+        last_modified_at = message.last_modified_timestamp.ToDatetime(tzinfo=UTC)
 
     source_ids = tuple(source.source_id.id for source in message.sources if source.source_id.id)
     if not source_ids:

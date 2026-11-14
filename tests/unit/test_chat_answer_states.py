@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,7 +19,7 @@ from notebooklm.outcomes import CommitState
 from notebooklm.rpc import RPCMethod
 from tests._fixtures.fake_core import make_fake_core
 
-NOW = datetime(2026, 11, 4, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 4, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(

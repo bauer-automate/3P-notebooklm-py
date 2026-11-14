@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -338,8 +338,8 @@ def test_status_reports_run_metadata(authed_client: TestClient, fake_client: Fak
         query="topic",
         sources=(ResearchSource(url="https://a.example", title="A", hint="why this one"),),
         discovery_mode=DiscoveryMode.DEEP_RESEARCH,
-        created_at=datetime(2026, 8, 13, 11, 12, 58, tzinfo=timezone.utc),
-        updated_at=datetime(2026, 8, 13, 11, 13, 5, tzinfo=timezone.utc),
+        created_at=datetime(2026, 8, 13, 11, 12, 58, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 13, 11, 13, 5, tzinfo=UTC),
     )
 
     body = authed_client.get(f"/v1/notebooks/nb-1/research/{poll_id}").json()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
@@ -143,9 +143,7 @@ def test_common_row_metadata_decodes_without_losing_order_or_nanos() -> None:
     artifact = Artifact.from_api_response(row)
 
     assert artifact.source_ids == ("source-b", "source-a")
-    assert artifact.last_modified_at == datetime(
-        2023, 11, 14, 22, 15, 0, 250_000, tzinfo=timezone.utc
-    )
+    assert artifact.last_modified_at == datetime(2023, 11, 14, 22, 15, 0, 250_000, tzinfo=UTC)
     assert artifact.etag == '"artifact-etag"'
 
 

@@ -10,7 +10,7 @@ and the row-shape guards in ``_parse_generation_result``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 import pytest
@@ -81,7 +81,7 @@ class _FakeNoteService:
             notebook_id=notebook_id,
             title=title,
             content=content,
-            created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 2, tzinfo=UTC),
         )
 
 

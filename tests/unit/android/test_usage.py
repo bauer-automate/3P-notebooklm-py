@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -208,13 +208,13 @@ def test_synthetic_quota_fixture_preserves_elision_future_codes_and_exact_floats
     assert decoded.windows == (
         _RawUsageWindow(
             window_code=1,
-            resets_at=datetime(2026, 9, 5, 7, 37, 21, 548366, tzinfo=timezone.utc),
+            resets_at=datetime(2026, 9, 5, 7, 37, 21, 548366, tzinfo=UTC),
             used_percent=None,
             remaining_percent=100.0,
         ),
         _RawUsageWindow(
             window_code=2,
-            resets_at=datetime(2026, 9, 12, 2, 37, 21, 548437, tzinfo=timezone.utc),
+            resets_at=datetime(2026, 9, 12, 2, 37, 21, 548437, tzinfo=UTC),
             used_percent=1.7261085,
             remaining_percent=98.2738914,
         ),

@@ -10,9 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final, cast
-
-from typing_extensions import assert_never
+from typing import Final, assert_never, cast
 
 from .._types.enums import (
     AudioFormat,

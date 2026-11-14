@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Collection, Sequence
-from datetime import timezone
+from datetime import UTC, timezone
 from typing import Any, cast
 
 from .._types.sources import _PLAY_BOOK_EXPORT_REASON_MAP
@@ -35,7 +35,7 @@ def decode_play_book_item(item: Any, *, method_id: str) -> PlayBook:
     updated_at = None
     if item.HasField("updated_timestamp"):
         try:
-            updated_at = item.updated_timestamp.ToDatetime(tzinfo=timezone.utc)
+            updated_at = item.updated_timestamp.ToDatetime(tzinfo=UTC)
         except Exception:
             raise DecodingError(
                 "ListExpertIntelligenceContent item has an invalid update timestamp",

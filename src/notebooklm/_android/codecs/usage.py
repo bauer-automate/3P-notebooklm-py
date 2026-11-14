@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import UTC, timezone
 from typing import TYPE_CHECKING, Any
 
 from ...exceptions import DecodingError
@@ -36,7 +36,7 @@ def _decode_reset_timestamp(message: Any, *, method_id: str) -> Any:
     if not message.HasField("next_refresh_time"):
         return None
     try:
-        return message.next_refresh_time.ToDatetime(tzinfo=timezone.utc)
+        return message.next_refresh_time.ToDatetime(tzinfo=UTC)
     except (OverflowError, ValueError) as exc:
         raise DecodingError(
             "Android ListQuotaSummary response has an invalid reset timestamp",

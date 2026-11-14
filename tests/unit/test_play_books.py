@@ -8,7 +8,7 @@ the public dataclasses/enums.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
@@ -98,7 +98,7 @@ class TestRowDecode:
             export_disabled=False,
             reason=None,
             field_type=4.6458335,
-            updated_at=datetime.fromtimestamp(1788284189, tz=timezone.utc),
+            updated_at=datetime.fromtimestamp(1788284189, tz=UTC),
         )
 
     def test_blocked_row_decodes_reason(self) -> None:

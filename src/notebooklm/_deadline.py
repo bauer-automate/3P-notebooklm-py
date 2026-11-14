@@ -100,7 +100,7 @@ async def await_with_deadline(
         raise on_timeout() from None
     try:
         return await asyncio.wait_for(awaitable, timeout=remaining)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         # Python 3.10 keeps asyncio.TimeoutError separate from the built-in
         # spelling used by the runtime's public timeout policy.
         raise on_timeout() from None

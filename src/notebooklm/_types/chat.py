@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum, IntEnum
 from typing import Any, Literal
 
@@ -87,7 +87,7 @@ class ChatHistoryTurn:
             return "error"
         if self.status == ChatTurnStatus.IN_PROGRESS:
             if self.timestamp is not None:
-                reference = now if now is not None else datetime.now(timezone.utc)
+                reference = now if now is not None else datetime.now(UTC)
                 if reference - self.timestamp > timedelta(minutes=30):
                     return "success" if self.has_content else "error"
             return "streaming"

@@ -6,9 +6,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Literal, TypeAlias, cast
+from typing import Literal, NotRequired, TypeAlias, cast
 
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from ..exceptions import ValidationError
 from ..types import (

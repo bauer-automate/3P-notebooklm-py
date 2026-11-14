@@ -187,7 +187,7 @@ async def _run_with_heartbeat(coro_factory):
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_S)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 heartbeats += 1
 
     heartbeat_task = asyncio.create_task(_heartbeat())

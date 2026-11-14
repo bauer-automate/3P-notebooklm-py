@@ -80,7 +80,7 @@ class ProfileClientOwner:
             if task in done:
                 await task  # Propagate the construction error to the loader.
                 raise RuntimeError("Profile construction ended without a client")
-            raise asyncio.TimeoutError("Profile startup timed out")
+            raise TimeoutError("Profile startup timed out")
         except BaseException:
             ready.cancel()
             release.set()

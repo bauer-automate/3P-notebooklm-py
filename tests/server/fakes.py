@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 from notebooklm._idempotency import mark_unconfirmed
@@ -84,7 +84,7 @@ def make_artifact(artifact_id: str, kind: str, *, title: str = "Artifact") -> Ar
         title=title,
         _artifact_type=_KIND_CODE[kind],
         status=3,  # completed
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

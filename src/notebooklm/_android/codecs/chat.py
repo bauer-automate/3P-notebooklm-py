@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import UTC, timezone
 from typing import Any
 
 from ..._types.documents import DocumentAnnotation, StructuredDocument, utf16_len
@@ -150,9 +150,7 @@ def decode_history_turns(response: Any) -> list[ChatHistoryTurn]:
         role = row.observed_event_type
         if role not in (1, 2):
             continue
-        timestamp = (
-            row.timestamp.ToDatetime(tzinfo=timezone.utc) if row.HasField("timestamp") else None
-        )
+        timestamp = row.timestamp.ToDatetime(tzinfo=UTC) if row.HasField("timestamp") else None
         if role == 2 and row.user_query_text:
             turns.append(
                 ChatHistoryTurn(

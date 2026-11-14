@@ -22,7 +22,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -138,9 +138,7 @@ def _broker_upload(
     # keeps the direct ``/files/ul`` URL (a ``/u/`` id only serves GET→redirect, not the raw
     # POST). await_upload accepts either.
     short_url = f"{cfg.base_url.rstrip('/')}/u/{cfg.short_links.put(token, expires_at)}"
-    expires_iso = (
-        datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-    )
+    expires_iso = datetime.fromtimestamp(expires_at, tz=UTC).isoformat().replace("+00:00", "Z")
     approx_minutes = UPLOAD_TTL // 60
     # The signed token's mime wins server-side; a request Content-Type is honored
     # ONLY when no mime was signed (see _fileroutes upload_route). So expose

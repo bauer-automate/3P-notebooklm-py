@@ -201,7 +201,7 @@ async def test_close_during_keepalive_cancel_does_not_leak_transport(
         # keepalive task is parked inside the hang when we trigger close.
         try:
             await asyncio.wait_for(rotate_entered.wait(), timeout=2.0)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             pytest.fail(
                 "patched _rotate_cookies never entered — keepalive task did "
                 "not start, repro setup is invalid"
