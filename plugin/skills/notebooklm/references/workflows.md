@@ -53,7 +53,7 @@ canned script isn't a fit:
 5. Main conversation continues while agent waits
 
 **Error handling in subagent:**
-- If `artifact wait` returns exit code 2 (timeout): Report timeout, suggest checking `artifact list`
+- If `artifact wait` returns exit code 1 with a `{"status": "timeout", ...}` envelope: Report timeout, suggest checking `artifact list`
 - If download fails: Check if artifact status is COMPLETED first
 
 **Benefits:** Non-blocking, user can do other work, automatic download on completion
