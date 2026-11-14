@@ -1994,6 +1994,12 @@ The `auth check --json` output shows:
 
 ---
 
+## Upstream skill tests assume a single file
+
+This fork installs the skill as a directory (`SKILL.md`, `references/`, `scripts/`). Upstream installs one file. Upstream skill tests often pass a single file path to `get_skill_version` and `get_skill_content_mismatch`, so new upstream skill tests need adapting by hand at each sync. `test_skill_install_then_status_real_packaged_tree` in `tests/unit/cli/test_skill.py` covers the real directory install end to end.
+
+---
+
 ## Getting Help
 
 - Check existing implementations in `_*.py` files
