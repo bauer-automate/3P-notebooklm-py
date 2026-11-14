@@ -1191,7 +1191,7 @@ class TestLoginBrowserCookies:
             result = runner.invoke(cli, ["login", "--browser-cookies", "auto"])
         assert result.exit_code != 0
         assert "rookie-cookies" in result.output
-        assert "pip install" in result.output
+        assert "notebooklm login" in result.output
 
     def test_rookie_cookies_not_installed_preserves_stable_error_code(self):
         """The dependency rename must not break machine-readable CLI consumers."""
