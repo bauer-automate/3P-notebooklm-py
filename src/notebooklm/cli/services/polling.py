@@ -6,13 +6,13 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 
 
 @dataclass(frozen=True)
-class PollResult(Generic[T]):
+class PollResult[T]:
     """Result returned by :func:`poll_until`.
 
     Attributes:
@@ -30,7 +30,7 @@ class PollResult(Generic[T]):
     timed_out: bool
 
 
-async def poll_until(
+async def poll_until[T](
     fetch: Callable[[], Awaitable[T]],
     is_done: Callable[[T], bool],
     *,

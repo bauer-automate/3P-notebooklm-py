@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, NoReturn
 
 from .exceptions import DecodingError, ServerError
@@ -103,7 +103,7 @@ def _decode_window(row: RawUsageWindow, method_id: str) -> UsageWindow:
     try:
         if resets_at.utcoffset() is None:
             _drift("ListQuotaSummary window omitted a valid reset timestamp", method_id)
-        resets_at = resets_at.astimezone(timezone.utc)
+        resets_at = resets_at.astimezone(UTC)
     except (OverflowError, ValueError):
         _drift("ListQuotaSummary window contained an invalid reset timestamp", method_id)
 

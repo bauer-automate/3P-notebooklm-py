@@ -9,7 +9,6 @@ There is no backend discriminator or extensible options mapping in this seam.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
 
 
 @dataclass(frozen=True)
@@ -104,7 +103,7 @@ class NormalizedInteractiveMindMap(_NormalizedCreation):
     instructions: str | None
 
 
-NormalizedArtifactCreationRequest: TypeAlias = (
+type NormalizedArtifactCreationRequest = (
     NormalizedAudio
     | NormalizedVideo
     | NormalizedCinematicVideo

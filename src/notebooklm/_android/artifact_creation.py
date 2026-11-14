@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import builtins
 from dataclasses import dataclass
-from typing import Any
-
-from typing_extensions import assert_never
+from typing import Any, assert_never
 
 from .._artifact import creation_normalized as n
 from .._idempotency import (

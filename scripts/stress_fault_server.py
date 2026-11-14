@@ -221,7 +221,7 @@ async def run_stress(config: RunConfig, registry: Registry) -> dict[str, Any]:
         try:
             done, _ = await asyncio.wait((task,), timeout=config.scenario_timeout)
             if not done:
-                raise asyncio.TimeoutError
+                raise TimeoutError
             returned = task.result()
             if returned is not result or (result.backend, result.scenario, result.operation_id) != (
                 plan.backend,
@@ -231,7 +231,7 @@ async def run_stress(config: RunConfig, registry: Registry) -> dict[str, Any]:
                 raise ValueError("scenario returned an inconsistent result identity")
             _validate_evidence(result)
             operation["status"] = "passed"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             operation["status"] = "timed_out"
             operation["error"] = f"scenario exceeded {config.scenario_timeout:g}s deadline"
         except asyncio.CancelledError:

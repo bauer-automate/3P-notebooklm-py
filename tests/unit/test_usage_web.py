@@ -1,6 +1,6 @@
 """Focused Web transport tests for the live usage-meter RPCs."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -83,9 +83,7 @@ def test_decode_quota_summary_truncates_submicrosecond_timestamp_precision(
         [1, [[None, None, None, None, 1, [0, nanos], 0.0, 100.0]], None, []]
     )
 
-    assert result.windows[0].resets_at == datetime(
-        1970, 1, 1, microsecond=microsecond, tzinfo=timezone.utc
-    )
+    assert result.windows[0].resets_at == datetime(1970, 1, 1, microsecond=microsecond, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(

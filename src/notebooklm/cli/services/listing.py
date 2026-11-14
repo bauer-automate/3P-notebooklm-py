@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from ...client import NotebookLMClient
 
@@ -29,7 +29,7 @@ EnvelopeExtras = Callable[[NotebookLMClient, str], Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
-class ListSpec(Generic[T]):
+class ListSpec[T]:
     """Command-specific configuration for :func:`prepare_list`."""
 
     title: str
@@ -45,7 +45,7 @@ class ListSpec(Generic[T]):
 
 
 @dataclass(frozen=True)
-class ListResult(Generic[T]):
+class ListResult[T]:
     """Rendered list result returned for focused tests and future composition.
 
     Retained for backward compatibility with callers that only care about the
@@ -58,7 +58,7 @@ class ListResult(Generic[T]):
 
 
 @dataclass(frozen=True)
-class ListRender(Generic[T]):
+class ListRender[T]:
     """Pure-data render payload returned by :func:`prepare_list`.
 
     Carries everything the presentation layer needs to render either a JSON
@@ -97,7 +97,7 @@ def _table_title(title: str, notebook_id: str) -> str:
     return title.format(notebook_id=notebook_id)
 
 
-def _serialize_items(spec: ListSpec[T], items: list[T]) -> list[dict[str, Any]]:
+def _serialize_items[T](spec: ListSpec[T], items: list[T]) -> list[dict[str, Any]]:
     """Serialize fetched items and inject 1-based indexes when configured."""
     serialized: list[dict[str, Any]] = []
     for index, item in enumerate(items, 1):
@@ -108,7 +108,7 @@ def _serialize_items(spec: ListSpec[T], items: list[T]) -> list[dict[str, Any]]:
     return serialized
 
 
-async def prepare_list(
+async def prepare_list[T](
     spec: ListSpec[T],
     client: NotebookLMClient,
     *,

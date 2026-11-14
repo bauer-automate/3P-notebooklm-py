@@ -4,7 +4,7 @@ import inspect
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -56,13 +56,13 @@ def summary():
                 UsageWindowKind.FIVE_HOUR,
                 12.345,
                 80.125,
-                datetime(2026, 9, 5, 18, 30, 1, 123456, tzinfo=timezone.utc),
+                datetime(2026, 9, 5, 18, 30, 1, 123456, tzinfo=UTC),
             ),
             UsageWindow(
                 UsageWindowKind.WEEKLY,
                 0.0,
                 100.0,
-                datetime(2026, 9, 12, 18, 30, tzinfo=timezone.utc),
+                datetime(2026, 9, 12, 18, 30, tzinfo=UTC),
             ),
         ),
         actions=(

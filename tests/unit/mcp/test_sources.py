@@ -19,6 +19,8 @@ import pytest
 # Skip cleanly when the `mcp` extra (fastmcp) is absent; see conftest.py.
 pytest.importorskip("fastmcp")
 
+from datetime import UTC
+
 from fastmcp.exceptions import ToolError  # noqa: E402 - after importorskip guard
 
 from notebooklm._redact import redact  # noqa: E402 - after importorskip guard
@@ -353,7 +355,7 @@ async def test_source_list_compact(mcp_call, mock_client) -> None:
     created_at}`` — no ``url`` / raw ``status`` / ``_type_code`` — for a low-token
     listing with no extra read.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from notebooklm.types import Source
 
@@ -361,7 +363,7 @@ async def test_source_list_compact(mcp_call, mock_client) -> None:
         id=SRC_ID,
         title="Doc",
         _type_code=3,  # pdf
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
         status=SourceStatus.READY,
     )
     mock_client.sources.list = AsyncMock(return_value=[src])

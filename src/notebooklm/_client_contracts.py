@@ -115,7 +115,7 @@ class AndroidAssembly:
     backends: Mapping[str, BackendName]
 
 
-BackendAssembly: TypeAlias = WebAssembly | AndroidAssembly
+BackendAssembly: TypeAlias = WebAssembly | AndroidAssembly  # noqa: UP040 - kept TypeAlias: a guardrail/test introspects this alias via get_args or source pattern
 
 
 @dataclass(frozen=True)

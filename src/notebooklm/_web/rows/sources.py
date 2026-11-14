@@ -61,7 +61,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-class SourceRowShape(str, Enum):
+class SourceRowShape(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """The wire shape that a :class:`SourceRow` was extracted from.
 
     Source rows arrive over three distinct shapes; the shape is tracked

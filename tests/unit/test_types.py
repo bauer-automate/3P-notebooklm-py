@@ -5,7 +5,7 @@ import os
 import pickle
 import time
 import warnings
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -90,7 +90,7 @@ class TestTimestampParsing:
         assert parsed is not None
         assert parsed.tzinfo is not None
         assert parsed.utcoffset() == timedelta(0)
-        assert parsed == datetime(2026, 1, 13, 13, 40, 5, tzinfo=timezone.utc)
+        assert parsed == datetime(2026, 1, 13, 13, 40, 5, tzinfo=UTC)
 
     @pytest.mark.parametrize("tz_name", ["UTC", "America/New_York", "Asia/Kolkata"])
     def test_datetime_from_timestamp_host_independent(self, tz_name):
@@ -120,7 +120,7 @@ class TestTimestampParsing:
                 os.environ["TZ"] = original_tz
             time.tzset()
 
-        assert parsed == datetime(2026, 1, 13, 13, 40, 5, tzinfo=timezone.utc)
+        assert parsed == datetime(2026, 1, 13, 13, 40, 5, tzinfo=UTC)
         assert parsed.isoformat() == "2026-01-13T13:40:05+00:00"
 
     def test_datetime_from_timestamp_oserror(self, monkeypatch):
@@ -138,7 +138,7 @@ class TestTimestampParsing:
 
         assert parsed is None
         # Pinned to UTC so the rendered instant is host-independent (#1519).
-        mock_datetime.fromtimestamp.assert_called_once_with(1704067200, tz=timezone.utc)
+        mock_datetime.fromtimestamp.assert_called_once_with(1704067200, tz=UTC)
 
     @pytest.mark.parametrize("value", ["bad", None, float("inf"), float("-inf")])
     def test_datetime_from_timestamp_invalid_value(self, value):

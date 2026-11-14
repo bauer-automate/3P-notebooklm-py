@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypeAlias
+
 __all__ = ["CookiePersistence", "SaveCookiesToStorage"]
 
 import itertools
@@ -10,7 +12,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 import httpx
 
@@ -71,7 +73,7 @@ class FailedBaseline:
     pass
 
 
-BaselineState: TypeAlias = UninitializedBaseline | ReadyBaseline | FailedBaseline
+BaselineState: TypeAlias = UninitializedBaseline | ReadyBaseline | FailedBaseline  # noqa: UP040 - kept TypeAlias: a guardrail/test introspects this alias via get_args or source pattern
 
 
 @dataclass

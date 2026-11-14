@@ -27,7 +27,7 @@ from .enums import (
 )
 
 
-class ArtifactType(str, Enum):
+class ArtifactType(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """User-facing artifact types.
 
     This is a str enum that hides internal variant complexity. For example,
@@ -53,7 +53,7 @@ class ArtifactType(str, Enum):
     UNKNOWN = "unknown"
 
 
-class ArtifactListingComponent(str, Enum):
+class ArtifactListingComponent(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """A backing read that contributes to the aggregate artifact namespace."""
 
     STUDIO_ARTIFACTS = "studio_artifacts"
@@ -448,7 +448,7 @@ class ArtifactListing:
     failures: tuple[ArtifactListingFailure, ...] = ()
 
 
-class ArtifactLookupStatus(str, Enum):
+class ArtifactLookupStatus(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Evidence-qualified result state for :meth:`ArtifactsAPI.lookup`."""
 
     FOUND = "found"
@@ -485,7 +485,7 @@ class ArtifactLookup:
         return self.status is ArtifactLookupStatus.UNKNOWN
 
 
-class GenerationState(str, Enum):
+class GenerationState(str, Enum):  # noqa: UP042 - test_generation_state pins the str MRO and explicit __str__/__repr__
     """The status string of an artifact generation task.
 
     A ``str`` enum so existing string comparisons (``status == "completed"``),

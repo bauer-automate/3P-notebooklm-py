@@ -33,7 +33,7 @@ class SetAccount:
     record: ProfileAccount
 
 
-AccountDirective: TypeAlias = KeepAccount | ClearAccount | SetAccount
+AccountDirective: TypeAlias = KeepAccount | ClearAccount | SetAccount  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class AccountView(Enum):

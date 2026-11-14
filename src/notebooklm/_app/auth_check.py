@@ -32,7 +32,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -175,7 +175,7 @@ def _psidts_status(storage_state: dict[str, Any]) -> dict[str, Any]:
         # read as epoch 1.
         if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > 0:
             try:
-                expires_at = datetime.fromtimestamp(expires, tz=timezone.utc).isoformat()
+                expires_at = datetime.fromtimestamp(expires, tz=UTC).isoformat()
             except (OverflowError, ValueError, OSError):
                 # A corrupt/out-of-range epoch must not abort the whole check
                 # (auth check has no error envelope, and a broken session — the

@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
-from typing import Any, Generic, Literal, Protocol, TypeVar
+from typing import Any, Literal, Protocol
 
 from ._lookup import unwrap_or_raise
 from ._notebook_metadata import reconcile_copy_mapping
@@ -40,7 +40,6 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-_TransferItem = TypeVar("_TransferItem")
 _UploadedSourceWaiter = Callable[[str, str, float], Awaitable[Source]]
 _UploadedSourceRenamer = Callable[[str, str, str], Awaitable[str | None]]
 
@@ -64,10 +63,10 @@ class _UploadedSourceFinalizer(Protocol):
 
 
 @dataclass(frozen=True)
-class _TransferResult(Generic[_TransferItem]):
+class _TransferResult[TransferItem]:
     """Decoded rows plus backend-specific diagnostics for neutral policy."""
 
-    items: builtins.list[_TransferItem]
+    items: builtins.list[TransferItem]
     method_id: str
     malformed_count: int = 0
     raw_response: str | None = None

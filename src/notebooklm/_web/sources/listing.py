@@ -5,7 +5,7 @@ from __future__ import annotations
 import builtins
 import logging
 from collections.abc import Awaitable, Callable, Collection
-from typing import Any, TypeVar
+from typing import Any
 
 from ..._types.enums import SourceStatus
 from ...rpc import RPCError, RPCMethod, safe_index
@@ -21,15 +21,14 @@ logger = logging.getLogger("notebooklm").getChild("_sources")
 
 
 SourceListHook = Callable[[str], Awaitable[builtins.list[Source]]]
-_FilterValue = TypeVar("_FilterValue")
 
 
-def _snapshot_enum_filter(
-    values: Collection[_FilterValue] | None,
+def _snapshot_enum_filter[FilterValue](
+    values: Collection[FilterValue] | None,
     *,
-    enum_type: type[_FilterValue],
+    enum_type: type[FilterValue],
     parameter: str,
-) -> frozenset[_FilterValue] | None:
+) -> frozenset[FilterValue] | None:
     """Validate and snapshot one public source-list filter before I/O."""
     if values is None:
         return None

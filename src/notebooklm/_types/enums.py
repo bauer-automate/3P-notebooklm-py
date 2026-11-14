@@ -335,7 +335,7 @@ class SlideDeckLength(int, Enum):
     SHORT = 2
 
 
-class ReportFormat(str, Enum):
+class ReportFormat(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Report format options for type 2 artifacts.
 
     All reports use ArtifactTypeCode.REPORT (2) but are differentiated
@@ -394,7 +394,7 @@ class ChatResponseLength(int, Enum):
     SHORTER = 5  # Concise, brief responses
 
 
-class DriveMimeType(str, Enum):
+class DriveMimeType(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Google Drive MIME types for source integration."""
 
     GOOGLE_DOC = "application/vnd.google-apps.document"

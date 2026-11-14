@@ -7,7 +7,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
@@ -1774,7 +1774,7 @@ class TestPlayBooksAndroid:
         assert first.export_disabled is False
         assert first.reason is None
         assert first.field_type == pytest.approx(4.5)
-        assert first.updated_at == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+        assert first.updated_at == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
         assert books[1].export_disabled is True
         assert books[1].reason is PlayBookExportReason.OPTED_OUT
 

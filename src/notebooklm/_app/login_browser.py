@@ -14,7 +14,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NoReturn, TypeAlias
+from typing import Any, Literal, NoReturn
 
 import httpx
 
@@ -30,20 +30,20 @@ from .profile import ProfileRepairRequest, repair_playwright_account
 
 logger = logging.getLogger(__name__)
 
-BrowserEmit: TypeAlias = Callable[..., None]
-Fail: TypeAlias = Callable[[int], NoReturn]
-RunAsync: TypeAlias = Callable[[Awaitable[Any]], Any]
-BrowserLoginEventSink: TypeAlias = Callable[["BrowserLoginEvent"], None]
-ChromiumPreflight: TypeAlias = Callable[[], None]
+type BrowserEmit = Callable[..., None]
+type Fail = Callable[[int], NoReturn]
+type RunAsync = Callable[[Awaitable[Any]], Any]
+type BrowserLoginEventSink = Callable[["BrowserLoginEvent"], None]
+type ChromiumPreflight = Callable[[], None]
 
-LoginFlagConflictCode: TypeAlias = Literal[
+type LoginFlagConflictCode = Literal[
     "COOKIE_OPTIONS_REQUIRE_BROWSER_COOKIES",
     "ALL_ACCOUNTS_SELECTION_CONFLICT",
     "ALL_ACCOUNTS_STORAGE_CONFLICT",
     "UPDATE_REQUIRES_ALL_ACCOUNTS",
 ]
-PathErrorCode: TypeAlias = Literal["UNOWNED_BROWSER_PROFILE", "CLEAR_BROWSER_PROFILE_FAILED"]
-BrowserLoginEventKind: TypeAlias = Literal[
+type PathErrorCode = Literal["UNOWNED_BROWSER_PROFILE", "CLEAR_BROWSER_PROFILE_FAILED"]
+type BrowserLoginEventKind = Literal[
     "PROFILE",
     "OPENING_BROWSER",
     "BROWSER_PROFILE",

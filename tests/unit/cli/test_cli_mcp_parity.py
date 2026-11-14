@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -546,7 +546,7 @@ _AUDIO_ARTIFACT = Artifact(
     title="Podcast",
     _artifact_type=ArtifactTypeCode.AUDIO.value,
     status=int(ArtifactStatus.COMPLETED),
-    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    created_at=datetime(2024, 1, 1, tzinfo=UTC),
 )
 
 

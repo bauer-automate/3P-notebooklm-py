@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from typing_extensions import assert_never
+from typing import Any, assert_never
 
 from ..._artifact import creation_normalized as n
 from ..._types.enums import INTERACTIVE_MIND_MAP_VARIANT, ArtifactTypeCode, VideoFormat, VideoStyle

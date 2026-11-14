@@ -681,7 +681,7 @@ class HealPolicy(Enum):
     NAME_ONLY = "name_only"
 
 
-def load_with_recovery(
+def load_with_recovery(  # noqa: UP047 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
     path: Path | None,
     policy: HealPolicy,
     *,

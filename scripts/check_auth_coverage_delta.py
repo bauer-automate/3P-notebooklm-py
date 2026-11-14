@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +96,7 @@ def validate_allowances(
 ) -> list[dict[str, Any]]:
     if policy.get("version") != 1 or not isinstance(policy.get("allowances"), list):
         raise CoverageDeltaError("allowance policy must be version 1 with an allowances list")
-    today = today or datetime.now(timezone.utc).date()
+    today = today or datetime.now(UTC).date()
     rows: list[dict[str, Any]] = []
     ids: set[str] = set()
     for row in policy["allowances"]:

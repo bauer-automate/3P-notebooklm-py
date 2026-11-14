@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, TypeAlias
 
 
-class ArtifactMediaType(str, Enum):
+class ArtifactMediaType(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """How an audio/video artifact URL is intended to be consumed."""
 
     PROGRESSIVE = "progressive"
@@ -84,7 +84,8 @@ class UnknownArtifactUserState:
     raw: Any
 
 
-ArtifactUserState: TypeAlias = (
+# Public alias: PEP 695 `type` would change its runtime kind (API break).
+ArtifactUserState: TypeAlias = (  # noqa: UP040
     AudioArtifactUserState | FlashcardArtifactUserState | UnknownArtifactUserState
 )
 

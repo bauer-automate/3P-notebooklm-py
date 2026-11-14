@@ -33,7 +33,7 @@ def _safe_tuple(values: tuple[str, ...]) -> tuple[str, ...]:
     )
 
 
-class CommitState(str, Enum):
+class CommitState(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Evidence about whether one mutation reached a committed outcome."""
 
     NOT_SENT = "not_sent"
@@ -42,7 +42,7 @@ class CommitState(str, Enum):
     CONFIRMED = "confirmed"
 
 
-class RecoveryAction(str, Enum):
+class RecoveryAction(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Safe next action derived from canonical send evidence."""
 
     RETRY = "retry"

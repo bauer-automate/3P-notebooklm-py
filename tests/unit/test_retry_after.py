@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from notebooklm._deadline import RuntimeDeadline
 from notebooklm._web.transport.errors import MAX_RETRY_AFTER_SECONDS, parse_retry_after
@@ -15,7 +15,7 @@ def test_parse_retry_after_integer():
 
 def test_parse_retry_after_http_date():
     # Future date: now + 60 seconds
-    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    future = datetime.now(UTC) + timedelta(seconds=60)
     # Format as RFC 7231: Wed, 21 Oct 2015 07:28:00 GMT
     date_str = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
@@ -26,7 +26,7 @@ def test_parse_retry_after_http_date():
 
 
 def test_parse_retry_after_past_date():
-    past = datetime.now(timezone.utc) - timedelta(seconds=60)
+    past = datetime.now(UTC) - timedelta(seconds=60)
     date_str = past.strftime("%a, %d %b %Y %H:%M:%S GMT")
     assert parse_retry_after(date_str) == 0
 

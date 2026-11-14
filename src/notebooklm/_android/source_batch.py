@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Sequence
-from typing import Any, Protocol, TypeVar, cast
+from typing import Any, Protocol, cast
 
 from .._idempotency import (
     JournalEntry,
@@ -33,8 +33,6 @@ from .source_transfers import (
     known_registration_error,
     unresolved_add_error,
 )
-
-_ReadbackT = TypeVar("_ReadbackT")
 
 
 class _BatchOwner(Protocol):
@@ -74,10 +72,10 @@ def record_commit_proofs(
             )
 
 
-async def preserve_readback(
-    awaitable: Awaitable[_ReadbackT],
+async def preserve_readback[ReadbackT](
+    awaitable: Awaitable[ReadbackT],
     entries: tuple[JournalEntry, ...] | None,
-) -> _ReadbackT:
+) -> ReadbackT:
     """Attach the complete decoded-send journal if later readback is cancelled."""
 
     try:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ..exceptions import ClientError, RPCError, SourceAddError, ValidationError
@@ -186,7 +186,7 @@ async def recover_url(
 
     # Only this second mutation's own receipt can describe its outcome. A lost
     # add_text response must escape unchanged; never retry it or delete the stub.
-    fetched_at = datetime.now(timezone.utc).isoformat()
+    fetched_at = datetime.now(UTC).isoformat()
     content = (
         f"Static web copy (URL refresh unavailable)\nOriginal URL: {plan.plan.content}\n"
         f"Fetched URL: {fetched.final_url}\nFetched at: {fetched_at}\n\n{fetched.content}"

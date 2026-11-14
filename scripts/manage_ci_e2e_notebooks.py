@@ -21,7 +21,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
@@ -328,7 +328,7 @@ def load_prepared_contract(path: Path) -> dict[str, Any]:
     return contract
 
 
-async def retry_idempotent(
+async def retry_idempotent[T](
     operation: Callable[[], Awaitable[T]],
     *,
     policy: RetryPolicy,
@@ -1333,7 +1333,7 @@ class NotebookLifecycleManager:
             or re.fullmatch(r"[0-9]+", str(current_run_attempt)) is None
         ):
             raise ValueError("current run ID and attempt must be decimal strings")
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         if now.tzinfo is None:
             raise ValueError("sweep clock must be timezone-aware")
         notebooks = await self._read(lambda: self.client.notebooks.list())

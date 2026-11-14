@@ -308,7 +308,7 @@ def handle_auth_error(json_output: bool = False) -> NoReturn:
 # =============================================================================
 
 
-def with_auth_and_errors(
+def with_auth_and_errors[T](
     ctx: click.Context,
     *,
     command_name: str,

@@ -42,8 +42,9 @@ class AutoReadWindow(Enum):
 
 
 AUTO = AutoReadWindow.AUTO
-ReadWindow: TypeAlias = float | None | AutoReadWindow
-RpcEventCallback: TypeAlias = Callable[[RpcTelemetryEvent], object]
+# Public aliases: PEP 695 `type` would change their runtime kind (API break).
+ReadWindow: TypeAlias = float | None | AutoReadWindow  # noqa: UP040
+RpcEventCallback: TypeAlias = Callable[[RpcTelemetryEvent], object]  # noqa: UP040
 
 
 class UseDefault(Enum):

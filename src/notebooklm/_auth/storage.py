@@ -109,7 +109,7 @@ from .storage_lock import LockRequest, StorageLockManager
 
 logger = logging.getLogger("notebooklm.auth")
 
-CookieKey: TypeAlias = _auth_cookies.CookieKey
+CookieKey: TypeAlias = _auth_cookies.CookieKey  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 _cookie_is_http_only = _auth_cookies._cookie_is_http_only
 
 __all__ = [
@@ -244,11 +244,11 @@ class CookieSnapshotValue(NamedTuple):
     http_only: bool
 
 
-CookieSnapshot: TypeAlias = dict[CookieSnapshotKey, CookieSnapshotValue]
+CookieSnapshot: TypeAlias = dict[CookieSnapshotKey, CookieSnapshotValue]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 # ``None`` is a private observation marker for a pre-existing target row whose
 # value was empty, missing, or non-string.  It lets recovery replace an unusable
 # row while still treating a newly-written non-empty sibling as a CAS conflict.
-RecoveryCookieObservation: TypeAlias = dict[CookieSnapshotKey, frozenset[str | None]]
+RecoveryCookieObservation: TypeAlias = dict[CookieSnapshotKey, frozenset[str | None]]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 @dataclass(frozen=True)

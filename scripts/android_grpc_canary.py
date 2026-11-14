@@ -84,7 +84,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -254,7 +254,7 @@ class CanaryReport:
     def start(self, step: str, method: str = "") -> None:
         self._started[step] = time.monotonic()
         if self._progress is not None:
-            stamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            stamp = datetime.now(UTC).strftime("%H:%M:%S UTC")
             line = f"[{stamp}] START {step} {method}".rstrip()
             if self._redact:
                 line = line.replace(self._redact, REDACTED_NOTEBOOK_ID)
@@ -273,7 +273,7 @@ class CanaryReport:
             text = text.replace(self._redact, REDACTED_NOTEBOOK_ID)
         self._emit(text)
         if self._progress is not None:
-            stamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            stamp = datetime.now(UTC).strftime("%H:%M:%S UTC")
             timing = ""
             if step in self._started:
                 timing = f"; elapsed={time.monotonic() - self._started.pop(step):.1f}s"

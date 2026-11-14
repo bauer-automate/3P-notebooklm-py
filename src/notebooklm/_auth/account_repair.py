@@ -18,14 +18,14 @@ from .profile_store import ProfileStore
 
 logger = logging.getLogger("notebooklm.auth")
 
-PokeSession: TypeAlias = Callable[[httpx.AsyncClient, Path | None], Awaitable[None]]
-LoadCookieJar: TypeAlias = Callable[[Path], httpx.Cookies]
-AccountEnumerator: TypeAlias = Callable[[httpx.Cookies, PokeSession], Awaitable[list[Account]]]
-AccountSelector: TypeAlias = Callable[
+PokeSession: TypeAlias = Callable[[httpx.AsyncClient, Path | None], Awaitable[None]]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+LoadCookieJar: TypeAlias = Callable[[Path], httpx.Cookies]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+AccountEnumerator: TypeAlias = Callable[[httpx.Cookies, PokeSession], Awaitable[list[Account]]]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+AccountSelector: TypeAlias = Callable[  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
     [list[Account], str | None], tuple[Account | None, str | None]
 ]
-ActiveEmailExtractor: TypeAlias = Callable[[str], str | None]
-WriterFactory: TypeAlias = Callable[[Path], AccountMetadataWriter]
+ActiveEmailExtractor: TypeAlias = Callable[[str], str | None]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+WriterFactory: TypeAlias = Callable[[Path], AccountMetadataWriter]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class AccountRepairService:

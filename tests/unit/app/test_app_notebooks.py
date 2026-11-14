@@ -19,7 +19,7 @@ generic error classification is covered by ``app/test_app_errors.py``).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -57,8 +57,8 @@ async def _resolve_nb(_client, nb_id):
     return f"full_{nb_id}"
 
 
-_CREATED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-_VIEWED_AT = datetime(2026, 1, 3, 4, 5, 6, tzinfo=timezone.utc)
+_CREATED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+_VIEWED_AT = datetime(2026, 1, 3, 4, 5, 6, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ async def test_execute_notebook_create_fills_only_the_null_slot() -> None:
         return_value=Notebook(
             id="nb_new",
             title="New",
-            created_at=datetime(2099, 1, 1, tzinfo=timezone.utc),  # must NOT win
+            created_at=datetime(2099, 1, 1, tzinfo=UTC),  # must NOT win
             last_viewed_at=_VIEWED_AT,
         )
     )

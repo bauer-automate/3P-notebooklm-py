@@ -9,14 +9,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
-from typing import Any, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from .._loop_affinity import assert_bound_loop as _assert_bound_loop
 from .config import CORE_LOGGER_NAME
 
 logger = logging.getLogger(CORE_LOGGER_NAME)
-
-_T = TypeVar("_T")
 
 
 @runtime_checkable
@@ -81,7 +79,7 @@ class _Captured:
     error: BaseException | None = None
 
 
-async def _capture(awaitable: Awaitable[_T]) -> _Captured:
+async def _capture[T](awaitable: Awaitable[T]) -> _Captured:
     """Capture even process-exit signals so sibling cleanup can finish first."""
     try:
         await awaitable
@@ -90,9 +88,9 @@ async def _capture(awaitable: Awaitable[_T]) -> _Captured:
     return _Captured()
 
 
-async def _capture_after_gate(
+async def _capture_after_gate[T](
     gate: asyncio.Future[None],
-    factory: Callable[[], Awaitable[_T]],
+    factory: Callable[[], Awaitable[T]],
 ) -> _Captured:
     """Keep eager tasks inert until their creator releases its state lock."""
     try:

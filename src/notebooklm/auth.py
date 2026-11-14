@@ -33,7 +33,6 @@ from collections.abc import Callable as _Callable
 from pathlib import Path as _Path
 from typing import Any as _Any
 from typing import NoReturn as _NoReturn
-from typing import TypeAlias
 
 import httpx
 
@@ -220,11 +219,11 @@ def capture_browser_oauth_token(
 
 logger = logging.getLogger(__name__)
 
-CookieKey: TypeAlias = _auth_cookies.CookieKey
-DomainCookieMap: TypeAlias = _auth_cookies.DomainCookieMap
-FlatCookieMap: TypeAlias = _auth_cookies.FlatCookieMap
-LegacyDomainCookieMap: TypeAlias = _auth_cookies.LegacyDomainCookieMap
-CookieInput: TypeAlias = _auth_cookies.CookieInput
+type CookieKey = _auth_cookies.CookieKey
+type DomainCookieMap = _auth_cookies.DomainCookieMap
+type FlatCookieMap = _auth_cookies.FlatCookieMap
+type LegacyDomainCookieMap = _auth_cookies.LegacyDomainCookieMap
+type CookieInput = _auth_cookies.CookieInput
 
 _cookie_is_http_only = _auth_cookies._cookie_is_http_only
 _cookie_key_variants = _auth_cookies._cookie_key_variants

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import warnings
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -53,8 +53,8 @@ class FakeDescription:
 
 NB_ID = "11111111-1111-1111-1111-111111111111"
 NB2_ID = "22222222-2222-2222-2222-222222222222"
-CREATED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-VIEWED_AT = datetime(2026, 1, 3, 4, 5, 6, tzinfo=timezone.utc)
+CREATED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+VIEWED_AT = datetime(2026, 1, 3, 4, 5, 6, tzinfo=UTC)
 
 
 async def test_notebook_list(mcp_call, mock_client) -> None:

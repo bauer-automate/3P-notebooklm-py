@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Sequence
-from datetime import timezone
+from datetime import UTC
 from typing import Any, cast
 
 from ...exceptions import DecodingError
@@ -136,7 +136,7 @@ def _decode_source(
     if source.HasField("metadata"):
         metadata = source.metadata
         if metadata.HasField("source_added_timestamp"):
-            created_at = metadata.source_added_timestamp.ToDatetime(tzinfo=timezone.utc)
+            created_at = metadata.source_added_timestamp.ToDatetime(tzinfo=UTC)
         type_name = _enum_name(
             _read_proto().OriginalSourceContentType,
             metadata.original_source_content_type,

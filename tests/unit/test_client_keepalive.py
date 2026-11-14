@@ -93,7 +93,7 @@ async def _wait_until_storage_contains(storage_path, needle: str, failure_messag
         # Thread scheduling and Windows file access can outlast the old 2.5s
         # budget. Sharing-violation retries use this same overall deadline.
         await asyncio.wait_for(wait_for_cookie(), timeout=10.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail(f"{failure_message} within 10 seconds")
 
 

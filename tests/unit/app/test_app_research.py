@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -716,8 +716,8 @@ async def test_execute_research_import_cited_only_then_max_sources() -> None:
 # Run metadata carried onto the shared MCP/REST view (#2122)
 # ===========================================================================
 
-_CREATED = datetime(2026, 8, 13, 11, 12, 58, tzinfo=timezone.utc)
-_UPDATED = datetime(2026, 8, 13, 11, 13, 5, tzinfo=timezone.utc)
+_CREATED = datetime(2026, 8, 13, 11, 12, 58, tzinfo=UTC)
+_UPDATED = datetime(2026, 8, 13, 11, 13, 5, tzinfo=UTC)
 
 
 async def test_poll_projects_run_metadata_for_the_transports() -> None:

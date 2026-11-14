@@ -21,7 +21,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from .exceptions import DecodingError
 
@@ -61,7 +61,7 @@ _LIBRARY_OWNED_METADATA = frozenset(
 _DEFAULT_RAW_STREAM_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 
 
-class ReplayPolicy(str, Enum):
+class ReplayPolicy(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Whether a raw Android call may be replayed after a transient failure.
 
     ``NEVER`` is the safe default for an unknown method.  ``SAFE_READ`` must be
@@ -101,7 +101,7 @@ def _validate_descriptor(
 
 
 @dataclass(frozen=True)
-class GrpcUnaryMethod(Generic[RequestT, ResponseT]):
+class GrpcUnaryMethod[RequestT, ResponseT]:
     """Description of one unary Android gRPC method.
 
     Request values default to protobuf's ``SerializeToString`` convention.
@@ -127,7 +127,7 @@ class GrpcUnaryMethod(Generic[RequestT, ResponseT]):
 
 
 @dataclass(frozen=True)
-class GrpcUnaryStreamMethod(Generic[RequestT, ResponseT]):
+class GrpcUnaryStreamMethod[RequestT, ResponseT]:
     """Description of one unary-request, server-streaming Android method."""
 
     path: str
@@ -172,7 +172,7 @@ def _codec_failure(*, path: str, stage: str, error: BaseException) -> DecodingEr
     )
 
 
-def _serialize_request(
+def _serialize_request[RequestT](
     method: GrpcUnaryMethod[RequestT, Any] | GrpcUnaryStreamMethod[RequestT, Any],
     request: RequestT,
 ) -> bytes:
@@ -188,7 +188,7 @@ def _serialize_request(
         raise _codec_failure(path=method.path, stage="request serialization", error=error) from None
 
 
-def _deserialize_response(
+def _deserialize_response[ResponseT](
     method: GrpcUnaryMethod[Any, ResponseT] | GrpcUnaryStreamMethod[Any, ResponseT],
     payload: bytes,
 ) -> ResponseT:

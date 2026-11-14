@@ -22,7 +22,7 @@ import json
 import math
 import sys
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -647,7 +647,7 @@ def _customize_usage(client: MagicMock) -> None:
         return_value=UsageSummary(
             status=UsageSummaryStatus.READY,
             windows=tuple(
-                UsageWindow(kind, 25.0, 75.0, datetime(2026, 9, 5, tzinfo=timezone.utc))
+                UsageWindow(kind, 25.0, 75.0, datetime(2026, 9, 5, tzinfo=UTC))
                 for kind in (UsageWindowKind.FIVE_HOUR, UsageWindowKind.WEEKLY)
             ),
         )

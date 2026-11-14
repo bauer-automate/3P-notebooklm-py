@@ -24,7 +24,7 @@ import pytest
 # Skip cleanly when the `mcp` extra (fastmcp) is absent; see conftest.py.
 pytest.importorskip("fastmcp")
 
-from datetime import datetime, timezone  # noqa: E402 - after importorskip guard
+from datetime import UTC, datetime  # noqa: E402 - after importorskip guard
 
 from fastmcp import Client  # noqa: E402 - after importorskip guard
 from fastmcp.exceptions import ToolError  # noqa: E402 - after importorskip guard
@@ -63,7 +63,7 @@ def _audio_artifact(art_id: str, title: str = "Podcast", *, completed: bool = Tr
         title=title,
         _artifact_type=ArtifactTypeCode.AUDIO.value,
         status=int(ArtifactStatus.COMPLETED if completed else ArtifactStatus.PROCESSING),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 
@@ -152,7 +152,7 @@ async def test_source_add_file_with_config_returns_upload_url(mock_client, confi
     assert sc["expires_at_iso"].endswith("Z")
     # ISO string round-trips to the same instant as the unix expires_at.
     parsed = datetime.fromisoformat(sc["expires_at_iso"].replace("Z", "+00:00"))
-    assert parsed == datetime.fromtimestamp(sc["expires_at"], tz=timezone.utc)
+    assert parsed == datetime.fromtimestamp(sc["expires_at"], tz=UTC)
     # The signed token carries the title + mime (so the browser round-trip keeps them).
     token = sc["url"].rsplit("/", 1)[1]
     payload = config.signer.verify(token, op="ul")
@@ -841,7 +841,7 @@ async def test_artifact_download_explicit_id_pptx_uses_title(mock_client, config
         title="Q3 Deck",
         _artifact_type=ArtifactTypeCode.SLIDE_DECK.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.artifacts.list = AsyncMock(return_value=[deck])
     result = await _call(
@@ -978,7 +978,7 @@ async def test_artifact_download_remote_mind_map_uses_type_scoped_list(mock_clie
         title="My Map",
         _artifact_type=ArtifactTypeCode.MIND_MAP.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
     mock_client.artifacts.list = AsyncMock(return_value=[mm])
     result = await _call(
@@ -1141,7 +1141,7 @@ def _report_artifact(art_id: str, title: str = "Q3 Report", *, completed: bool =
         title=title,
         _artifact_type=ArtifactTypeCode.REPORT.value,
         status=int(ArtifactStatus.COMPLETED if completed else ArtifactStatus.PROCESSING),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 
@@ -1151,7 +1151,7 @@ def _data_table_artifact(art_id: str, title: str = "Table") -> Artifact:
         title=title,
         _artifact_type=ArtifactTypeCode.DATA_TABLE.value,
         status=int(ArtifactStatus.COMPLETED),
-        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
     )
 
 

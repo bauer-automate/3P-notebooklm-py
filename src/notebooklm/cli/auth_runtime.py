@@ -199,7 +199,7 @@ def handle_auth_error(json_output: bool = False) -> NoReturn:
         exit_with_code(1)
 
 
-def with_auth_and_errors(
+def with_auth_and_errors[T](
     ctx: click.Context,
     *,
     command_name: str,
@@ -347,7 +347,7 @@ def auth_check_notebook_count(ctx: click.Context) -> int | None:
         return None
 
 
-def run_client_workflow(
+def run_client_workflow[T](
     ctx: click.Context,
     *,
     command_name: str,

@@ -137,7 +137,7 @@ from notebooklm.rpc.types import _QUERY_ENDPOINT_PATH
 from notebooklm.types import AudioFormat, SlideDeckFormat, VideoFormat
 
 
-class CheckStatus(str, Enum):
+class CheckStatus(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Result status for an RPC check."""
 
     OK = "OK"
@@ -146,7 +146,7 @@ class CheckStatus(str, Enum):
     SKIPPED = "SKIPPED"
 
 
-class CustomizationStatus(str, Enum):
+class CustomizationStatus(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Result of the ``GET_CUSTOMIZATION_CHOICES`` studio option-table cross-check.
 
     ``GetArtifactCustomizationChoices`` serves the Studio "Customize" tables —
@@ -170,7 +170,7 @@ class CustomizationStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class RebrandProbeStatus(str, Enum):
+class RebrandProbeStatus(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Verdict for one rebrand-host (``notebook.google.com``) capability probe.
 
     ``PRESENT`` / ``ABSENT`` are *recorded* states — they are what the state
@@ -221,7 +221,7 @@ _CUSTOMIZATION_FAMILIES: tuple[tuple[str, type[Enum], frozenset[int]], ...] = (
 )
 
 
-class BuildLabelStatus(str, Enum):
+class BuildLabelStatus(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Verdict for the pinned-vs-served frontend build label (``bl``).
 
     ``CURRENT`` — the app shell serves exactly what ``_env.DEFAULT_BL`` pins.

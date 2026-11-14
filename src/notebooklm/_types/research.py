@@ -18,7 +18,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .enums import DiscoveryMode
@@ -77,7 +77,7 @@ RESEARCH_STATUS_CODE_CANCELLED = 4
 RESEARCH_STATUS_CODE_COMPLETED_DEEP = 6
 
 
-class ResearchTerminationReason(str, Enum):
+class ResearchTerminationReason(StrEnum):
     """Why a research run ended — the differentiated view of :class:`ResearchStatus`.
 
     :class:`ResearchStatus` stays deliberately coarse (a Drive run that matched
@@ -180,7 +180,7 @@ def parse_result_type(value: Any) -> ResearchResultType:
     return RESEARCH_RESULT_TYPE_WEB
 
 
-class ResearchStatus(str, Enum):
+class ResearchStatus(StrEnum):
     """Lifecycle status of a research task.
 
     A ``str`` enum, so equality with the historical magic strings keeps

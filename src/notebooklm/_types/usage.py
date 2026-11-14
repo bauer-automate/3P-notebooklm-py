@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 
 
-class UsageSummaryStatus(str, Enum):
+class UsageSummaryStatus(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Availability state returned by the live compute meter."""
 
     DISABLED = "disabled"

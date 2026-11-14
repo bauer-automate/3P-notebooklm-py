@@ -11,7 +11,7 @@ import warnings
 from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -135,7 +135,7 @@ class FakeNotebooks:
                 title=TEMPLATE_TITLE,
                 role=SharePermission.VIEWER,
                 is_owner=False,
-                created_at=datetime.now(timezone.utc) - timedelta(days=90),
+                created_at=datetime.now(UTC) - timedelta(days=90),
             )
         }
         self.copy_calls: list[tuple[str, str]] = []
@@ -180,7 +180,7 @@ class FakeNotebooks:
             title=title,
             role=self.created_role,
             is_owner=True,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         self.items[notebook_id] = notebook
         assert self.client is not None
@@ -872,7 +872,7 @@ async def test_preexisting_exact_title_forces_new_nonce_before_one_dispatch(
         id="old-copy",
         title=collision,
         role=SharePermission.OWNER,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     manifest = await _provision(manager, tmp_path, mode="rpc")
     assert len(client.notebooks.copy_calls) == 1
@@ -940,7 +940,7 @@ async def test_multiple_exact_post_dispatch_matches_are_unresolved_without_delet
         id="duplicate-copy",
         title=title,
         role=SharePermission.OWNER,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     client.notebooks.list_script.append([client.notebooks.items[TEMPLATE_ID]])
     with pytest.raises(CopyUnresolvedError):
@@ -967,7 +967,7 @@ async def test_list_visibility_lag_reconciles_within_budget(
         id="lagged-copy",
         title=title,
         role=SharePermission.OWNER,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     client.notebooks.items["lagged-copy"] = recovered
     client.sources.by_notebook["lagged-copy"] = deepcopy(client.sources.by_notebook[TEMPLATE_ID])
@@ -1255,7 +1255,7 @@ async def test_intent_missing_candidate_falls_back_to_exact_owner_match(
         id="recovered-copy",
         title=title,
         role=SharePermission.OWNER,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     result = await manager.cleanup()
     assert result["deleted"] == 1
@@ -1273,13 +1273,13 @@ async def test_unsafe_candidate_and_separate_exact_copy_deletes_safe_copy_but_st
         id="unsafe-candidate",
         title="unrelated title",
         role=SharePermission.OWNER,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     client.notebooks.items["safe-copy"] = SimpleNamespace(
         id="safe-copy",
         title=title,
         role=SharePermission.OWNER,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     with pytest.raises(CleanupError):
         await manager.cleanup()
@@ -1303,7 +1303,7 @@ async def test_unresolved_intent_variants_stay_red_without_unsafe_deletion(
                 id=f"duplicate-{index}",
                 title=title,
                 role=SharePermission.OWNER,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
     elif variant == "unreadable":
         client.notebooks.list_error = RuntimeError("unreadable with id")
@@ -1348,8 +1348,8 @@ async def test_sweep_applies_every_owner_prefix_age_template_current_and_title_g
     contracts: tuple[dict[str, Any], dict[str, Any]],
 ) -> None:
     manager, client, _store, _clock = _manager(tmp_path, contracts)
-    old = datetime.now(timezone.utc) - timedelta(days=2)
-    recent = datetime.now(timezone.utc) - timedelta(hours=2)
+    old = datetime.now(UTC) - timedelta(days=2)
+    recent = datetime.now(UTC) - timedelta(hours=2)
     candidates = {
         "eligible-copy": (
             build_title("1", "1", "rpc-health-web", "rpc", "1" * 32),
@@ -1395,7 +1395,7 @@ async def test_sweep_applies_every_owner_prefix_age_template_current_and_title_g
     result = await manager.sweep(
         current_run_id="9",
         current_run_attempt="7",
-        now=datetime.now(timezone.utc),
+        now=datetime.now(UTC),
     )
     assert result.eligible == result.deleted == 2
     assert client.notebooks.delete_calls == ["eligible-copy", "legacy-copy"]
@@ -1407,7 +1407,7 @@ async def test_sweep_cap_aborts_before_deleting_anything(
     contracts: tuple[dict[str, Any], dict[str, Any]],
 ) -> None:
     manager, client, _store, _clock = _manager(tmp_path, contracts)
-    old = datetime.now(timezone.utc) - timedelta(days=2)
+    old = datetime.now(UTC) - timedelta(days=2)
     for index in range(2):
         notebook_id = f"stale-copy-{index}"
         client.notebooks.items[notebook_id] = SimpleNamespace(
@@ -1427,7 +1427,7 @@ async def test_sweep_cap_aborts_before_deleting_anything(
             current_run_id=None,
             current_run_attempt=None,
             deletion_cap=1,
-            now=datetime.now(timezone.utc),
+            now=datetime.now(UTC),
         )
     assert client.notebooks.delete_calls == []
 
@@ -1453,7 +1453,7 @@ async def test_sweep_rejects_unsafe_policy_or_partial_run_identity_before_listin
     values: dict[str, Any] = {
         "current_run_id": "1",
         "current_run_attempt": "1",
-        "now": datetime.now(timezone.utc),
+        "now": datetime.now(UTC),
     }
     values.update(kwargs)
     with pytest.raises(ValueError, match=message):

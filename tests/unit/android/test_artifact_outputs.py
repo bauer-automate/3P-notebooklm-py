@@ -14,7 +14,7 @@ import json
 import tempfile
 import threading
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -264,8 +264,8 @@ def test_select_note_backed_mind_map_returns_none_for_an_unknown_id() -> None:
 
 
 def test_select_note_backed_mind_map_prefers_the_newest_candidate() -> None:
-    older = _mind_map("mm-1", created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
-    newer = _mind_map("mm-2", created_at=datetime(2026, 6, 1, tzinfo=timezone.utc))
+    older = _mind_map("mm-1", created_at=datetime(2026, 1, 1, tzinfo=UTC))
+    newer = _mind_map("mm-2", created_at=datetime(2026, 6, 1, tzinfo=UTC))
     undated = _mind_map("mm-3")
 
     assert select_note_backed_mind_map([older, undated, newer], mind_map_id=None) is newer

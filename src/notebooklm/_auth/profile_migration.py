@@ -67,7 +67,7 @@ class NoAccount:
     pass
 
 
-ResolvedAccount: TypeAlias = InBandAccount | LegacyAccount | NoAccount
+ResolvedAccount: TypeAlias = InBandAccount | LegacyAccount | NoAccount  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -104,7 +104,7 @@ class PromotionFailed:
     authoritative_after_failure: ProfileAccount | None = field(default=None, repr=False)
 
 
-PromotionResult: TypeAlias = Promoted | AlreadyInBand | NoLegacyRecord | PromotionFailed
+PromotionResult: TypeAlias = Promoted | AlreadyInBand | NoLegacyRecord | PromotionFailed  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class LegacyAccountContext:
@@ -321,7 +321,7 @@ class LegacyAccountMigrator:
         return self._contexts.scrub(store.path)
 
 
-ThreadFactory: TypeAlias = Callable[..., threading.Thread]
+ThreadFactory: TypeAlias = Callable[..., threading.Thread]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class LegacyPromotionScheduler:

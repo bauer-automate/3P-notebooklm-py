@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from types import SimpleNamespace
 from typing import Any
@@ -38,7 +38,7 @@ NB_ID = "11111111-1111-1111-1111-111111111111"
 TASK_ID = "research-task-1"
 
 
-class FakeResearchStatus(str, Enum):
+class FakeResearchStatus(str, Enum):  # noqa: UP042 - test fixture pins (str, Enum) behaviour
     NO_RESEARCH = "no_research"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -1330,8 +1330,8 @@ async def test_research_status_surfaces_run_metadata(mcp_call, mock_client) -> N
             status=FakeResearchStatus.IN_PROGRESS,
             status_code=1,
             discovery_mode=DiscoveryMode.DEEP_RESEARCH,
-            created_at=datetime(2026, 8, 13, 11, 12, 58, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 8, 13, 11, 13, 5, tzinfo=timezone.utc),
+            created_at=datetime(2026, 8, 13, 11, 12, 58, tzinfo=UTC),
+            updated_at=datetime(2026, 8, 13, 11, 13, 5, tzinfo=UTC),
         )
     )
     content = (await mcp_call("research_status", {"notebook": NB_ID})).structured_content

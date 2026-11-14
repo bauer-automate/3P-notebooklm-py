@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from enum import Enum, IntEnum
 
 from notebooklm._app.serialize import to_jsonable
@@ -12,7 +12,7 @@ from notebooklm._web.rows.notebooks import decode_notebook
 from notebooklm.types import Notebook, SharePermission
 
 
-class Color(str, Enum):
+class Color(str, Enum):  # noqa: UP042 - test fixture pins (str, Enum) behaviour
     """A str-mixin enum (member is also a ``str`` instance)."""
 
     RED = "red"
@@ -47,7 +47,7 @@ def test_nested_dataclass_is_fully_converted() -> None:
         label="root",
         color=Color.GREEN,
         priority=Priority.HIGH,
-        children=[Inner(name="a", when=datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc))],
+        children=[Inner(name="a", when=datetime(2026, 6, 8, 12, 0, 0, tzinfo=UTC))],
         blob=b"hi",
         tags=("x", "y"),
     )
@@ -84,7 +84,7 @@ def test_int_enum_unwraps_to_plain_int_value() -> None:
 
 
 def test_datetime_becomes_isoformat() -> None:
-    dt = datetime(2026, 6, 8, 9, 30, 15, tzinfo=timezone.utc)
+    dt = datetime(2026, 6, 8, 9, 30, 15, tzinfo=UTC)
 
     assert to_jsonable(dt) == "2026-06-08T09:30:15+00:00"
 
@@ -123,7 +123,7 @@ def test_real_notebooklm_type_round_trips() -> None:
     nb = Notebook(
         id="nb-1",
         title="My Notebook",
-        created_at=datetime(2026, 6, 8, 0, 0, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 6, 8, 0, 0, 0, tzinfo=UTC),
         sources_count=3,
         is_owner=True,
         role=SharePermission.OWNER,
@@ -273,8 +273,8 @@ def test_source_view_does_not_publish_python_only_source_metadata() -> None:
         content_mime="text/markdown",
         word_count=123,
         revision_id="revision-1",
-        revision_timestamp=datetime(2026, 8, 13, tzinfo=timezone.utc),
-        last_modified_at=datetime(2026, 8, 14, tzinfo=timezone.utc),
+        revision_timestamp=datetime(2026, 8, 13, tzinfo=UTC),
+        last_modified_at=datetime(2026, 8, 14, tzinfo=UTC),
     )
 
     view = source_view(source)

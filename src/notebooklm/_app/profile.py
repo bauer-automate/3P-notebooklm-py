@@ -31,7 +31,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypeAlias
+from typing import Any, Literal, Protocol
 
 #: Returns the list of known profile names.
 ListProfilesFn = Callable[[], list[str]]
@@ -49,7 +49,7 @@ class StoragePathForProfile(Protocol):
     def __call__(self, profile: str | None = None) -> Path: ...
 
 
-ProfileRepairStatus: TypeAlias = Literal["WRITTEN", "AMBIGUOUS", "ERROR"]
+type ProfileRepairStatus = Literal["WRITTEN", "AMBIGUOUS", "ERROR"]
 
 
 @dataclass(frozen=True)

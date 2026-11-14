@@ -33,9 +33,9 @@ from .profile_store import CookieMergeDisposition, ProfileStore
 
 logger = logging.getLogger("notebooklm.auth")
 
-DomainCookieMap: TypeAlias = _auth_cookies.DomainCookieMap
-FlatCookieMap: TypeAlias = _auth_cookies.FlatCookieMap
-CookieSnapshot: TypeAlias = _auth_storage.CookieSnapshot
+DomainCookieMap: TypeAlias = _auth_cookies.DomainCookieMap  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+FlatCookieMap: TypeAlias = _auth_cookies.FlatCookieMap  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+CookieSnapshot: TypeAlias = _auth_storage.CookieSnapshot  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -60,7 +60,7 @@ class FileAuthSource:
             raise TypeError("profile must be a string or None")
 
 
-ResolvedAuthSource: TypeAlias = InlineAuthSource | FileAuthSource
+ResolvedAuthSource: TypeAlias = InlineAuthSource | FileAuthSource  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -529,7 +529,7 @@ class FileLoadedAuth:
         )
 
 
-LoadedAuth: TypeAlias = InlineLoadedAuth | FileLoadedAuth
+LoadedAuth: TypeAlias = InlineLoadedAuth | FileLoadedAuth  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class SessionSeedLoader:

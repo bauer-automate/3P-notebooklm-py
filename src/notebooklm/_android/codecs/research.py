@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timezone
+from datetime import UTC
 from typing import Any
 
 from ..._types.enums import DiscoveryMode
@@ -40,7 +40,7 @@ def canonical_research_job_id(value: str, *, method_id: str) -> str:
 def _timestamp(message: Any, field: str) -> Any:
     if not message.HasField(field):
         return None
-    return getattr(message, field).ToDatetime(tzinfo=timezone.utc)
+    return getattr(message, field).ToDatetime(tzinfo=UTC)
 
 
 def _mode(value: int) -> DiscoveryMode | None:

@@ -82,7 +82,7 @@ def resolve_web_policy(options: WebRequestOptions | None) -> ResolvedWebPolicy |
     )
 
 
-def scoped_call(policy: ResolvedWebPolicy | None, function: _F) -> _F:
+def scoped_call[F: Callable[..., Any]](policy: ResolvedWebPolicy | None, function: F) -> F:
     """Bind an existing callable without changing its signature or live auth inputs."""
     if inspect.iscoroutinefunction(function):
 
@@ -91,14 +91,14 @@ def scoped_call(policy: ResolvedWebPolicy | None, function: _F) -> _F:
             with request_policy_scope(policy):
                 return await function(*args, **kwargs)
 
-        return cast(_F, asynchronous)
+        return cast(F, asynchronous)
 
     @wraps(function)
     def synchronous(*args: Any, **kwargs: Any) -> Any:
         with request_policy_scope(policy):
             return function(*args, **kwargs)
 
-    return cast(_F, synchronous)
+    return cast(F, synchronous)
 
 
 class RequestPolicyOwner:
@@ -110,7 +110,7 @@ class RequestPolicyOwner:
         return scoped_call(self.request_policy, function)
 
 
-def request_scoped(function: _F) -> _F:
+def request_scoped[F: Callable[..., Any]](function: F) -> F:
     """Apply the concrete owner's policy, including explicit legacy dynamic mode."""
     if inspect.iscoroutinefunction(function):
 
@@ -119,11 +119,11 @@ def request_scoped(function: _F) -> _F:
             with request_policy_scope(self.request_policy):
                 return await function(self, *args, **kwargs)
 
-        return cast(_F, asynchronous)
+        return cast(F, asynchronous)
 
     @wraps(function)
     def synchronous(self: RequestPolicyOwner, *args: Any, **kwargs: Any) -> Any:
         with request_policy_scope(self.request_policy):
             return function(self, *args, **kwargs)
 
-    return cast(_F, synchronous)
+    return cast(F, synchronous)

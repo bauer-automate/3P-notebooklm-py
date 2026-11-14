@@ -25,7 +25,7 @@ __all__ = [
 import asyncio
 import math
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -180,8 +180,8 @@ def parse_retry_after(value: object) -> int | None:
     try:
         parsed = parsedate_to_datetime(value)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        delta = (parsed - datetime.now(timezone.utc)).total_seconds()
+            parsed = parsed.replace(tzinfo=UTC)
+        delta = (parsed - datetime.now(UTC)).total_seconds()
         return min(MAX_RETRY_AFTER_SECONDS, max(0, int(delta)))
     except (OverflowError, TypeError, ValueError):
         return None

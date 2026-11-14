@@ -282,7 +282,7 @@ warn_return_any = true
 strict_optional = true
 
 [tool.ruff]
-target-version = "py310"  # lint-rule floor only; runtime floor is 3.12 (modernization tracked separately)
+target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
 # Preserve protoc's byte-for-byte output. Generated modules are reviewed via

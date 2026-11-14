@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 from ...client import NotebookLMClient
 
@@ -13,7 +13,7 @@ MutationStatus = Literal["cancelled", "completed"]
 
 
 @dataclass(frozen=True)
-class MutationPlan(Generic[ResolvedT]):
+class MutationPlan[ResolvedT]:
     """Command-specific configuration for :func:`run_confirmed_mutation`."""
 
     entity_label: str
@@ -25,7 +25,7 @@ class MutationPlan(Generic[ResolvedT]):
 
 
 @dataclass(frozen=True)
-class MutationResult(Generic[ResolvedT]):
+class MutationResult[ResolvedT]:
     """Result of a confirmed mutation workflow."""
 
     entity_label: str
@@ -34,7 +34,7 @@ class MutationResult(Generic[ResolvedT]):
     payload: dict[str, Any]
 
 
-async def run_confirmed_mutation(
+async def run_confirmed_mutation[ResolvedT](
     plan: MutationPlan[ResolvedT],
     client: NotebookLMClient,
     *,
