@@ -25,7 +25,7 @@ __all__ = [
 import asyncio
 import math
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 

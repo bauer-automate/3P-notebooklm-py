@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, timezone
+from datetime import UTC
 from typing import Any
 
 from ..._types.artifact_content import (

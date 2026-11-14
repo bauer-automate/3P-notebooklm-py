@@ -6,7 +6,7 @@ import traceback
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, NoReturn, ParamSpec, TypeVar
+from typing import Any, NoReturn
 
 from .._idempotency import mark_commit_state, mark_unconfirmed
 from ..exceptions import (
@@ -49,9 +49,6 @@ _STATUS_CODES = {
     "UNAUTHENTICATED": 16,
 }
 _STATUS_NAMES = {code: name for name, code in _STATUS_CODES.items()}
-
-_P = ParamSpec("_P")
-_T = TypeVar("_T")
 
 
 def grpc_status(error: Exception) -> GrpcStatus:
@@ -103,13 +100,13 @@ def sanitize_escaping_exception(error: BaseException) -> BaseException:
     return error
 
 
-def sanitize_async_boundary(
-    function: Callable[_P, Coroutine[Any, Any, _T]],
-) -> Callable[_P, Coroutine[Any, Any, _T]]:
+def sanitize_async_boundary[**P, T](
+    function: Callable[P, Coroutine[Any, Any, T]],
+) -> Callable[P, Coroutine[Any, Any, T]]:
     """Scrub failures after the decorated coroutine releases its arguments."""
 
     @wraps(function)
-    async def sanitized(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+    async def sanitized(*args: P.args, **kwargs: P.kwargs) -> T:
         try:
             return await function(*args, **kwargs)
         except BaseException as caught:

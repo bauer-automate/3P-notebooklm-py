@@ -9,7 +9,7 @@ semantic validation usable by the Web and Android adapters.
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from ..exceptions import DecodingError

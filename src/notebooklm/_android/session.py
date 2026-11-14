@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, 
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from .._backoff import (
     RETRY_BACKOFF_BASE_SECONDS,
@@ -166,7 +166,7 @@ def _log_unknown_wire_error(error: Exception) -> None:
 
 
 @dataclass(frozen=True)
-class _AttemptSuccess(Generic[RespT]):
+class _AttemptSuccess[RespT]:
     value: RespT
 
 

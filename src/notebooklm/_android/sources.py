@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, cast
 
 from .._deadline import RuntimeDeadline
 from .._idempotency import (
@@ -135,7 +135,6 @@ LOAD_SOURCE_METHOD = f"/{_SERVICE}/LoadSource"
 CHECK_SOURCE_FRESHNESS_METHOD = f"/{_SERVICE}/CheckSourceFreshness"
 REFRESH_SOURCE_METHOD = f"/{_SERVICE}/RefreshSource"
 
-_FilterValue = TypeVar("_FilterValue")
 _CANONICAL_ID_LENGTH = 36
 # Post-upload readiness polling sleeps between GetProject looks. The smallest wire budget
 # a single look may be handed is capped by ``wait_timeout`` so a deadline that reads as spent
@@ -144,12 +143,12 @@ _POLL_INTERVAL = 0.5
 _POLL_WIRE_FLOOR = 1.0
 
 
-def _snapshot_enum_filter(
-    values: Collection[_FilterValue] | None,
+def _snapshot_enum_filter[FilterValue](
+    values: Collection[FilterValue] | None,
     *,
-    enum_type: type[_FilterValue],
+    enum_type: type[FilterValue],
     parameter: str,
-) -> frozenset[_FilterValue] | None:
+) -> frozenset[FilterValue] | None:
     """Validate and snapshot one source filter before session entry."""
     if values is None:
         return None

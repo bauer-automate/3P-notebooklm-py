@@ -24,7 +24,7 @@ import pytest
 # Skip cleanly when the `mcp` extra (fastmcp) is absent; see conftest.py.
 pytest.importorskip("fastmcp")
 
-from datetime import UTC, datetime, timezone  # noqa: E402 - after importorskip guard
+from datetime import UTC, datetime  # noqa: E402 - after importorskip guard
 
 from fastmcp import Client  # noqa: E402 - after importorskip guard
 from fastmcp.exceptions import ToolError  # noqa: E402 - after importorskip guard

@@ -123,7 +123,7 @@ def assert_no_concurrent_overlap(
         )
 
 
-async def assert_unique_outputs(
+async def assert_unique_outputs[T](
     make_coro: Callable[[], Awaitable[T]],
     n_concurrent: int,
 ) -> list[T]:
@@ -174,7 +174,7 @@ async def assert_unique_outputs(
     return outputs
 
 
-async def with_simulated_cancel(
+async def with_simulated_cancel[T](
     coro: Awaitable[T],
     delay: float,
     *,
@@ -266,7 +266,7 @@ async def with_simulated_cancel(
                 pass
 
 
-async def _as_coroutine(awaitable: Awaitable[T]) -> T:
+async def _as_coroutine[T](awaitable: Awaitable[T]) -> T:
     """Wrap an arbitrary awaitable in a coroutine for ``create_task``.
 
     ``asyncio.create_task`` requires a coroutine, but callers may pass

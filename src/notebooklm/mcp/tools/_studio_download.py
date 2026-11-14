@@ -21,7 +21,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, TypeAlias, cast
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.tools import ToolResult
@@ -141,12 +141,12 @@ def _validate_download_format(value: Any) -> str:
 #: MCP schema aliases derived from the canonical registry. ``WithJsonSchema``
 #: keeps the same compact enums that the old hand-written ``Literal`` aliases
 #: advertised, while ``BeforeValidator`` preserves boundary validation.
-DownloadType: TypeAlias = Annotated[
+type DownloadType = Annotated[
     str,
     BeforeValidator(_validate_download_type),
     WithJsonSchema({"type": "string", "enum": list(download_specs_core.DOWNLOAD_SPECS_BY_NAME)}),
 ]
-DownloadFormat: TypeAlias = Annotated[
+type DownloadFormat = Annotated[
     str,
     BeforeValidator(_validate_download_format),
     WithJsonSchema({"type": "string", "enum": list(download_specs_core.DOWNLOAD_FORMAT_NAMES)}),

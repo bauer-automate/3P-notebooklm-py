@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, timezone
+from datetime import UTC
 from typing import Any, cast
 
 from ...exceptions import DecodingError, NotebookNotFoundError, RPCError

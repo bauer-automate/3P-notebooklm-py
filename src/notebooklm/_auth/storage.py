@@ -46,7 +46,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, TypeAlias, cast
+from typing import Any, Literal, NamedTuple, cast
 
 import httpx
 
@@ -109,7 +109,7 @@ from .storage_lock import LockRequest, StorageLockManager
 
 logger = logging.getLogger("notebooklm.auth")
 
-CookieKey: TypeAlias = _auth_cookies.CookieKey
+type CookieKey = _auth_cookies.CookieKey
 _cookie_is_http_only = _auth_cookies._cookie_is_http_only
 
 __all__ = [
@@ -244,11 +244,11 @@ class CookieSnapshotValue(NamedTuple):
     http_only: bool
 
 
-CookieSnapshot: TypeAlias = dict[CookieSnapshotKey, CookieSnapshotValue]
+type CookieSnapshot = dict[CookieSnapshotKey, CookieSnapshotValue]
 # ``None`` is a private observation marker for a pre-existing target row whose
 # value was empty, missing, or non-string.  It lets recovery replace an unusable
 # row while still treating a newly-written non-empty sibling as a CAS conflict.
-RecoveryCookieObservation: TypeAlias = dict[CookieSnapshotKey, frozenset[str | None]]
+type RecoveryCookieObservation = dict[CookieSnapshotKey, frozenset[str | None]]
 
 
 @dataclass(frozen=True)

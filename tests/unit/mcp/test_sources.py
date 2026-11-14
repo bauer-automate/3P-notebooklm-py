@@ -355,7 +355,7 @@ async def test_source_list_compact(mcp_call, mock_client) -> None:
     created_at}`` — no ``url`` / raw ``status`` / ``_type_code`` — for a low-token
     listing with no extra read.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from notebooklm.types import Source
 

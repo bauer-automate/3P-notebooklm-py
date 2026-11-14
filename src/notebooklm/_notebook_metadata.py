@@ -45,7 +45,6 @@ class CreatedChatSessionProvider(Protocol):
 
 
 NotebookGetter = Callable[[str], Awaitable[Notebook]]
-_CopyMappingItem = TypeVar("_CopyMappingItem")
 _ChildResult = TypeVar("_ChildResult")
 
 
@@ -59,11 +58,11 @@ class SpawnChild(Protocol):
     ) -> asyncio.Task[_ChildResult]: ...
 
 
-def reconcile_copy_mapping(
+def reconcile_copy_mapping[CopyMappingItem](
     requested_ids: Sequence[str],
-    items: list[_CopyMappingItem],
+    items: list[CopyMappingItem],
     *,
-    original_id: Callable[[_CopyMappingItem], str],
+    original_id: Callable[[CopyMappingItem], str],
     operation: str,
     item_label: str,
     target_notebook_id: str,
@@ -72,7 +71,7 @@ def reconcile_copy_mapping(
     raw_response: str | None,
     empty_error: Exception,
     warning_logger: logging.Logger,
-) -> list[_CopyMappingItem]:
+) -> list[CopyMappingItem]:
     """Apply the shared post-decode policy for committed copy mappings.
 
     Backend hooks own wire decoding and report malformed-row diagnostics. This

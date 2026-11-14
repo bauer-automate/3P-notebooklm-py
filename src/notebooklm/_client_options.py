@@ -7,7 +7,7 @@ import os
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, cast
 
 import httpx
 
@@ -244,10 +244,7 @@ def legacy_client_option_names(**kwargs: object) -> tuple[str, ...]:
     return _legacy_argument_names(**kwargs)
 
 
-_T = TypeVar("_T")
-
-
-def _legacy_instance(cls: type[_T], **values: object) -> _T:
+def _legacy_instance[T](cls: type[T], **values: object) -> T:
     """Create frozen options without applying new validation to legacy accepted values."""
 
     instance = object.__new__(cls)

@@ -643,7 +643,7 @@
       "path": "src/notebooklm/_auth/account_email.py"
     },
     {
-      "lines": 132,
+      "lines": 129,
       "name": "account_repair",
       "path": "src/notebooklm/_auth/account_repair.py"
     },
@@ -733,7 +733,7 @@
       "path": "src/notebooklm/_auth/paths.py"
     },
     {
-      "lines": 92,
+      "lines": 91,
       "name": "profile_account",
       "path": "src/notebooklm/_auth/profile_account.py"
     },
@@ -753,7 +753,7 @@
       "path": "src/notebooklm/_auth/profile_store.py"
     },
     {
-      "lines": 1051,
+      "lines": 1049,
       "name": "psidts_recovery",
       "path": "src/notebooklm/_auth/psidts_recovery.py"
     },
@@ -801,7 +801,7 @@
     "function_local_edges": 12,
     "module_edges": 113,
     "modules": 33,
-    "total_lines": 13897,
+    "total_lines": 13891,
     "unique_edges": 125
   },
   "version": 1

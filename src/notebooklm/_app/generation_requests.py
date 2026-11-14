@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Literal, NotRequired, TypeAlias, cast
+from typing import Literal, NotRequired, cast
 
 from typing_extensions import TypedDict
 
@@ -28,7 +28,7 @@ from ..types import (
     VideoStyle,
 )
 
-GenerationKind: TypeAlias = Literal[
+type GenerationKind = Literal[
     "audio",
     "video",
     "cinematic-video",
@@ -50,9 +50,9 @@ class UnsetType(Enum):
 
 
 UNSET = UnsetType.UNSET
-OptionalText: TypeAlias = str | None | UnsetType
-SourceSelection: TypeAlias = tuple[str, ...] | UnsetType
-GenerationValidationCode: TypeAlias = Literal[
+type OptionalText = str | None | UnsetType
+type SourceSelection = tuple[str, ...] | UnsetType
+type GenerationValidationCode = Literal[
     "option_not_valid_for_kind",
     "invalid_option_value",
     "cinematic_style_prompt",
@@ -61,7 +61,7 @@ GenerationValidationCode: TypeAlias = Literal[
     "style_prompt_requires_custom",
 ]
 
-GenerationOptionName: TypeAlias = Literal[
+type GenerationOptionName = Literal[
     "report_format",
     "audio_format",
     "audio_length",
@@ -551,7 +551,7 @@ class ReportGenerationRequest(_DeferredGenerationRequest):
     extra_instructions: OptionalText = UNSET
 
 
-GenerationRequest: TypeAlias = (
+type GenerationRequest = (
     AudioGenerationRequest
     | VideoGenerationRequest
     | CinematicVideoGenerationRequest

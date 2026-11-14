@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Literal, TypeAlias
+from typing import Any, ClassVar, Literal
 
 from filelock import FileLock, Timeout
 
@@ -67,7 +67,7 @@ class NoAccount:
     pass
 
 
-ResolvedAccount: TypeAlias = InBandAccount | LegacyAccount | NoAccount
+type ResolvedAccount = InBandAccount | LegacyAccount | NoAccount
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -104,7 +104,7 @@ class PromotionFailed:
     authoritative_after_failure: ProfileAccount | None = field(default=None, repr=False)
 
 
-PromotionResult: TypeAlias = Promoted | AlreadyInBand | NoLegacyRecord | PromotionFailed
+type PromotionResult = Promoted | AlreadyInBand | NoLegacyRecord | PromotionFailed
 
 
 class LegacyAccountContext:
@@ -321,7 +321,7 @@ class LegacyAccountMigrator:
         return self._contexts.scrub(store.path)
 
 
-ThreadFactory: TypeAlias = Callable[..., threading.Thread]
+type ThreadFactory = Callable[..., threading.Thread]
 
 
 class LegacyPromotionScheduler:

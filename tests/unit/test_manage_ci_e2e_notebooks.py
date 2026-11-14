@@ -11,7 +11,7 @@ import warnings
 from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any

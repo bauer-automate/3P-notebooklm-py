@@ -12,11 +12,10 @@ import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 Monotonic = Callable[[], float]
 Sleep = Callable[[float], Awaitable[Any]]
-_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -78,12 +77,12 @@ class RuntimeDeadline:
         return f"{operation} timed out after {self.timeout:.1f}s"
 
 
-async def await_with_deadline(
-    awaitable: Awaitable[_T],
+async def await_with_deadline[T](
+    awaitable: Awaitable[T],
     deadline: RuntimeDeadline | None,
     *,
     on_timeout: Callable[[], BaseException],
-) -> _T:
+) -> T:
     """Await within ``deadline`` and normalize timeout translation.
 
     An already-expired budget closes coroutine objects before refusing them,

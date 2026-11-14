@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import warnings
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from types import SimpleNamespace
 from typing import Any

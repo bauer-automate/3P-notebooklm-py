@@ -34,7 +34,7 @@ from tests._helpers.client_factory import build_client_shell_for_tests
 T = TypeVar("T")
 
 
-async def _inline_to_thread(func: Callable[[], T], /) -> T:
+async def _inline_to_thread[T](func: Callable[[], T], /) -> T:
     return func()
 
 

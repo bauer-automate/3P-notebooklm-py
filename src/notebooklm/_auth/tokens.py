@@ -7,7 +7,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Any, Protocol, cast
 
 import httpx
 
@@ -33,9 +33,9 @@ from .profile_store import CookieMergeDisposition, ProfileStore
 
 logger = logging.getLogger("notebooklm.auth")
 
-DomainCookieMap: TypeAlias = _auth_cookies.DomainCookieMap
-FlatCookieMap: TypeAlias = _auth_cookies.FlatCookieMap
-CookieSnapshot: TypeAlias = _auth_storage.CookieSnapshot
+type DomainCookieMap = _auth_cookies.DomainCookieMap
+type FlatCookieMap = _auth_cookies.FlatCookieMap
+type CookieSnapshot = _auth_storage.CookieSnapshot
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -60,7 +60,7 @@ class FileAuthSource:
             raise TypeError("profile must be a string or None")
 
 
-ResolvedAuthSource: TypeAlias = InlineAuthSource | FileAuthSource
+type ResolvedAuthSource = InlineAuthSource | FileAuthSource
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -529,7 +529,7 @@ class FileLoadedAuth:
         )
 
 
-LoadedAuth: TypeAlias = InlineLoadedAuth | FileLoadedAuth
+type LoadedAuth = InlineLoadedAuth | FileLoadedAuth
 
 
 class SessionSeedLoader:

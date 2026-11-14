@@ -20,7 +20,7 @@ import os
 import tempfile
 import time
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 

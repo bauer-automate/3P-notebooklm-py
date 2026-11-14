@@ -8,7 +8,6 @@ Generation changes invalidate all retained snapshots before another use.
 from __future__ import annotations
 
 from dataclasses import astuple, dataclass
-from typing import Generic, TypeVar
 from weakref import WeakKeyDictionary
 
 from .._types.artifact_download import ArtifactDownloadRequest, ArtifactDownloadSelection
@@ -16,21 +15,19 @@ from .._types.artifacts import Artifact
 from ..downloads import resolve_download_format
 from ..exceptions import ValidationError
 
-_Snapshot = TypeVar("_Snapshot")
-
 
 @dataclass(frozen=True)
-class _PreparedState(Generic[_Snapshot]):
+class _PreparedState[Snapshot]:
     fields: tuple[object, ...]
-    snapshot: _Snapshot
+    snapshot: Snapshot
 
 
-class PreparedDownloadCache(Generic[_Snapshot]):
+class PreparedDownloadCache[Snapshot]:
     """Opaque ownership checks independent of Web/Android snapshot shapes."""
 
     def __init__(self) -> None:
         self._epoch: int | None = None
-        self._entries: WeakKeyDictionary[ArtifactDownloadSelection, _PreparedState[_Snapshot]] = (
+        self._entries: WeakKeyDictionary[ArtifactDownloadSelection, _PreparedState[Snapshot]] = (
             WeakKeyDictionary()
         )
 
@@ -50,7 +47,7 @@ class PreparedDownloadCache(Generic[_Snapshot]):
         self,
         request: ArtifactDownloadRequest,
         artifact: Artifact,
-        snapshot: _Snapshot,
+        snapshot: Snapshot,
         *,
         epoch: int,
     ) -> ArtifactDownloadSelection:
@@ -76,7 +73,7 @@ class PreparedDownloadCache(Generic[_Snapshot]):
         self._entries[selection] = _PreparedState(fields=astuple(selection), snapshot=snapshot)
         return selection
 
-    def require(self, selection: ArtifactDownloadSelection, *, epoch: int) -> _Snapshot:
+    def require(self, selection: ArtifactDownloadSelection, *, epoch: int) -> Snapshot:
         self._bind_epoch(epoch)
         if not isinstance(selection, ArtifactDownloadSelection):
             raise ValidationError("Expected a prepared artifact download selection")

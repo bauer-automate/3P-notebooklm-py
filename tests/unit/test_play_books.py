@@ -8,7 +8,7 @@ the public dataclasses/enums.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 

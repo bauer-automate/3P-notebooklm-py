@@ -8,7 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from functools import wraps
 from typing import Any, ParamSpec, TextIO, TypeVar

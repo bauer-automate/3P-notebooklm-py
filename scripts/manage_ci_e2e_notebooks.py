@@ -21,7 +21,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
@@ -328,7 +328,7 @@ def load_prepared_contract(path: Path) -> dict[str, Any]:
     return contract
 
 
-async def retry_idempotent(
+async def retry_idempotent[T](
     operation: Callable[[], Awaitable[T]],
     *,
     policy: RetryPolicy,

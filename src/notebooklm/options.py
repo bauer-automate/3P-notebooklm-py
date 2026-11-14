@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from ._types.common import ConnectionLimits, CookieRotator, CookieSaver, RpcTelemetryEvent
 
@@ -42,8 +42,8 @@ class AutoReadWindow(Enum):
 
 
 AUTO = AutoReadWindow.AUTO
-ReadWindow: TypeAlias = float | None | AutoReadWindow
-RpcEventCallback: TypeAlias = Callable[[RpcTelemetryEvent], object]
+type ReadWindow = float | None | AutoReadWindow
+type RpcEventCallback = Callable[[RpcTelemetryEvent], object]
 
 
 class UseDefault(Enum):

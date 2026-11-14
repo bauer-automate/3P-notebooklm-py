@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 

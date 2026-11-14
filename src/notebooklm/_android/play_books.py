@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Collection, Sequence
-from datetime import UTC, timezone
+from datetime import UTC
 from typing import Any, cast
 
 from .._types.sources import _PLAY_BOOK_EXPORT_REASON_MAP

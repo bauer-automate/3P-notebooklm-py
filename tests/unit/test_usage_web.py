@@ -1,6 +1,6 @@
 """Focused Web transport tests for the live usage-meter RPCs."""
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 

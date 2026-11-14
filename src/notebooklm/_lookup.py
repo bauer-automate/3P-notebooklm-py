@@ -24,7 +24,7 @@ from typing import TypeVar
 T = TypeVar("T")
 
 
-def unwrap_or_raise(obj: T | None, exc: Exception) -> T:
+def unwrap_or_raise[T](obj: T | None, exc: Exception) -> T:
     """Return ``obj`` unchanged, or raise ``exc`` when ``obj`` is ``None``.
 
     The narrow contract is deliberate: callers pass the result of an

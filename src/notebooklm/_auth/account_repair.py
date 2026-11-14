@@ -7,7 +7,6 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TypeAlias
 
 import httpx
 
@@ -18,14 +17,12 @@ from .profile_store import ProfileStore
 
 logger = logging.getLogger("notebooklm.auth")
 
-PokeSession: TypeAlias = Callable[[httpx.AsyncClient, Path | None], Awaitable[None]]
-LoadCookieJar: TypeAlias = Callable[[Path], httpx.Cookies]
-AccountEnumerator: TypeAlias = Callable[[httpx.Cookies, PokeSession], Awaitable[list[Account]]]
-AccountSelector: TypeAlias = Callable[
-    [list[Account], str | None], tuple[Account | None, str | None]
-]
-ActiveEmailExtractor: TypeAlias = Callable[[str], str | None]
-WriterFactory: TypeAlias = Callable[[Path], AccountMetadataWriter]
+type PokeSession = Callable[[httpx.AsyncClient, Path | None], Awaitable[None]]
+type LoadCookieJar = Callable[[Path], httpx.Cookies]
+type AccountEnumerator = Callable[[httpx.Cookies, PokeSession], Awaitable[list[Account]]]
+type AccountSelector = Callable[[list[Account], str | None], tuple[Account | None, str | None]]
+type ActiveEmailExtractor = Callable[[str], str | None]
+type WriterFactory = Callable[[Path], AccountMetadataWriter]
 
 
 class AccountRepairService:

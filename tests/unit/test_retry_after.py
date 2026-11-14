@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from notebooklm._deadline import RuntimeDeadline
 from notebooklm._web.transport.errors import MAX_RETRY_AFTER_SECONDS, parse_retry_after

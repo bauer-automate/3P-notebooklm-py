@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
 
 from .._types.enums import (
     AudioFormat,
@@ -113,7 +112,7 @@ class InteractiveMindMapCreationRequest(_CreationRequest):
     instructions: str | None
 
 
-ArtifactCreationRequest: TypeAlias = (
+type ArtifactCreationRequest = (
     AudioCreationRequest
     | VideoCreationRequest
     | CinematicVideoCreationRequest

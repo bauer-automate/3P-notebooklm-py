@@ -19,7 +19,7 @@ generic error classification is covered by ``app/test_app_errors.py``).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

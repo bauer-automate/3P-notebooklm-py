@@ -1540,7 +1540,7 @@ class TestAddFile:
         sparse return value, the source loses its real type code, URL, and
         timestamp. Only the title should be taken from the rename response.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         test_file = tmp_path / "podcast.mp3"
         test_file.write_bytes(b"fake audio")

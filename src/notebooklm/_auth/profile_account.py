@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import TypeAlias
 
 from .cookie_types import CookieJar
 
@@ -33,7 +32,7 @@ class SetAccount:
     record: ProfileAccount
 
 
-AccountDirective: TypeAlias = KeepAccount | ClearAccount | SetAccount
+type AccountDirective = KeepAccount | ClearAccount | SetAccount
 
 
 class AccountView(Enum):

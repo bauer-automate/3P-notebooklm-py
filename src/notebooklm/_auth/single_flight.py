@@ -54,7 +54,7 @@ import logging
 import threading
 from collections.abc import Callable, Coroutine, Hashable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 logger = logging.getLogger("notebooklm.auth")
 
@@ -68,7 +68,7 @@ FlightKey = tuple[str, Hashable]
 
 
 @dataclass
-class Flight(Generic[T]):
+class Flight[T]:
     """One in-flight operation shared across event loops.
 
     ``bridge`` is a :class:`concurrent.futures.Future` mirroring the leader
@@ -264,13 +264,13 @@ def note_success(path_key: str) -> None:
     return SingleFlight.process_default().note_success(path_key)
 
 
-def claim(
+def claim[T](
     flight_key: FlightKey, factory: Callable[[], Coroutine[Any, Any, T]]
 ) -> tuple[bool, Flight[T]]:
     return SingleFlight.process_default().claim(flight_key, factory)
 
 
-def claim_if_epoch_current(
+def claim_if_epoch_current[T](
     flight_key: FlightKey,
     factory: Callable[[], Coroutine[Any, Any, T]],
     *,
@@ -285,7 +285,7 @@ def claim_if_epoch_current(
     )
 
 
-async def await_flight(flight: Flight[T]) -> T:
+async def await_flight[T](flight: Flight[T]) -> T:
     return await SingleFlight.process_default().await_flight(flight)
 
 

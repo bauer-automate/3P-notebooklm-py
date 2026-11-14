@@ -710,7 +710,7 @@ async def test_history_uses_response_document_when_legacy_answer_text_is_empty()
 @pytest.mark.asyncio
 async def test_history_turns_exposes_native_status_timestamp_and_empty_reason() -> None:
     """Retain native status, precise timestamps, and diagnostic absence through the public API."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from google.protobuf.timestamp_pb2 import Timestamp
 

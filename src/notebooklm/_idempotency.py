@@ -31,7 +31,6 @@ from .outcomes import (
 )
 
 T = TypeVar("T")
-_E = TypeVar("_E", bound=BaseException)
 
 
 @dataclass(frozen=True)
@@ -361,7 +360,7 @@ class OperationJournal:
             raise ValueError("journal entry is not bound to this journal")
 
 
-def attach_operation_metadata(exc: _E, metadata: OperationMetadata) -> _E:
+def attach_operation_metadata[E: BaseException](exc: E, metadata: OperationMetadata) -> E:
     """Attach one immutable canonical carrier to a public exception."""
 
     exc._operation_metadata = metadata  # type: ignore[attr-defined]
@@ -482,13 +481,13 @@ def detached_operation_journal_context() -> Iterator[None]:
         _JOURNAL_COLLECTORS.reset(collector_token)
 
 
-def attach_journal_entry(
-    exc: _E,
+def attach_journal_entry[E: BaseException](
+    exc: E,
     entry: JournalEntry,
     *,
     recovery_action: RecoveryAction | None = None,
     workflow: bool = False,
-) -> _E:
+) -> E:
     """Attach the authoritative snapshot of a bound semantic send."""
 
     existing = getattr(exc, "operation_metadata", None)
@@ -509,14 +508,14 @@ def attach_journal_entry(
     return attach_operation_metadata(exc, metadata)
 
 
-def attach_operation_journal(
-    exc: _E,
+def attach_operation_journal[E: BaseException](
+    exc: E,
     journal: OperationJournal,
     *,
     primary: JournalEntry | None = None,
     recovery_action: RecoveryAction | None = None,
     extra_entries: tuple[JournalEntry, ...] = (),
-) -> _E:
+) -> E:
     """Attach an immutable workflow-wide aggregate while preserving every send."""
 
     existing = getattr(exc, "operation_metadata", None) or getattr(exc, "_operation_metadata", None)
@@ -714,10 +713,10 @@ def claim_generation_entry(*, method: str, semantic_key: str) -> JournalEntry:
     return entry
 
 
-def settle_generation_failure(
+def settle_generation_failure[E: BaseException](
     binding: GenerationRetryBinding,
-    exc: _E,
-) -> _E:
+    exc: E,
+) -> E:
     """Attach helper-owned evidence and prevent retries after any uncertain send."""
 
     if not binding.entries and not binding.linked_entries:
@@ -790,15 +789,15 @@ _RETRYABLE_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 AMBIGUOUS_WRITE_ERRORS = _RETRYABLE_TRANSPORT_ERRORS
 
 
-def mark_commit_state(
-    exc: _E,
+def mark_commit_state[E: BaseException](
+    exc: E,
     state: CommitState,
     *,
     operation: str | None = None,
     source_id: str | None = None,
     stage: str | None = None,
     recovery_action: RecoveryAction = RecoveryAction.NONE,
-) -> _E:
+) -> E:
     """Attach positive commit evidence without overwriting earlier evidence."""
     metadata = getattr(exc, "operation_metadata", None)
     current = None if metadata is None else metadata.commit_state
@@ -816,15 +815,15 @@ def mark_commit_state(
     )
 
 
-def mark_unconfirmed(
-    exc: _E,
+def mark_unconfirmed[E: BaseException](
+    exc: E,
     *,
     force_unknown: bool = False,
     operation: str | None = None,
     source_id: str | None = None,
     stage: str | None = None,
     recovery_action: RecoveryAction = RecoveryAction.INSPECT_AND_RECONCILE,
-) -> _E:
+) -> E:
     """Tag an error as *"the write may have committed and we cannot confirm it"*.
 
     Raised by a probe that could not answer (#2220). This is a genuinely
@@ -904,14 +903,14 @@ def mark_unconfirmed(
     )
 
 
-def attach_reconciliation_report(
-    exc: _E,
+def attach_reconciliation_report[E: BaseException](
+    exc: E,
     report: ReconciliationReport,
     *,
     operation: str | None = None,
     commit_state: CommitState = CommitState.UNKNOWN,
     recovery_action: RecoveryAction = RecoveryAction.INSPECT_AND_RECONCILE,
-) -> _E:
+) -> E:
     """Attach typed candidate evidence without promoting it to a known ID."""
 
     metadata = (
@@ -931,12 +930,12 @@ def attach_reconciliation_report(
     )
 
 
-def attach_batch_outcome(
-    exc: _E,
+def attach_batch_outcome[E: BaseException](
+    exc: E,
     outcome: BatchOutcome,
     *,
     preserve_commit_state: bool = False,
-) -> _E:
+) -> E:
     """Retain ordered batch settlement on the original escaping exception."""
 
     metadata = (
@@ -974,7 +973,7 @@ def attach_batch_outcome(
     )
 
 
-def attach_prerequisite_ids(exc: _E, *resource_ids: str) -> _E:
+def attach_prerequisite_ids[E: BaseException](exc: E, *resource_ids: str) -> E:
     """Retain prerequisite recovery handles on a public error carrier."""
 
     metadata = (
@@ -1013,15 +1012,15 @@ def _method_id(method: _Method) -> str:
     return str(value) if isinstance(value, str) else str(method)
 
 
-def unresolved_commit_error(
+def unresolved_commit_error[E: BaseException](
     method: _Method,
     what: str,
-    exc: _E,
+    exc: E,
     *,
     preserve_exception: bool = False,
     force_unknown: bool = False,
     operation: str | None = None,
-) -> _E | RPCError:
+) -> E | RPCError:
     """Build or tag an error for a write whose commit outcome is unknown.
 
     ``preserve_exception=True`` explicitly preserves an already-rendered
@@ -1089,7 +1088,7 @@ def _attach_transport_loss_entry(exc: BaseException, entry: JournalEntry) -> Non
     )
 
 
-async def call_unconfirmed_on_transport_loss(
+async def call_unconfirmed_on_transport_loss[T](
     call: Callable[[], Awaitable[T]],
     *,
     method: _Method,

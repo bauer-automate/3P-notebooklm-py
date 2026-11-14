@@ -5,7 +5,7 @@ import os
 import pickle
 import time
 import warnings
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest

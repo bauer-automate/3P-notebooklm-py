@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Sequence
-from datetime import UTC, timezone
+from datetime import UTC
 from typing import Any, cast
 
 from ...exceptions import DecodingError

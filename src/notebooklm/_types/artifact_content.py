@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TypeAlias
+from typing import Any
 
 
 class ArtifactMediaType(str, Enum):
@@ -84,7 +84,7 @@ class UnknownArtifactUserState:
     raw: Any
 
 
-ArtifactUserState: TypeAlias = (
+type ArtifactUserState = (
     AudioArtifactUserState | FlashcardArtifactUserState | UnknownArtifactUserState
 )
 

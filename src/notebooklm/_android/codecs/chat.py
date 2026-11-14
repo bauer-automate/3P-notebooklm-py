@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, timezone
+from datetime import UTC
 from typing import Any
 
 from ..._types.documents import DocumentAnnotation, StructuredDocument, utf16_len

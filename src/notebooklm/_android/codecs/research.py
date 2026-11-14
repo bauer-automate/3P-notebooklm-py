@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, timezone
+from datetime import UTC
 from typing import Any
 
 from ..._types.enums import DiscoveryMode
