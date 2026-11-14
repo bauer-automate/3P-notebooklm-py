@@ -285,7 +285,6 @@ jobs:
         # resolve across every supported Python version on Linux and on the
         # representative Python 3.12 macOS/Windows cells (nightly proves the
         # full 3-OS by 5-Python product).
-        # `cookies` is now included since rookie-cookies supports all Python versions.
         #
         # Tradeoff: the deleted MCP/server jobs each enforced a scoped 90% floor.
         # mcp/server (and the curl_cffi adapter) are now covered only by nightly's
@@ -294,7 +293,7 @@ jobs:
         # `[tool.notebooklm.per_file_coverage_floors]` if that backstop is
         # wanted back.
         attempt=1; max=3
-        until uv sync --frozen --extra browser --extra dev --extra markdown --extra mcp --extra server --extra impersonate --extra cookies; do
+        until uv sync --frozen --extra browser --extra dev --extra markdown --extra mcp --extra server --extra impersonate; do
           if [ "$attempt" -ge "$max" ]; then
             echo "::error::uv sync failed after $max attempts" >&2
             exit 1
@@ -311,17 +310,6 @@ jobs:
       # This makes a broken native import a hard error in every compatibility cell.
       shell: bash
       run: uv run python -c "import curl_cffi"
-
-    - name: Assert rookie-cookies imports (native wheel; no mock-only pass)
-      # The cookie behavior tests replace this optional native module with
-      # fakes. Import the installed wheel and pin the two entry points used by
-      # production so a broken ABI wheel or incompatible package API fails on
-      # every supported OS/Python pair.
-      shell: bash
-      run: >-
-        uv run python -c "import rookie_cookies;
-        assert callable(rookie_cookies.load);
-        assert callable(rookie_cookies.any_browser)"
 
     - name: Get Playwright version
       if: matrix.canonical
@@ -539,7 +527,7 @@ jobs:
     - name: Install dependencies
       run: >-
         uv sync --frozen --extra browser --extra dev --extra markdown
-        --extra mcp --extra server --extra impersonate --extra cookies
+        --extra mcp --extra server --extra impersonate
 
     - name: Run repository lint tests
       # Manual-only deep audits use the runner's available workers and a wider

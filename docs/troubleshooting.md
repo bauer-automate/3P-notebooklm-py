@@ -181,6 +181,8 @@ Workarounds, most reliable first:
 
 #### Windows: App-Bound `v20` recovery fails, or the module goes missing
 
+> **This fork removed the `cookies` extra (issue #14).** Microsoft Defender flags `rookie_cookies.pyd` as `InfoStealer`. This is a false positive, but it kept blocking installs, so `pip install "notebooklm-py[cookies]"` no longer exists here. Use the Playwright login (`notebooklm login`) instead. `notebooklm login --browser-cookies` now reports that rookie-cookies is not installed. The text below only applies if you installed `rookie-cookies` yourself.
+
 `rookie-cookies` recovers Chrome/Edge App-Bound (`v20`) cookies by spawning a browser process and reflectively injecting into it to call `IElevator.DecryptData`. That is the same shape infostealer malware uses, so some antivirus engines quarantine the native module on heuristics alone. Windows Defender has been seen flagging `rookie_cookies.pyd` as `Trojan:Win64/InfoStealer!AMTB`, which silently removes the module and makes `v20` extraction look broken rather than blocked. Symptoms: `Could not decrypt chrome cookies`, `ModuleNotFoundError`/`ImportError` for `rookie_cookies`, or `--browser-cookies` reporting that rookie-cookies is not installed even though you installed it.
 
 Check for a detection (PowerShell):

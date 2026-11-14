@@ -27,10 +27,9 @@ if TYPE_CHECKING:
 # same install hint regardless of which Chromium path raised it.
 _ROOKIE_COOKIES_NOT_INSTALLED_MESSAGE = (
     "[red]rookie-cookies is not installed.[/red]\n"
-    "Install it with:\n"
-    "  pip install 'notebooklm-py[cookies]'\n"
-    "or directly:\n"
-    "  pip install rookie-cookies"
+    "This fork removed the `cookies` extra (Microsoft Defender flags its native module as a\n"
+    "false-positive InfoStealer). Sign in with the Playwright browser login instead:\n"
+    "  notebooklm login"
 )
 
 

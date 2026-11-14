@@ -330,7 +330,7 @@ def read_chromium_profile_cookies(
     Raises:
         ImportError: When the optional ``rookie-cookies`` dependency isn't
             installed. The CLI fan-out caller converts this to a friendly
-            "pip install 'notebooklm-py[cookies]'" message.
+            "use `notebooklm login`" message.
         OSError, RuntimeError: Propagated from rookie-cookies on read or decrypt
             failure (locked DB, corrupt Keychain item, etc.). Caller decides
             whether to skip-and-warn or propagate.

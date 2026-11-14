@@ -43,10 +43,9 @@ Issues = "https://github.com/teng-lin/notebooklm-py/issues"
 [project.optional-dependencies]
 markdown = ["markdownify>=0.14.1,<2"]
 browser = ["playwright>=1.40.0,<2"]
-cookies = ["rookie-cookies>=0.1.0,<1"]
 # EXPERIMENTAL / PoC: optional curl_cffi transport for browser TLS-JA3
 # impersonation (NOTEBOOKLM_TRANSPORT=curl_cffi). Native wheels, so excluded from
-# `all` like `cookies`. Opt in via pip install "notebooklm-py[impersonate]".
+# `all`. Opt in via pip install "notebooklm-py[impersonate]".
 # >=0.15.0 supports discard_cookies and READFUNCTION streaming-upload callbacks.
 impersonate = ["curl_cffi>=0.15.0,<1"]
 # Headless master-token auth: mint web cookies from a durable Google master
@@ -96,7 +95,7 @@ dev = [
     "protobuf==7.36.2",
     "gpsoauth>=1.1.0",
 ]
-# `all` deliberately omits the `android`, `cookies`, and `impersonate` extra
+# `all` deliberately omits the `android` and `impersonate` extra
 # names. Because `all` includes `dev`, it still resolves the pinned protobuf
 # compiler/runtime solely so CI can reproduce checked-in stubs.
 all = ["notebooklm-py[browser,dev,headless,markdown,mcp,server]"]

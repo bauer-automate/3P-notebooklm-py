@@ -111,7 +111,7 @@ jobs:
       run: |
         workspace="$RUNNER_TEMP/auth-patch-base"
         cd "$workspace"
-        uv sync --frozen --extra browser --extra dev --extra markdown --extra impersonate --extra cookies --extra mcp --extra server
+        uv sync --frozen --extra browser --extra dev --extra markdown --extra impersonate --extra mcp --extra server
         auth_tests=$(
           {
             find tests/unit -maxdepth 1 -type f \( \
@@ -139,7 +139,7 @@ jobs:
       run: |
         workspace="$RUNNER_TEMP/auth-patch-head"
         cd "$workspace"
-        uv sync --frozen --extra browser --extra dev --extra markdown --extra impersonate --extra cookies --extra mcp --extra server
+        uv sync --frozen --extra browser --extra dev --extra markdown --extra impersonate --extra mcp --extra server
         auth_tests=$(
           {
             find tests/unit -maxdepth 1 -type f \( \

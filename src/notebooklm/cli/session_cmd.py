@@ -191,7 +191,7 @@ def register_session_commands(cli):
             "(e.g. 'chrome::Profile 1' or 'brave::Work'). "
             "For Firefox Multi-Account Containers, target a specific container with "
             "'firefox::<container-name>' (or 'firefox::none' for the default). "
-            "Requires: pip install 'notebooklm-py[cookies]'"
+            "Unavailable in this fork (the cookies extra was removed); use 'notebooklm login'."
         ),
     )
     @click.option(
@@ -609,7 +609,7 @@ def register_session_commands(cli):
             "safari, arc, ...). 'auto' picks the first one rookie-cookies can read. "
             "Use 'chrome::<profile>' for one Chromium profile or "
             "'firefox::<container>' for one Firefox container. "
-            "Requires: pip install 'notebooklm-py[cookies]'"
+            "Unavailable in this fork (the cookies extra was removed); use 'notebooklm login'."
         ),
     )
     @click.option(

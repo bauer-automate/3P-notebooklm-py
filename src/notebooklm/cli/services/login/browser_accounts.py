@@ -312,10 +312,9 @@ def _read_browser_cookies(
             code="ROOKIEPY_NOT_INSTALLED",
             message=(
                 "[red]rookie-cookies is not installed.[/red]\n"
-                "Install it with:\n"
-                "  pip install 'notebooklm-py[cookies]'\n"
-                "or directly:\n"
-                "  pip install rookie-cookies"
+                "This fork removed the `cookies` extra (Microsoft Defender flags its native module as a\n"
+                "false-positive InfoStealer). Sign in with the Playwright browser login instead:\n"
+                "  notebooklm login"
             ),
         )
 
@@ -344,7 +343,7 @@ def _read_browser_cookies(
             code="UNSUPPORTED_BROWSER",
             message=(
                 f"[red]rookie-cookies does not support '{canonical}' on this platform.[/red]\n"
-                "Check that rookie-cookies is properly installed: pip install rookie-cookies"
+                "Use the Playwright browser login instead: notebooklm login"
             ),
             name=canonical,
         )

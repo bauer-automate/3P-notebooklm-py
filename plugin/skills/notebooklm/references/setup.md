@@ -10,14 +10,6 @@ environment variables, or the full agent auth-verification walkthrough.
 ```bash
 pip install "notebooklm-py[browser]"   # mandatory; errors must propagate
 
-# [cookies] (rookiepy) is optional and known to FAIL TO BUILD on Python 3.13+.
-# Skip it deliberately on 3.13+ rather than swallowing the error — that lets
-# *real* install failures (typos, network, PyPI outages) surface for the agent.
-if python -c "import sys; sys.exit(0 if sys.version_info < (3, 13) else 1)"; then
-    pip install "notebooklm-py[cookies]"   # errors propagate
-else
-    echo "Skipping [cookies] on Python 3.13+ (rookiepy unavailable). Use 'notebooklm login' interactively."
-fi
 ```
 
 > Full install matrix (extras, headless servers, contributor flow): [Installation guide on GitHub](https://github.com/teng-lin/notebooklm-py/blob/main/docs/installation.md).
@@ -126,7 +118,7 @@ Before starting workflows, verify auth is in place. **Use `--test --json` (not b
 1. `notebooklm auth check --test --json` → require BOTH `"status": "ok"` AND `"checks.token_fetch": true`. Bare `"status": "ok"` (without `--test`) is a false-positive trap — a stale cookie file passes the parse check.
 2. `notebooklm list --json` → expect valid JSON (may be empty for new accounts).
 3. **If auth fails or is missing → run `notebooklm login` first.** This is the primary auth path: opens a browser, the user signs in to Google once, and the resulting `storage_state.json` is reused on every subsequent run. Works on any environment with a display.
-   - For headless contexts where opening a browser is not feasible, use `notebooklm login --browser-cookies <browser>` instead — extracts the user's already-logged-in cookies from Chrome/Firefox/etc. (requires the `[cookies]` extra; rookiepy may not install on Python 3.13+). Use `chrome::<profile-name-or-directory>` to target one Chromium user-profile, or `firefox::<container-name>` / `firefox::none` to target one Firefox container.
+   - For headless contexts where opening a browser is not feasible, run `notebooklm login` on a workstation and copy `storage_state.json` to the agent environment. The `cookies` extra was removed from this fork.
    - To survey signed-in Google accounts before picking one: `notebooklm auth inspect --browser <browser>` (read-only; pass `-v` to see which Chromium user-profile each account came from, or `--json` for tooling). Scoped forms such as `notebooklm auth inspect --browser 'chrome::Profile 1'` inspect only that browser profile.
    - Re-run step 1 after login to confirm.
    - If step 1 immediately reports `Missing required cookies: __Secure-1PSIDTS` right after a
