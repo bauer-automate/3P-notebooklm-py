@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, TypeAlias
 
 
 class ArtifactMediaType(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
@@ -84,7 +84,8 @@ class UnknownArtifactUserState:
     raw: Any
 
 
-type ArtifactUserState = (
+# Public alias: PEP 695 `type` would change its runtime kind (API break).
+ArtifactUserState: TypeAlias = (  # noqa: UP040
     AudioArtifactUserState | FlashcardArtifactUserState | UnknownArtifactUserState
 )
 

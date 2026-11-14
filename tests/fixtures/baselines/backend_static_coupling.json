@@ -11942,7 +11942,7 @@
       "modules": 42
     },
     "root": {
-      "lines": 28563,
+      "lines": 28564,
       "modules": 94
     },
     "rpc": {
@@ -11958,7 +11958,7 @@
       "modules": 21
     },
     "types": {
-      "lines": 5834,
+      "lines": 5835,
       "modules": 18
     },
     "web": {
@@ -11967,7 +11967,7 @@
     }
   },
   "summary": {
-    "authored_lines": 156918,
+    "authored_lines": 156920,
     "authored_modules": 498,
     "class_local_edges": 0,
     "cross_subsystem_edges": 1313,

@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from ._types.common import ConnectionLimits, CookieRotator, CookieSaver, RpcTelemetryEvent
 
@@ -42,8 +42,9 @@ class AutoReadWindow(Enum):
 
 
 AUTO = AutoReadWindow.AUTO
-type ReadWindow = float | None | AutoReadWindow
-type RpcEventCallback = Callable[[RpcTelemetryEvent], object]
+# Public aliases: PEP 695 `type` would change their runtime kind (API break).
+ReadWindow: TypeAlias = float | None | AutoReadWindow  # noqa: UP040
+RpcEventCallback: TypeAlias = Callable[[RpcTelemetryEvent], object]  # noqa: UP040
 
 
 class UseDefault(Enum):
