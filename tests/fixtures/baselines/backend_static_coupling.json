@@ -53,7 +53,7 @@
     {
       "callee": "importlib.import_module",
       "expression": "'notebooklm.cli._chromium_profiles'",
-      "lineno": 51,
+      "lineno": 50,
       "scope": "_chromium_profiles_module",
       "scope_kind": "function",
       "source": "notebooklm.cli.services.login.chromium_accounts",
@@ -11934,7 +11934,7 @@
       "modules": 33
     },
     "cli": {
-      "lines": 23283,
+      "lines": 23281,
       "modules": 76
     },
     "mcp": {
@@ -11967,7 +11967,7 @@
     }
   },
   "summary": {
-    "authored_lines": 156920,
+    "authored_lines": 156946,
     "authored_modules": 498,
     "class_local_edges": 0,
     "cross_subsystem_edges": 1313,

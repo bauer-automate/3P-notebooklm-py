@@ -46,3 +46,7 @@ paths-ignore:
   # mark the file as path-ignored so any future CodeQL rule that
   # similarly mis-models the local sanitiser won't gate the PR.
   - 'scripts/check_rpc_health.py'
+  # tests/ is excluded from CodeQL (issue #11). The loopback test servers
+  # there echo request headers and trip "HTTP response splitting" alerts
+  # that are false positives. Product code stays scanned.
+  - 'tests'

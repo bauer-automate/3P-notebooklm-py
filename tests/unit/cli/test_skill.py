@@ -694,6 +694,33 @@ class TestSkillStatus:
         assert claude["installed"] is False
         assert claude["files"] == 0
 
+    def test_skill_install_then_status_real_packaged_tree(self, runner, tmp_path):
+        """Install the real packaged skill tree, then check ``status --json``."""
+        home = tmp_path / "home"
+        packaged = skill_module.get_skill_source_tree()
+        assert packaged is not None and len(packaged) > 1  # directory-style skill
+
+        with patch.object(skill_module.Path, "home", return_value=home):
+            installed = runner.invoke(cli, ["skill", "install", "--target", "agents"])
+            assert installed.exit_code == 0, installed.output
+
+            def agents_status():
+                result = runner.invoke(cli, ["skill", "status", "--target", "agents", "--json"])
+                assert result.exit_code == 0, result.output
+                return json.loads(result.output)["targets"][0]
+
+            clean = agents_status()
+            assert clean["installed"] is True
+            assert clean["skill_version"]
+            assert clean["content_mismatch"] is False
+            assert clean["files"] == len(packaged)
+
+            skill_md = home / ".agents" / "skills" / "notebooklm" / "SKILL.md"
+            skill_md.write_text(
+                skill_md.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8"
+            )
+            assert agents_status()["content_mismatch"] is True
+
     def test_skill_status_reports_same_version_content_drift(self, runner, tmp_path):
         """Same-version edits are distinct from package-version mismatches."""
         home = tmp_path / "home"

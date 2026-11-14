@@ -308,15 +308,15 @@ behavior while moving managed clients toward one live authority:
 not a live transport jar. Iteration yields rows, `len()` counts rows, and
 duplicate names on different domain/path routes remain distinct.
 
-**Building a storage state from existing browser cookies (`[cookies]` extra):**
+**Building a storage state from existing browser cookies (rookie-cookies):**
 
-Install with the optional `cookies` extra to pull cookies from a locally
-installed browser via [rookie-cookies](https://pypi.org/project/rookie-cookies/)
-— useful for headless environments where you cannot run Playwright (full extras
-matrix: [docs/installation.md#optional-extras-matrix](installation.md#optional-extras-matrix)):
+The `cookies` extra was removed from this fork (see
+[troubleshooting](troubleshooting.md)). If you install
+[rookie-cookies](https://pypi.org/project/rookie-cookies/) yourself, you can still
+convert its output:
 
 ```bash
-pip install "notebooklm-py[cookies]"
+pip install rookie-cookies
 ```
 
 ```python

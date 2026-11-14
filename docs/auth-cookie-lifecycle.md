@@ -22,7 +22,7 @@ ownership respectively.
 | Use case | Recommended method |
 |---|---|
 | Interactive desktop use | `notebooklm login` |
-| Reuse an already signed-in local browser | `notebooklm login --browser-cookies <browser>` (requires the `cookies` extra) |
+| Reuse an already signed-in local browser | `notebooklm login --browser-cookies <browser>` (unavailable in this fork: the `cookies` extra was removed) |
 | Short-lived CI job | provide a private `NOTEBOOKLM_AUTH_JSON` secret |
 | Long-lived Web worker, server, or unattended job | bootstrap a master-token profile, then use its file-backed storage |
 | Android backend | install the `android` extra and use a profile containing `master_token.json` |
@@ -137,8 +137,9 @@ warning, not a scheduled deprecation, and `NOTEBOOKLM_QUIET_DEPRECATIONS` does n
 
 ## Browser-cookie imports
 
-`notebooklm login --browser-cookies <browser>` requires
-`pip install "notebooklm-py[cookies]"`. Browser support and access vary by
+`notebooklm login --browser-cookies <browser>` needs `rookie-cookies`, which this
+fork no longer offers as an extra (see [troubleshooting](troubleshooting.md)); use
+`notebooklm login`. Where it is installed, browser support and access vary by
 platform and browser encryption settings; if extraction is incomplete, use
 interactive login or another supported browser instead of hand-editing a small
 cookie subset. For multi-account browsers, inspect accounts first and select

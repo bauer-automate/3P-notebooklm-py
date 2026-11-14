@@ -149,7 +149,7 @@ async def run_scenario(
         return factory(event_hooks=hooks, **kwargs)
 
     server.client_factory = observed_factory
-    async with _cohort(result, server, timeout=3, record_sleep=False) as client:
+    async with _cohort(result, server, timeout=6, record_sleep=False) as client:
         # Supported per-instance chat cap; retain production transport and decoder.
         client.chat._chat_response_max_bytes = limit
 

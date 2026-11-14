@@ -167,8 +167,7 @@ def test_contributor_context_files_contain_canonical_uv_sync(path: Path) -> None
 def test_skill_md_contains_agent_install_pattern() -> None:
     """SKILL.md is the AGENT-facing entry point (Persona A), NOT contributor.
     It must contain the agent install pattern (`pip install "notebooklm-py[browser]"`),
-    a separate line for the optional `[cookies]` install, and a link to
-    docs/installation.md.
+    and a link to docs/installation.md.
 
     The strict `[browser]"` regex (no extras inside the brackets) forbids a
     regression to the single-step `[browser,cookies]` form, which makes the
@@ -178,10 +177,6 @@ def test_skill_md_contains_agent_install_pattern() -> None:
     assert SKILL_BROWSER_LINE_RE.search(text), (
         'SKILL.md must contain `pip install "notebooklm-py[browser]"` '
         "(exact `[browser]` extra, no others bracketed in)."
-    )
-    assert 'pip install "notebooklm-py[cookies]"' in text, (
-        'SKILL.md must contain a separate `pip install "notebooklm-py[cookies]"` line '
-        "(optional browser-cookie extractor install)."
     )
     assert INSTALLATION_LINK_RE.search(text), "SKILL.md must link to docs/installation.md."
 
@@ -422,8 +417,8 @@ def test_troubleshooting_md_keeps_bare_platform_headings() -> None:
 
 
 def test_no_uv_sync_all_extras_in_canonical_install_paths() -> None:
-    """`uv sync --all-extras` includes the optional `cookies` extractor.
-    The `[all]` extra deliberately excludes `cookies`. Only the warning callout
+    """`uv sync --all-extras` includes optional extras such as `android` and `impersonate`.
+    The `[all]` extra deliberately excludes them. Only the warning callout
     in installation.md is allowed to mention `--all-extras` as a flag.
 
     Match the actual CLI flag (`--all-extras` with leading dashes) so we don't
