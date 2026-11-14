@@ -3,7 +3,7 @@
 from enum import Enum
 
 
-class RPCMethod(str, Enum):
+class RPCMethod(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """RPC method IDs for NotebookLM operations.
 
     These are obfuscated method identifiers used by the batchexecute API.

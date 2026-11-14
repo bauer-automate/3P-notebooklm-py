@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Literal, NotRequired, cast
+from typing import Literal, NotRequired, TypeAlias, cast
 
 from typing_extensions import TypedDict
 
@@ -28,7 +28,7 @@ from ..types import (
     VideoStyle,
 )
 
-type GenerationKind = Literal[
+GenerationKind: TypeAlias = Literal[  # noqa: UP040 - kept TypeAlias: a guardrail/test introspects this alias via get_args or source pattern
     "audio",
     "video",
     "cinematic-video",
@@ -551,7 +551,7 @@ class ReportGenerationRequest(_DeferredGenerationRequest):
     extra_instructions: OptionalText = UNSET
 
 
-type GenerationRequest = (
+GenerationRequest: TypeAlias = (  # noqa: UP040 - kept TypeAlias: a guardrail/test introspects this alias via get_args or source pattern
     AudioGenerationRequest
     | VideoGenerationRequest
     | CinematicVideoGenerationRequest

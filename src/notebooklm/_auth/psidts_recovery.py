@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 
@@ -660,6 +660,8 @@ def _attempt_rotation(storage_path: Path, cookie_entries: list[dict]) -> bool:
 # four-line control flow decays into when only one copy is ever read.
 # ----------------------------------------------------------------------------
 
+_LoadedT = TypeVar("_LoadedT")
+
 
 class HealPolicy(Enum):
     """Whether a load may fire the inline ``RotateCookies`` heal.
@@ -679,13 +681,13 @@ class HealPolicy(Enum):
     NAME_ONLY = "name_only"
 
 
-def load_with_recovery[LoadedT](
+def load_with_recovery(  # noqa: UP047 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
     path: Path | None,
     policy: HealPolicy,
     *,
-    load: Callable[..., LoadedT],
+    load: Callable[..., _LoadedT],
     heal: Callable[[Path | None], bool] | None = None,
-) -> LoadedT:
+) -> _LoadedT:
     """Run ``load`` under ``policy``, healing once if the routing preflight fails.
 
     ``load`` is one of the module-private PURE loaders

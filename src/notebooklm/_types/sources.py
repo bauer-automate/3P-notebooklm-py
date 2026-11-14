@@ -27,7 +27,7 @@ _suppress_source_from_row_warning: ContextVar[bool] = ContextVar(
 )
 
 
-class SourceType(str, Enum):
+class SourceType(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """User-facing source types.
 
     This is a str enum, so comparisons work with both enum members and strings:
@@ -60,7 +60,7 @@ class SourceType(str, Enum):
     UNKNOWN = "unknown"
 
 
-class PlayBookExportReason(str, Enum):
+class PlayBookExportReason(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Why a Google Play Books title cannot be added as a source.
 
     Decoded from the ``reason`` field of a ``ListExpertIntelligenceContent``

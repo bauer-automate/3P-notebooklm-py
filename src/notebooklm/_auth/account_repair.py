@@ -7,6 +7,7 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeAlias
 
 import httpx
 
@@ -17,12 +18,14 @@ from .profile_store import ProfileStore
 
 logger = logging.getLogger("notebooklm.auth")
 
-type PokeSession = Callable[[httpx.AsyncClient, Path | None], Awaitable[None]]
-type LoadCookieJar = Callable[[Path], httpx.Cookies]
-type AccountEnumerator = Callable[[httpx.Cookies, PokeSession], Awaitable[list[Account]]]
-type AccountSelector = Callable[[list[Account], str | None], tuple[Account | None, str | None]]
-type ActiveEmailExtractor = Callable[[str], str | None]
-type WriterFactory = Callable[[Path], AccountMetadataWriter]
+PokeSession: TypeAlias = Callable[[httpx.AsyncClient, Path | None], Awaitable[None]]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+LoadCookieJar: TypeAlias = Callable[[Path], httpx.Cookies]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+AccountEnumerator: TypeAlias = Callable[[httpx.Cookies, PokeSession], Awaitable[list[Account]]]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+AccountSelector: TypeAlias = Callable[  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+    [list[Account], str | None], tuple[Account | None, str | None]
+]
+ActiveEmailExtractor: TypeAlias = Callable[[str], str | None]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+WriterFactory: TypeAlias = Callable[[Path], AccountMetadataWriter]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class AccountRepairService:

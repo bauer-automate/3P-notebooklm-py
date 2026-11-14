@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Any
 
 
-class MindMapKind(str, Enum):
+class MindMapKind(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Which backend a mind map lives in (issue #1256)."""
 
     NOTE_BACKED = "note_backed"

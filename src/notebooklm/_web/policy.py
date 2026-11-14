@@ -15,7 +15,7 @@ from ..rpc.types import RPCMethod
 logger = logging.getLogger("notebooklm._idempotency")
 
 
-class IdempotencyPolicy(str, Enum):
+class IdempotencyPolicy(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Classification axis for mutating-RPC retry safety.
 
     Four policies — no more, no fewer. The axis was sized to cover all

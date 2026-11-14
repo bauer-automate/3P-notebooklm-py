@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypeAlias
+
 __all__ = ["CookiePersistence", "SaveCookiesToStorage"]
 
 import itertools
@@ -71,7 +73,7 @@ class FailedBaseline:
     pass
 
 
-type BaselineState = UninitializedBaseline | ReadyBaseline | FailedBaseline
+BaselineState: TypeAlias = UninitializedBaseline | ReadyBaseline | FailedBaseline  # noqa: UP040 - kept TypeAlias: a guardrail/test introspects this alias via get_args or source pattern
 
 
 @dataclass

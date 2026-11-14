@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, TypeAlias
 
 from filelock import FileLock, Timeout
 
@@ -67,7 +67,7 @@ class NoAccount:
     pass
 
 
-type ResolvedAccount = InBandAccount | LegacyAccount | NoAccount
+ResolvedAccount: TypeAlias = InBandAccount | LegacyAccount | NoAccount  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -104,7 +104,7 @@ class PromotionFailed:
     authoritative_after_failure: ProfileAccount | None = field(default=None, repr=False)
 
 
-type PromotionResult = Promoted | AlreadyInBand | NoLegacyRecord | PromotionFailed
+PromotionResult: TypeAlias = Promoted | AlreadyInBand | NoLegacyRecord | PromotionFailed  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class LegacyAccountContext:
@@ -321,7 +321,7 @@ class LegacyAccountMigrator:
         return self._contexts.scrub(store.path)
 
 
-type ThreadFactory = Callable[..., threading.Thread]
+ThreadFactory: TypeAlias = Callable[..., threading.Thread]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 
 class LegacyPromotionScheduler:

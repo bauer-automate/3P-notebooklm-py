@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 import httpx
 
@@ -115,7 +115,7 @@ class AndroidAssembly:
     backends: Mapping[str, BackendName]
 
 
-type BackendAssembly = WebAssembly | AndroidAssembly
+BackendAssembly: TypeAlias = WebAssembly | AndroidAssembly  # noqa: UP040 - kept TypeAlias: a guardrail/test introspects this alias via get_args or source pattern
 
 
 @dataclass(frozen=True)

@@ -12,7 +12,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 import httpx
 
@@ -36,15 +36,15 @@ _sanitize_cookie_entry = _cookie_types._sanitize_cookie_entry
 _sanitized_auth_entries = _cookie_types._sanitized_auth_entries
 
 
-type CookieKey = tuple[str, str, str]
-type DomainCookieMap = dict[CookieKey, str]
-type FlatCookieMap = dict[str, str]
+CookieKey: TypeAlias = tuple[str, str, str]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+DomainCookieMap: TypeAlias = dict[CookieKey, str]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+FlatCookieMap: TypeAlias = dict[str, str]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 # ``CookieInput`` also accepts the legacy ``(name, domain) -> value`` shape that
 # pre-#369 callers constructed by hand; :func:`normalize_cookie_map` widens
 # those entries to ``(name, domain, "/")`` so the rest of the pipeline sees a
 # uniform path-aware shape.
-type LegacyDomainCookieMap = dict[tuple[str, str], str]
-type CookieInput = DomainCookieMap | LegacyDomainCookieMap | FlatCookieMap
+LegacyDomainCookieMap: TypeAlias = dict[tuple[str, str], str]  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
+CookieInput: TypeAlias = DomainCookieMap | LegacyDomainCookieMap | FlatCookieMap  # noqa: UP040 - kept: _auth guardrails pin AST/line shape and introspect alias args at runtime
 
 MINIMUM_REQUIRED_COOKIES = _cookie_policy.MINIMUM_REQUIRED_COOKIES
 _EXTRACTION_HINT = _cookie_policy._EXTRACTION_HINT

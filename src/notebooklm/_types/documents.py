@@ -335,7 +335,7 @@ def _render_table(block: DocumentBlock, lower: int, upper: int) -> list[str]:
     return lines
 
 
-class BlockKind(str, Enum):
+class BlockKind(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Which variant of ``StructuralElement`` a :class:`DocumentBlock` came from.
 
     The wire's ``StructuralElement`` is a oneof: exactly one of ``paragraph``,

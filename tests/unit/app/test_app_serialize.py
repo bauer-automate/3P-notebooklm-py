@@ -12,7 +12,7 @@ from notebooklm._web.rows.notebooks import decode_notebook
 from notebooklm.types import Notebook, SharePermission
 
 
-class Color(str, Enum):
+class Color(str, Enum):  # noqa: UP042 - test fixture pins (str, Enum) behaviour
     """A str-mixin enum (member is also a ``str`` instance)."""
 
     RED = "red"

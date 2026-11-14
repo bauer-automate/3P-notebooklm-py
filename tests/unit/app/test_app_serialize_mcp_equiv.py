@@ -50,7 +50,7 @@ def _wire(value) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
-class _Color(str, Enum):
+class _Color(str, Enum):  # noqa: UP042 - test fixture pins (str, Enum) behaviour
     RED = "red"
 
 

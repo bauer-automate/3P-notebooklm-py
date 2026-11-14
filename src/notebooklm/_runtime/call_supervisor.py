@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 _OPERATION_TIMEOUT_UNSET = object()
 
 
-class AdmissionState(str, Enum):
+class AdmissionState(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Admission phase for one resource generation."""
 
     CLOSED = "closed"

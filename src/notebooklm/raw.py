@@ -61,7 +61,7 @@ _LIBRARY_OWNED_METADATA = frozenset(
 _DEFAULT_RAW_STREAM_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 
 
-class ReplayPolicy(str, Enum):
+class ReplayPolicy(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Whether a raw Android call may be replayed after a transient failure.
 
     ``NEVER`` is the safe default for an unknown method.  ``SAFE_READ`` must be

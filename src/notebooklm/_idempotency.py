@@ -743,7 +743,7 @@ def settle_generation_failure[E: BaseException](
     return exc
 
 
-class ReplayGrant(str, Enum):
+class ReplayGrant(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """Private semantic permission supplied by the operation owner."""
 
     REFUSAL_RETRY_AUTHORIZED = "refusal_retry_authorized"

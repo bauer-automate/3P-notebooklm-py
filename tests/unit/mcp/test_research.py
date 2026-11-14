@@ -38,7 +38,7 @@ NB_ID = "11111111-1111-1111-1111-111111111111"
 TASK_ID = "research-task-1"
 
 
-class FakeResearchStatus(str, Enum):
+class FakeResearchStatus(str, Enum):  # noqa: UP042 - test fixture pins (str, Enum) behaviour
     NO_RESEARCH = "no_research"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"

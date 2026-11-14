@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 
 
-class ArtifactMediaType(str, Enum):
+class ArtifactMediaType(str, Enum):  # noqa: UP042 - str()/format() would change from Class.MEMBER to value
     """How an audio/video artifact URL is intended to be consumed."""
 
     PROGRESSIVE = "progressive"
