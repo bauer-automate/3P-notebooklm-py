@@ -73,12 +73,9 @@ jobs:
     - name: Install compatibility dependencies
       run: >-
         uv sync --frozen --extra browser --extra dev --extra markdown
-        --extra mcp --extra server --extra impersonate --extra cookies
+        --extra mcp --extra server --extra impersonate
     - name: Assert native optional dependencies import
-      run: >-
-        uv run python -c "import curl_cffi, rookie_cookies;
-        assert callable(rookie_cookies.load);
-        assert callable(rookie_cookies.any_browser)"
+      run: uv run python -c "import curl_cffi"
     - name: Run compatibility tests without coverage
       run: >-
         uv run pytest -n auto --dist loadgroup
@@ -112,7 +109,7 @@ jobs:
     - name: Install dependencies
       run: >-
         uv sync --frozen --extra browser --extra dev --extra markdown
-        --extra mcp --extra server --extra impersonate --extra cookies
+        --extra mcp --extra server --extra impersonate
     - name: Install Playwright browsers
       run: uv run playwright install chromium
     - name: Install Playwright system dependencies (Linux)
@@ -152,7 +149,7 @@ jobs:
     - name: Install dependencies
       run: >-
         uv sync --frozen --extra browser --extra dev --extra markdown
-        --extra mcp --extra server --extra impersonate --extra cookies
+        --extra mcp --extra server --extra impersonate
     - name: Run repository lint tests
       run: >-
         uv run pytest -n auto --dist loadgroup

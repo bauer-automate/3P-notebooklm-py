@@ -7,7 +7,7 @@ browser profile are read-only inputs.
 
 Example::
 
-    uv run --extra browser --extra cookies --extra headless --extra mcp --extra server \
+    uv run --extra browser --extra headless --extra mcp --extra server \
       python scripts/live_auth_matrix.py \
       --profile source-profile \
       --browser 'chromium::Profile 3' \
@@ -21,7 +21,7 @@ Opt-in human-interaction cells (start a loopback CDP browser first)::
       --remote-debugging-port=9222 \
       --remote-debugging-address=127.0.0.1 \
       --user-data-dir=/tmp/notebooklm-live-cdp
-    DISPLAY=:10 uv run --extra browser --extra cookies --extra headless --extra mcp --extra server \
+    DISPLAY=:10 uv run --extra browser --extra headless --extra mcp --extra server \
       python scripts/live_auth_matrix.py \
       --profile source-profile \
       --browser 'chromium::Profile 3' \

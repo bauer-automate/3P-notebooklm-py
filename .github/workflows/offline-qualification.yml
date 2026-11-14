@@ -88,7 +88,7 @@ jobs:
         wheel=$(find candidate-dist -name 'notebooklm_py-*.whl' -print -quit)
         test -n "$wheel"
         "$PYTHON_PATH" -m pip install --disable-pip-version-check \
-          "${wheel}[browser,dev,markdown,impersonate,mcp,server,cookies]"
+          "${wheel}[browser,dev,markdown,impersonate,mcp,server]"
     - name: Prove runtime imports the candidate wheel
       shell: bash
       env:

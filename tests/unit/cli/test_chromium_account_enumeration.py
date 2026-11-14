@@ -255,7 +255,7 @@ def test_scoped_read_reports_the_missing_rookie_cookies_dependency_with_an_insta
 
     assert isinstance(result, CookieValidationFailure)
     assert result.code == "ROOKIEPY_NOT_INSTALLED"
-    assert "pip install 'notebooklm-py[cookies]'" in result.message
+    assert "notebooklm login" in result.message
 
 
 @pytest.mark.parametrize(
@@ -366,7 +366,7 @@ def test_fanout_aborts_on_a_missing_dependency_without_reading_later_profiles(
 
     assert isinstance(result, CookieValidationFailure)
     assert result.code == "ROOKIEPY_NOT_INSTALLED"
-    assert "pip install 'notebooklm-py[cookies]'" in result.message
+    assert "notebooklm login" in result.message
     assert read_calls == ["Default"]
 
 

@@ -570,13 +570,11 @@ def test_nightly_runs_full_sha_pinned_compatibility_matrix() -> None:
 
     install_command = str(_step(job, "Install compatibility dependencies")["run"])
     assert "uv sync --frozen" in install_command
-    for extra in {"browser", "dev", "markdown", "mcp", "server", "impersonate", "cookies"}:
+    for extra in {"browser", "dev", "markdown", "mcp", "server", "impersonate"}:
         assert f"--extra {extra}" in install_command
 
     import_command = str(_step(job, "Assert native optional dependencies import")["run"])
-    assert "import curl_cffi, rookie_cookies" in import_command
-    assert "callable(rookie_cookies.load)" in import_command
-    assert "callable(rookie_cookies.any_browser)" in import_command
+    assert "import curl_cffi" in import_command
 
     suite_command = str(_step(job, "Run compatibility tests without coverage")["run"])
     assert "-n auto" in suite_command
@@ -650,7 +648,7 @@ def test_nightly_coverage_is_sha_pinned_secret_free_and_enforces_floors() -> Non
 
     install_command = str(_step(job, "Install dependencies")["run"])
     assert "uv sync --frozen" in install_command
-    for extra in {"browser", "dev", "markdown", "mcp", "server", "impersonate", "cookies"}:
+    for extra in {"browser", "dev", "markdown", "mcp", "server", "impersonate"}:
         assert f"--extra {extra}" in install_command
 
     assert _step(job, "Install Playwright browsers")["run"] == (

@@ -38,5 +38,5 @@ uv run mypy src/notebooklm
 
 - Prefer `--json` output and pass explicit notebook IDs instead of relying on stateful `notebooklm use`.
 - Isolate concurrent runs with `NOTEBOOKLM_PROFILE=agent-<id>` (`~/.notebooklm/profiles/<name>/`) or `NOTEBOOKLM_HOME=/tmp/agent-<id>`.
-- In headless environments, authenticate with `notebooklm login --browser-cookies <browser>` (requires `pip install "notebooklm-py[cookies]"`).
+- In headless environments, run `notebooklm login` on a workstation and copy `storage_state.json` to the agent environment (the `cookies` extra was removed from this fork).
 

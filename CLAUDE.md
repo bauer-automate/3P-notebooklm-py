@@ -12,6 +12,10 @@ Guidance for Claude Code working in this repository. Follow conventions in [CONT
 
 Minimum Python is **3.12**. Never add or keep compatibility code, CI cells, classifiers, or dependency markers for older versions. This fork ships to Bauer Automate users only, and nobody else edits it on earlier Pythons. Upstream still supports 3.10, so expect a conflict on `requires-python`, the CI matrices, and `_version_check.py` at each sync, and keep the fork side.
 
+## Fork divergences
+
+- The `cookies` extra (`rookie-cookies`) is removed because Microsoft Defender flags `rookie_cookies.pyd` as InfoStealer (false positive, issue #14). Upstream keeps it, so expect conflicts in `pyproject.toml`, `uv.lock`, CI workflows, and install docs at each sync, and keep the fork side. `login --browser-cookies` stays but reports "not installed" and points to `notebooklm login`.
+
 ## Development Commands
 
 See [docs/installation.md](docs/installation.md) for the full installation guide.

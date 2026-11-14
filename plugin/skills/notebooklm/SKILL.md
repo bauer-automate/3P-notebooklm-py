@@ -20,7 +20,6 @@ separate environment unless requested:
 
 ```bash
 pip install "notebooklm-py[browser]"
-pip install "notebooklm-py[cookies]"  # optional browser-cookie extraction
 ```
 
 If system `pip` reports `externally-managed-environment`, do not use `--break-system-packages`.
@@ -53,11 +52,9 @@ notebooklm auth check --test --json
 Require `.status == "ok"` and `.checks.token_fetch == true`. If validation fails:
 
 - With a display, run `notebooklm login` and validate again.
-- In a headless environment, install `[cookies]` and use
-  `notebooklm login --browser-cookies <browser>`. Use
-  `notebooklm auth inspect --browser <browser>` first when account selection is unclear.
-- If previously valid cookies became stale, try `notebooklm auth refresh`; use
-  `notebooklm auth refresh --browser-cookies <browser>` after signing back into the browser.
+- In a headless environment, run `notebooklm login` on a workstation and copy `storage_state.json`
+  to the agent environment (the `cookies` extra was removed from this fork).
+- If previously valid cookies became stale, try `notebooklm auth refresh`, or run `notebooklm login` again.
 
 The normal `--test` preflight may heal and persist refreshed cookies. Add `--passive` when the
 check must be strictly read-only, including the failure-diagnosis workflow below.

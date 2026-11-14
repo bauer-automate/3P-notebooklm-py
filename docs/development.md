@@ -712,7 +712,7 @@ removes the temporary credential copies in a `finally` block. Its default cells
 are unattended:
 
 ```bash
-uv run --extra browser --extra cookies --extra headless --extra mcp --extra server \
+uv run --extra browser --extra headless --extra mcp --extra server \
   python scripts/live_auth_matrix.py \
   --profile <source-profile> \
   --browser 'chromium::Profile 3' \
@@ -732,7 +732,7 @@ DISPLAY=:10 XAUTHORITY="$HOME/.Xauthority" google-chrome \
   --user-data-dir=/tmp/notebooklm-live-cdp
 
 DISPLAY=:10 XAUTHORITY="$HOME/.Xauthority" \
-uv run --extra browser --extra cookies --extra headless --extra mcp --extra server \
+uv run --extra browser --extra headless --extra mcp --extra server \
   python scripts/live_auth_matrix.py \
   --profile <source-profile> \
   --browser 'chromium::Profile 3' \
@@ -757,10 +757,10 @@ account-specific manual validation.
 #### The extras above are load-bearing — especially `headless`
 
 Run the matrix with the full set shown in the commands above
-(`browser`, `cookies`, `headless`, `mcp`, `server`). They are not
+(`browser`, `headless`, `mcp`, `server`). They are not
 interchangeable with the contributor install in
 [CLAUDE.md](../CLAUDE.md), which deliberately mirrors CI's test job and
-includes neither `cookies` nor `headless` — CI never runs this matrix.
+does not include `headless` — CI never runs this matrix.
 
 `headless` (`gpsoauth`) is load-bearing. Without it, master-token cells now
 stop with an actionable `MissingDependencyError`:
@@ -775,7 +775,7 @@ reports the actionable configuration error. A genuinely revoked token still
 reports the authentication failure. This distinction is pinned by
 [#2239](https://github.com/teng-lin/notebooklm-py/issues/2239).
 
-Similarly, without `cookies` (`rookie-cookies`) the browser discovery/login and
+Similarly, without `rookie-cookies` (the `cookies` extra was removed from this fork) the browser discovery/login and
 browser-refresh cells cannot run at all; use `--skip-browser` rather than
 reading their absence as a pass.
 

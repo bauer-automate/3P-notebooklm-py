@@ -31,7 +31,7 @@ playwright install chromium
 pre-commit install
 ```
 
-For full prerequisites, headless setup, optional extras (`[android]`, `[cookies]`, `[markdown]`, `[mcp]`, `[server]`), and platform notes, see [docs/installation.md#e-contributor](docs/installation.md#e-contributor).
+For full prerequisites, headless setup, optional extras (`[android]`, `[markdown]`, `[mcp]`, `[server]`), and platform notes, see [docs/installation.md#e-contributor](docs/installation.md#e-contributor).
 
 > **Install-doc parity.** `docs/installation.md` is the canonical install guide; this file mirrors a small contributor-focused subset. Every fenced ``bash`` block in `installation.md` must EITHER appear verbatim in `CONTRIBUTING.md`, OR be marked with `<!-- not mirrored: <reason> -->` on the line directly before its opening fence. CI enforces this via `scripts/check_ci_install_parity.py` so a stale block can't drift in unnoticed. When you edit `installation.md`, decide on the spot whether the new content also belongs in this file.
 
