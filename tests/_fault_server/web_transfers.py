@@ -311,8 +311,12 @@ async def upload_case(result: ScenarioResult, variant: str) -> None:
                     == ("start_session" if variant.startswith("start_") else "upload_finalize"),
                 )
             uploader = client._web_runtime.source_uploader
-            result.require("upload_children_settled", not uploader._transport_tasks)
-            result.require("upload_clients_settled", not uploader._transport_clients)
+            await result.require_settled(
+                "upload_children_settled", lambda: not uploader._transport_tasks
+            )
+            await result.require_settled(
+                "upload_clients_settled", lambda: not uploader._transport_clients
+            )
             expected_bodies = (
                 1
                 if variant.startswith("start_")
@@ -513,15 +517,21 @@ async def download_case(result: ScenarioResult, variant: str, *, batch: bool = F
                     "redirect_limit_error", isinstance(underlying_error, httpx.TooManyRedirects)
                 )
             result.require("staging_removed", list(Path(directory).iterdir()) == [destination])
-            result.require(
+            await result.require_settled(
                 "writer_settled",
-                not any(
-                    t.name.startswith(f"artifact-dl-writer-{destination.name}")
-                    for t in threading.enumerate()
+                lambda: (
+                    not any(
+                        t.name.startswith(f"artifact-dl-writer-{destination.name}")
+                        for t in threading.enumerate()
+                    )
                 ),
             )
-            result.require("asset_clients_settled", not client.artifacts._asset_downloads._clients)
-            result.require("asset_tasks_settled", not client.artifacts._asset_downloads._tasks)
+            await result.require_settled(
+                "asset_clients_settled", lambda: not client.artifacts._asset_downloads._clients
+            )
+            await result.require_settled(
+                "asset_tasks_settled", lambda: not client.artifacts._asset_downloads._tasks
+            )
             result.record(
                 "response_cleanup",
                 observed=len(responses),

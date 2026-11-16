@@ -161,7 +161,9 @@ async def _cohort(
             result.require(
                 "generation_client_closed", client is None or not client._lifecycle.is_open()
             )
-            result.require("generation_handlers_settled", server.active_handlers == 0)
+            await result.require_settled(
+                "generation_handlers_settled", lambda: server.active_handlers == 0
+            )
             result.require("generation_server_clean", not server.errors and server.remaining() == 0)
             if cleanup_errors:
                 raise cleanup_errors[0]

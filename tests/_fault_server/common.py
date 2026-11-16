@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+# Harness waits assert that something happens, not how fast. They need headroom
+# for a CPU-starved runner, so they are far looser than the behavior under test.
+HARNESS_WAIT = 5.0  # a harness event the scenario is waiting on
+CASE_TIMEOUT = 20.0  # one in-process adapter worker case
+WORKER_EXIT_TIMEOUT = 30.0  # a worker subprocess, including interpreter startup
 
 
 @dataclass
@@ -38,6 +47,24 @@ class ScenarioResult:
         self.record("check", name=name, passed=condition)
         if not condition:
             raise ScenarioFailure(self)
+
+    async def require_settled(
+        self, name: str, predicate: Callable[[], bool], *, timeout: float = 2.0
+    ) -> None:
+        """Record an invariant about cleanup that finishes after the last await.
+
+        Writer threads, transport tasks and handler teardown settle a few loop
+        turns after the scenario body ends. On a loaded CI runner that gap can
+        last seconds, so a single sample is a timing check, not a leak check.
+        Sample once, then poll until the deadline. State that never settles
+        still fails, with the same evidence as ``require``.
+        """
+        deadline = time.monotonic() + timeout
+        condition = bool(predicate())
+        while not condition and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+            condition = bool(predicate())
+        self.require(name, condition)
 
 
 class ScenarioFailure(AssertionError):

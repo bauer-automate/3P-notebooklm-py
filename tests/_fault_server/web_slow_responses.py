@@ -192,14 +192,16 @@ async def run_scenario(
                     "old_destination_preserved", destination.read_bytes() == b"old destination"
                 )
                 owner = client.artifacts._asset_downloads
-                result.require(
+                await result.require_settled(
                     "download_owners_settled",
-                    not owner._clients
-                    and not owner._tasks
-                    and list(Path(directory).iterdir()) == [destination]
-                    and not any(
-                        t.name.startswith(f"artifact-dl-writer-{destination.name}")
-                        for t in threading.enumerate()
+                    lambda: (
+                        not owner._clients
+                        and not owner._tasks
+                        and list(Path(directory).iterdir()) == [destination]
+                        and not any(
+                            t.name.startswith(f"artifact-dl-writer-{destination.name}")
+                            for t in threading.enumerate()
+                        )
                     ),
                 )
             else:

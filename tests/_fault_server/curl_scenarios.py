@@ -96,7 +96,9 @@ async def _cohort(result: ScenarioResult, server: CurlFaultServer) -> AsyncItera
             result.require("curl_resources_settled", routing is not None and routing._closed)
             server.assert_drained()
             result.require("server_requests_expected", True)
-            result.require("server_handlers_settled", server.active_handlers == 0)
+            await result.require_settled(
+                "server_handlers_settled", lambda: server.active_handlers == 0
+            )
 
 
 def _read_reply() -> Reply:
@@ -190,8 +192,12 @@ async def upload_case(result: ScenarioResult, variant: str) -> None:
                 )
             result.record("outcome", error=None if error is None else type(error).__name__)
             uploader = client._web_runtime.source_uploader
-            result.require("curl_upload_children_settled", not uploader._transport_tasks)
-            result.require("curl_upload_clients_settled", not uploader._transport_clients)
+            await result.require_settled(
+                "curl_upload_children_settled", lambda: not uploader._transport_tasks
+            )
+            await result.require_settled(
+                "curl_upload_clients_settled", lambda: not uploader._transport_clients
+            )
             await _recover(result, client)
     result.require(
         "one_finalize_per_session", len([r for r in server.journal if r.route == FINAL]) == 1

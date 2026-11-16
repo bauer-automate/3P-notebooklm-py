@@ -343,6 +343,39 @@ def test_cli_reports_a_leaked_child_even_when_it_cancels_cleanly() -> None:
     assert cleaned
 
 
+def test_cli_does_not_report_a_child_that_finishes_just_after_the_run() -> None:
+    finished = False
+
+    async def child() -> None:
+        nonlocal finished
+        await asyncio.sleep(0.2)
+        finished = True
+
+    async def slow(name: str, *, operation_id: str, result: ScenarioResult) -> ScenarioResult:
+        asyncio.create_task(child(), name="slow-child")
+        return await _passing(name, operation_id=operation_id, result=result)
+
+    report = stress._run_cli(stress.RunConfig(iterations=1), {("web", "slow"): slow})
+    assert finished
+    assert report["summary"]["ok"]
+    assert not any("leaked tasks" in failure for failure in report["failures"])
+
+
+async def test_require_settled_waits_for_late_cleanup() -> None:
+    result = ScenarioResult("web", "late", "operation-000001")
+    state = {"open": True}
+    asyncio.get_running_loop().call_later(0.1, state.update, {"open": False})
+    await result.require_settled("closed", lambda: not state["open"])
+    assert result.checks == {"closed": True}
+
+
+async def test_require_settled_fails_when_state_never_settles() -> None:
+    result = ScenarioResult("web", "stuck", "operation-000001")
+    with pytest.raises(ScenarioFailure):
+        await result.require_settled("closed", lambda: False, timeout=0.1)
+    assert result.checks == {"closed": False}
+
+
 def test_cli_records_unhandled_background_failure() -> None:
     async def fails() -> None:
         raise RuntimeError("orphaned handler failed")

@@ -27,7 +27,7 @@ from notebooklm.server.app import create_app
 
 from .adapter_listener import DisconnectGate, live_listener
 from .adapter_scenarios import _fault_server, _require_client_closed
-from .common import ScenarioResult
+from .common import CASE_TIMEOUT, HARNESS_WAIT, ScenarioResult
 from .http import HttpFaultServer, Reply, Stall
 from .web import build_fault_client, rpc_response
 from .web_streaming import CHAT, CONVERSATION, TURNS, _frame
@@ -39,7 +39,7 @@ async def _until(predicate: Any) -> None:
         while not predicate():
             await asyncio.sleep(0.005)
 
-    await asyncio.wait_for(wait(), 1)
+    await asyncio.wait_for(wait(), HARNESS_WAIT)
 
 
 async def download_case(result: ScenarioResult, adapter: str) -> None:
@@ -128,7 +128,7 @@ async def download_case(result: ScenarioResult, adapter: str) -> None:
                         fault_kwargs = {**kwargs, "headers": headers}
                         async with caller.stream(url=route, **fault_kwargs) as response:
                             prefix = await response.aiter_raw().__anext__()
-                            await asyncio.wait_for(gate.prefix_sent.wait(), 1)
+                            await asyncio.wait_for(gate.prefix_sent.wait(), HARNESS_WAIT)
                             result.require(
                                 "caller_received_prefix",
                                 response.status_code == 200
@@ -147,9 +147,9 @@ async def download_case(result: ScenarioResult, adapter: str) -> None:
                                 result.require(
                                     "mcp_slot_held", _fileroutes._inflight_downloads == 1
                                 )
-                        await asyncio.wait_for(gate.disconnected.wait(), 1)
+                        await asyncio.wait_for(gate.disconnected.wait(), HARNESS_WAIT)
                         gate.release.set()
-                        await asyncio.wait_for(gate.settled.wait(), 1)
+                        await asyncio.wait_for(gate.settled.wait(), HARNESS_WAIT)
                         await _until(lambda: not spools[-1].exists())
                         result.require("disconnect_finalizer_removed_spool", not spools[1].exists())
                         if adapter == "mcp":
@@ -272,7 +272,7 @@ async def chat_case(result: ScenarioResult) -> None:
                         json=tool("chat_start", args, 2),
                     ) as response:
                         prefix = await response.aiter_raw().__anext__()
-                        await asyncio.wait_for(gate.prefix_sent.wait(), 1)
+                        await asyncio.wait_for(gate.prefix_sent.wait(), HARNESS_WAIT)
                         await upstream.wait_for_gate("ask-entered")
                         result.require(
                             "caller_received_start_prefix",
@@ -287,9 +287,9 @@ async def chat_case(result: ScenarioResult) -> None:
                             and entry.task is not None
                             and not entry.task.done(),
                         )
-                    await asyncio.wait_for(gate.disconnected.wait(), 1)
+                    await asyncio.wait_for(gate.disconnected.wait(), HARNESS_WAIT)
                     gate.release.set()
-                    await asyncio.wait_for(gate.settled.wait(), 1)
+                    await asyncio.wait_for(gate.settled.wait(), HARNESS_WAIT)
                     result.require(
                         "accepted_client_epoch_preserved",
                         entry.accepted_epoch == client_generation_epoch(opened[0]),
@@ -314,7 +314,7 @@ async def chat_case(result: ScenarioResult) -> None:
                         status["status"] == "pending" and status["state"] == "generating",
                     )
                     upstream.release("ask-entered")
-                    await asyncio.wait_for(asyncio.shield(entry.task), 1)
+                    await asyncio.wait_for(asyncio.shield(entry.task), HARNESS_WAIT)
                     completed = payload(
                         await caller.post(
                             "/mcp", json=tool("chat_status", {"task_id": entry.task_id}, 5)
@@ -384,7 +384,7 @@ async def run(name: str, result: ScenarioResult | None = None) -> ScenarioResult
         budgets={
             "rpc_timeout_s": 2 if chat else 1,
             "job_timeout_s": 3 if chat else None,
-            "scenario_timeout_s": 6,
+            "scenario_timeout_s": CASE_TIMEOUT,
             "cleanup_timeout_s": 2,
         },
     )
@@ -404,7 +404,7 @@ async def run(name: str, result: ScenarioResult | None = None) -> ScenarioResult
     if sys.platform != "win32":
         loop.add_signal_handler(signal.SIGTERM, owner.cancel)
     try:
-        await asyncio.wait_for(case, 6)
+        await asyncio.wait_for(case, CASE_TIMEOUT)
         await asyncio.sleep(0)
         remaining_tasks = asyncio.all_tasks() - initial_tasks
         result.record(

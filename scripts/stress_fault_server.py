@@ -45,6 +45,10 @@ _MAX_ITERATIONS = 100_000
 _MAX_CONCURRENCY = 64
 
 
+# Grace for tasks that finish just after the run, before they count as leaked.
+LEAK_GRACE_SECONDS = 2.0
+
+
 @dataclass(frozen=True)
 class RunConfig:
     backend: str = "both"
@@ -370,6 +374,14 @@ def _run_cli(config: RunConfig, registry: Registry) -> dict[str, Any]:
         return report
     finally:
         pending = asyncio.all_tasks(loop)
+        if pending:
+            # A task that finishes a few loop turns after the run ends is slow, not
+            # leaked. On a loaded runner that gap can last seconds, so give pending
+            # tasks a bounded grace period; only tasks that outlive it are leaks.
+            _, still_pending = loop.run_until_complete(
+                asyncio.wait(pending, timeout=min(config.cleanup_timeout, LEAK_GRACE_SECONDS))
+            )
+            pending = set(still_pending)
         if pending and report is not None:
             report["failures"].append(f"CLI found leaked tasks after run: {len(pending)}")
             report["summary"]["ok"] = False

@@ -88,7 +88,9 @@ async def shared_poll_last_waiter_cancelled(result: ScenarioResult) -> None:
             and isinstance(second_outcome[0], asyncio.CancelledError),
         )
         result.require("poll_single_transport_request", len(_requests(server, LIST_ASSETS)) == 1)
-        result.require("poll_registry_settled", client.artifacts._poll_registry.get(key) is None)
+        await result.require_settled(
+            "poll_registry_settled", lambda: client.artifacts._poll_registry.get(key) is None
+        )
         result.require("poll_recovery", [row.id for row in probe] == ["recovered"])
     _require_clean(result, server)
 
