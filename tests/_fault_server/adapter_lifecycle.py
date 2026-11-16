@@ -15,7 +15,7 @@ import tempfile
 from functools import partial
 from pathlib import Path
 
-from .common import ScenarioResult
+from .common import WORKER_EXIT_TIMEOUT, ScenarioResult
 
 
 async def live_case(result: ScenarioResult, *, name: str) -> None:
@@ -43,7 +43,7 @@ async def live_case(result: ScenarioResult, *, name: str) -> None:
             stderr=asyncio.subprocess.DEVNULL,
         )
         try:
-            await asyncio.wait_for(process.wait(), 10)
+            await asyncio.wait_for(process.wait(), WORKER_EXIT_TIMEOUT)
         finally:
             if process.returncode is None:
                 process.terminate()

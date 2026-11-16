@@ -25,7 +25,7 @@ from notebooklm.server.app import create_app
 
 from .adapter_lifecycle import IMPLEMENTATIONS as _LIVE_IMPLEMENTATIONS
 from .adapter_registry import SCENARIOS as SCENARIOS
-from .common import ScenarioFailure, ScenarioResult
+from .common import WORKER_EXIT_TIMEOUT, ScenarioFailure, ScenarioResult
 from .http import Disconnect, HttpFaultServer, Reply, Route
 from .web import build_fault_client, list_response
 
@@ -330,7 +330,7 @@ async def _run_cli(result: ScenarioResult, scenario: str) -> dict[str, Any]:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await asyncio.wait_for(process.wait(), 10.0)
+            await asyncio.wait_for(process.wait(), WORKER_EXIT_TIMEOUT)
             if process.returncode != 0 or not report.is_file():
                 raise AssertionError("isolated CLI fault worker did not produce a report")
             worker = json.loads(report.read_text(encoding="utf-8"))
@@ -631,7 +631,7 @@ async def run_scenario(
             if name in _LIVE_IMPLEMENTATIONS
             else 2.0,
             "job_timeout_s": 3 if "chat_start" in name else None,
-            "scenario_timeout_s": 10 if adapter == "cli" else 6,
+            "scenario_timeout_s": WORKER_EXIT_TIMEOUT if adapter == "cli" else 6,
             "cleanup_timeout_s": _CLOSE_TIMEOUT,
         },
         required_checks=_REQUIRED_CHECKS[name],

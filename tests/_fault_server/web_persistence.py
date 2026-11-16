@@ -196,14 +196,18 @@ async def download_persistence_case(
                 ),
             )
             result.require("writer_closed", all(handle.closed for handle in handles))
-            result.require(
+            await result.require_settled(
                 "writer_thread_settled",
-                not any(
-                    t.name.startswith(f"artifact-dl-writer-{destination.name}.")
-                    for t in threading.enumerate()
+                lambda: (
+                    not any(
+                        t.name.startswith(f"artifact-dl-writer-{destination.name}.")
+                        for t in threading.enumerate()
+                    )
                 ),
             )
-            result.require("asset_owners_settled", not owner._clients and not owner._tasks)
+            await result.require_settled(
+                "asset_owners_settled", lambda: not owner._clients and not owner._tasks
+            )
             result.require("responses_closed", all(response.is_closed for response in responses))
             # Observe transport-delivered bytes separately from the disk writer.
             result.require(

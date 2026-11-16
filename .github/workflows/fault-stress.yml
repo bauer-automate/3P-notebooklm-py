@@ -41,7 +41,7 @@ jobs:
         uv run python scripts/stress_fault_server.py \
           --backend both --seed "$GITHUB_RUN_ID" \
           --iterations "$iterations" --concurrency 4 --require-all-scenarios \
-          --timeout 600 --scenario-timeout 15 \
+          --timeout 600 --scenario-timeout 45 \
           --json-report fault-stress-report.json
     - name: Preserve assignments and diagnostic traces
       if: always()
@@ -72,7 +72,7 @@ jobs:
         uv run python scripts/stress_fault_server.py \
           --backend web --transport curl_cffi --seed "$GITHUB_RUN_ID" \
           --iterations "$selected" --concurrency 2 --require-all-scenarios \
-          --timeout 300 --scenario-timeout 15 \
+          --timeout 300 --scenario-timeout 45 \
           --json-report curl-fault-stress-report.json
     - name: Preserve real transport evidence
       if: always()

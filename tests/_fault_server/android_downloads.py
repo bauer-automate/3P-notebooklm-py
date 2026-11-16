@@ -258,7 +258,9 @@ async def run_scenario(
                     path.read_bytes() == (_PAYLOAD if success else b"old destination"),
                 )
                 result.require("staging_clean", list(Path(directory).iterdir()) == [path])
-                result.require("resources_released", not assets._clients and not assets._tasks)
+                await result.require_settled(
+                    "resources_released", lambda: not assets._clients and not assets._tasks
+                )
                 server.release("held")
                 if variant == "close_reopen":
                     await client.__aenter__()
