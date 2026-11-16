@@ -16,6 +16,20 @@ Minimum Python is **3.12**. Never add or keep compatibility code, CI cells, clas
 
 - The `cookies` extra (`rookie-cookies`) is removed because Microsoft Defender flags `rookie_cookies.pyd` as InfoStealer (false positive, issue #14). Upstream keeps it, so expect conflicts in `pyproject.toml`, `uv.lock`, CI workflows, and install docs at each sync, and keep the fork side. `login --browser-cookies` stays but reports "not installed" and points to `notebooklm login`.
 
+## Syncing with upstream
+
+```bash
+git remote add upstream https://github.com/teng-lin/notebooklm-py   # once per clone
+git fetch upstream main --tags
+git merge upstream/main                                              # on a branch, never on main
+```
+
+- Resolve conflicts by keeping the fork side for the items under "Fork divergences" and the Python version policy.
+- `CHANGELOG.md`: keep upstream entries and re-add the fork-only entries above them.
+- Regenerate line-keyed baselines with `uv run python scripts/regen_baselines.py`, then review the diff.
+- Run `uv lock` with a recent uv (0.13 or later). An older uv rewrites the lock file revision.
+- Push the new upstream release tag to the fork so the public API audit has a current baseline (`git push origin vX.Y.Z`).
+
 ## Development Commands
 
 See [docs/installation.md](docs/installation.md) for the full installation guide.
